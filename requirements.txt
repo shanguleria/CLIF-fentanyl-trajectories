@@ -1,0 +1,7 @@
+# Pinned for cross-site numeric reproducibility. See README "Prerequisites".
+clifpy==0.3.8
+pandas==3.0.0
+numpy==2.4.2
+pyarrow==23.0.0
+duckdb==1.4.4
+PyYAML==6.0.3

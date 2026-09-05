@@ -1,0 +1,69 @@
+{
+    "_comment_shape": "Standard CLIF site config. site_name / clif_version / data_directory / filetype / timezone are the consortium-standard keys; the last three are the names clifpy itself requires, so this file is passed to clifpy with no translation layer. Everything below them is this project's protocol.",
+
+    "site_name": "Your_Site_Name",
+    "clif_version": "2.1.0",
+    "dataset_version": "",
+    "data_directory": "/path/to/clif/tables/",
+    "filetype": "parquet",
+    "timezone": "America/Chicago",
+
+    "_comment_versions": "clif_version is always the CLIF SPEC version (e.g. 2.1.0). A conversion/ETL release -- the MIMIC-to-CLIF build 1.1.0, say -- is NOT a CLIF version and goes in dataset_version. Leave dataset_version empty for a site's own tables.",
+
+    "tables_in_use": [
+        "patient",
+        "hospitalization",
+        "adt",
+        "respiratory_support",
+        "medication_admin_continuous",
+        "medication_admin_intermittent",
+        "vitals",
+        "labs",
+        "patient_assessments",
+        "patient_procedures"
+    ],
+
+    "_comment_medications": "Run a documentation probe against your data first to confirm its med_category values, then edit these. Vocabularies differ between sources.",
+    "medications": {
+        "opioid_infusion_categories": ["fentanyl"],
+        "opioid_bolus_categories": ["fentanyl"],
+        "other_sedative_categories": ["propofol", "midazolam"]
+    },
+
+    "_comment_protocol": "cohort / outcomes / model define the estimand. If two sites set these differently the pooled result is not meaningful -- do not edit them to make a run work.",
+
+    "cohort": {
+        "time_anchor": "intubation",
+        "min_age": 18,
+        "window_hours": 4,
+        "granular_extent_hours": 72,
+        "extended_window_hours": 12,
+        "extended_extent_hours": 168,
+        "landmark_hours": 72,
+        "balanced_panel_hours": [24, 48, 72]
+    },
+
+    "outcomes": {
+        "_comment_mortality": "patient.death_dttm is unstable across CLIF sites -- use discharge_category. Sensitivity analysis drops Hospice.",
+        "mortality_source": "discharge_category",
+        "mortality_categories": ["Expired", "Hospice"],
+        "mortality_categories_sensitivity": ["Expired"],
+        "unresolved_discharge_categories": ["Still Admitted", "Missing", "Other"],
+        "successful_extubation_hours": 72,
+        "vfd_horizon_days": 28,
+        "mortality_horizon_days": 30
+    },
+
+    "model": {
+        "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level. See docs/design_notes.md sections 3-4.",
+        "scaling": 0,
+        "ng_range": [1, 6],
+        "polynomial_degree": 2,
+        "nstart": 50,
+        "seed": 20260905
+    },
+
+    "reporting": {
+        "small_cell_min_den": 10
+    }
+}
