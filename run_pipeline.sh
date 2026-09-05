@@ -19,6 +19,10 @@ if ! "$PY" code/check_config.py; then
   echo "ERROR: config is not usable. Nothing was run." >&2
   exit 1
 fi
+if ! "$PY" tests/test_covariates.py; then
+  echo "ERROR: config/covariates.json failed its integrity checks. Nothing was run." >&2
+  exit 1
+fi
 echo
 
 echo "== Phase 0: build cohort (Python) =="

@@ -166,7 +166,7 @@ in practice on realistic (overlapping) data. Mitigations for Model B:
 | **Infusion rate** | **LOCF**, then **time-weighted mean** within the window | a rate persists until changed; a plain mean of records is wrong whenever rate changes are unevenly spaced |
 | **Bolus doses** | **SUM within window. Never LOCF.** | a bolus is an event, not a state — carrying it forward replicates one dose across every later window and massively overcounts |
 | Empty windows | true `0` for both streams | drip off is a real zero, not missing |
-| Weight | denominator of the dose (mcg/kg/hr) | weight is a normaliser, not a covariate |
+| Weight | denominator of the dose (mcg/kg/hr), **fixed at the anchor** | a normaliser, not a covariate. Two different weight rules are required — see §11 *Weight* |
 
 **Verify before relying on LOCF:** check what fraction of infusion stops are
 charted as an explicit `0` row versus an end timestamp with nothing after. The
@@ -188,11 +188,28 @@ indicator that defines the groups, or it is not in the model.
 
 | Role | Variables | Where |
 |---|---|---|
-| Trajectory indicator | fentanyl dose (± propofol, midazolam, RASS) | `x.names` |
-| Normaliser | weight | data prep — mcg/kg/hr |
-| Membership predictor | age, admission SOFA, race, admission type | stage 2: `multinom(group ~ ...)` |
-| Distal outcome | vent-free days, delirium, mortality | stage 2: `glm(outcome ~ group + ...)` |
-| Group descriptor | bolus counts, % windows with a bolus | descriptive table only — characterises groups without letting them drive the grouping |
+| Trajectory indicator | fentanyl dose (± propofol, midazolam — see §9) | `x.names` |
+| Normaliser | weight, fixed at the anchor | data prep — mcg/kg/hr (§11) |
+| Membership predictor | age, sex, CCI, BMI at admission; plus **window-0** SOFA, NEE, oxygenation | stage 2: `multinom(group ~ ...)` |
+| Distal outcome | successful extubation, 30-day mortality, VFD-28 | stage 2 — competing risks, see Phase 6 |
+| Group descriptor | bolus counts, % windows with a bolus, % windows on CRRT | descriptive table only — characterises groups without letting them drive the grouping |
+| **Reported, not modelled** | race, hospital at admission / at discharge | Table 1 baseline characteristics only (§11) |
+
+The exact variable list is in [`config/covariates.json`](../config/covariates.json)
+and §11; this table only says what each is *for*. Two notes on what changed:
+
+- **RASS is not collected.** It appeared here as a candidate indicator, but it is
+  in no other section, in no phase, and in the config. Adding an ordinal
+  assessment as a second indicator runs into the same mixed-units problem as
+  propofol/midazolam (§3, §9) — if it is wanted, it goes through that decision,
+  not in by default.
+- **Severity enters as a membership predictor at window 0, not as "admission
+  SOFA".** SOFA, NEE and oxygenation are time-varying here (§11), so the baseline
+  value is a window-0 slice of a trajectory column rather than a separate
+  admission-time variable. There is no separate `admission_type` covariate; it
+  was listed here and in Phase 0 but is collected by neither. **`race` IS now
+  collected** (SG, 2026-09-05) — for Table 1 reporting only, not as a membership
+  predictor.
 
 The stage-2 approach ("classify–analyze") treats estimated group membership as
 observed and therefore understates standard errors. Acceptable when APPA > 0.9;
@@ -269,10 +286,17 @@ Four rules, all load-bearing:
 ### The estimand
 
 > The association between fentanyl trajectory class and subsequent outcome,
+> among **encounter blocks** (ventilation episodes, not patients),
 > **conditional on being alive and mechanically ventilated at T.**
 
 The conditioning is part of the estimand, not a limitation for the discussion
 section. It belongs in the Methods, the abstract, and arguably the title.
+
+**The unit is the encounter block** *(SG, 2026-09-05)*. A patient admitted twice
+for different reasons may have entirely different fentanyl trajectories, and each
+is a distinct clinical episode worth describing. Say "ventilation episodes", not
+"patients", in every count, table and figure legend — including the CONSORT/STROBE
+flow. See §11.
 
 ### Why not simply zero-fill (evidence)
 
@@ -374,8 +398,27 @@ assumption, or as a separate paper.
       intubated long enough to have a trajectory.
 - [ ] Confirm whether successful extubation is itself a competing-risks problem
       (extubation vs death vs tracheostomy) or can be treated as binary.
-- [ ] Write the per-variable within-window aggregation rules (§11). Each
-      time-varying covariate needs its own rule; there is no sensible default.
+- [x] **RESOLVED 2026-09-05.** Write the per-variable within-window aggregation
+      rules (§11). Now declared in `config/covariates.json` and mirrored in §11;
+      enforced by `tests/test_covariates.py`.
+- [x] **RESOLVED 2026-09-05 (SG). How many encounter blocks may one patient
+      contribute?** **All of them** — the unit of analysis is the ventilation
+      episode, not the patient, because two admissions for different reasons are
+      genuinely different clinical courses. Residual within-patient correlation
+      remains and cannot be absorbed by `gbmt` or `crr`; §11 makes the two
+      bounding counts required outputs. Original framing: `encounter_block` is now the analysis key for Phases 0-6, and
+      stitching does not merge a January admission with a June one. A patient
+      intubated twice enters as two units that are not independent. Neither
+      `gbmt::gbmt` nor `cmprsk::crr` takes a clustering argument — verified by
+      reading their formals — so the correlation cannot be absorbed at the model
+      stage the way `CRRT-dose-lmtp` absorbs it in `lmtp`. It must be removed at
+      the cohort stage or accepted and bounded. See §11.
+- [ ] **Specify the adjustment sets.** §6 names the *roles* — age, sex, CCI, BMI
+      and window-0 severity as membership predictors — but no section states which
+      covariates enter `multinom(group ~ ...)` or `glm(outcome ~ group + ...)`.
+      Surfaced by the 2026-09-05 consistency audit, which found the covariate list
+      defined and the model formulas not. The two are different decisions and only
+      the first has been made.
 - [ ] **Resolve §10(a)**: choose grid + landmark (3h/[0,48]/T=48 or 12h/[0,72]/T=72).
 - [ ] **Resolve §10(c)**: confirm "cumulative dose" means within-window total,
       not a running sum since intubation.
@@ -393,21 +436,38 @@ reviewable before the next begins.
 
 ### Phase 0 — data structures
 
-**Table 1 — trajectory (long).** One row per patient per window.
+**Table 1 — trajectory (long).** One row per **encounter block** per window.
 
-| Block | Contents |
+Column set and per-variable rules are declared in
+[`config/covariates.json`](../config/covariates.json); §11 is the mirror. This
+table is the block-level shape only.
+
+| Block | Columns |
 |---|---|
-| Keys | `patient_id` (chr), `id_num` (int), `window_idx`, `window_start_hr` |
-| Fentanyl dose — **three columns, kept separate** | `inf_dose`, `bolus_dose`, `total_dose` (within-window totals, expressed mcg/kg/hr) |
+| Keys | `patient_id` (chr), `encounter_block`, `id_num` (int), `window_idx`, `window_start_hr` |
+| Fentanyl dose — **three columns, kept separate** | `inf_dose`, `bolus_dose`, `total_dose` (within-window, mcg/kg/hr; rules in §5) |
 | Other sedatives | `propofol_dose`, `midazolam_dose` — added now; cheap here, expensive to backfill |
-| Time-invariant covariates | age, sex, race, admission type, admission SOFA |
-| Time-varying covariates | NEE, P/F, labs — one aggregation rule each (§11) |
-| **IMV status** | on/off ventilator in the window — required to identify extubated windows and count failed extubations |
+| Normaliser | `weight_kg` (fixed at the anchor), `weight_lag_hours` |
+| Time-invariant | `age`, `sex`, `race`, `cci`, `bmi_admission`, `bmi_lag_hours` |
+| Site / hospital | `hospital_id_admission`, `hospital_id_discharge` (§11) |
+| Time-varying severity | `sofa_total`, `nee`, `oxygenation`, `oxygenation_source` |
+| Time-varying labs | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total` |
+| **Status flags** | `imv_status` — required to identify extubated windows and count failed extubations. `crrt_status` |
+| Provenance | `<var>_locf` per LOCF-eligible variable; `at_risk` per window |
+
+`at_risk` is not optional bookkeeping: it is the denominator for every
+missingness count, and a post-event window is structurally empty rather than
+missing (§11).
+
+**Table 1b — hospital intervals.** One row per ADT interval: `encounter_block`,
+`hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`.
+Written because `hospital_id` is time-varying and the two columns above are only
+its endpoints (§11).
 
 Keeping all three dose columns defers the Model A / Model B choice to analysis
 time rather than baking it into the pipeline.
 
-**Table 2 — time-to-event.** One row per patient. The two planned outcome
+**Table 2 — time-to-event.** One row per **encounter block**. The two planned outcome
 analyses need **different event codings**, so a single `event`/`time` pair will
 not serve both:
 
@@ -419,8 +479,8 @@ not serve both:
 Carry both pairs (or a tidy long form), plus the landmark eligibility flag.
 
 ### Phase 1 — descriptive cohort dose trajectory
-**No landmark, no exposure window, no outcome model.** All intubated patients,
-contributing for as long as they remain ventilated.
+**No landmark, no exposure window, no outcome model.** All intubated encounter
+blocks, contributing for as long as the patient remains ventilated.
 
 | View | Window | Extent | Points |
 |---|---|---|---|
@@ -710,23 +770,512 @@ death/tracheostomy rules in the outcome definition.
 
 ## 11. Within-window aggregation rules
 
-Every time-varying variable needs an explicit rule. There is no safe default,
-and the right rule differs by what the variable *is*. Rules apply identically to
-whichever window width is chosen (§10a). To be filled in and reviewed before
-Phase 1 is built:
+**Status: RESOLVED, 2026-09-05 (SG).** This section is the human-readable mirror
+of [`config/covariates.json`](../config/covariates.json) (`definition_version`
+0.1.0). **That file is the source of truth.** If a value here disagrees with it,
+the file is right and this section is stale.
 
-| Variable | Type | Proposed rule | Rationale |
-|---|---|---|---|
-| Fentanyl infusion rate | state (rate) | LOCF → time-weighted mean | persists until changed |
-| Fentanyl boluses | event | **sum**, never LOCF | discrete events, not a state |
-| NEE (norepinephrine equivalents) | state (rate) | LOCF → time-weighted mean | same logic as fentanyl drip |
-| P/F ratio | intermittent measurement | *worst* or *nearest-to-window-end* — **decide** | driven by ABG timing, not a continuous state |
-| Labs | intermittent measurement | *last* or *worst* in window — **decide** | irregular sampling; "mean" is rarely meaningful |
-| RASS | intermittent assessment | *modal* or *worst* — **decide** | ordinal; a mean of ordinal scores is not interpretable |
+Every time-varying variable needs an explicit rule. There is no safe default, and
+the right rule differs by what the variable *is*. The
+state-versus-event-versus-absence distinction is the one that matters: apply a
+state rule to an event column and you overcount; apply an event rule to a state
+column and you undercount; treat an absence as ignorance and you fabricate
+missingness where there was none.
 
-The state-versus-event-versus-measurement distinction is the one that matters:
-apply a state rule to an event column and you overcount; apply an event rule to
-a state column and you undercount.
+Grid: **4h windows, half-open `[start, end)`, 18 windows to 72h**, anchored at
+intubation. The 12h/168h extended grid (Phase 1 only) uses identical rules.
+
+### Time-invariant covariates
+
+| Variable | Source | Rule |
+|---|---|---|
+| `age` | `hospitalization.age_at_admission` | inclusion criterion; missing → drop |
+| `sex` | `patient.sex_category` | missing retained as its own level |
+| `race` | `patient.race_category` | **Table 1 only — not a model covariate.** See below |
+| `cci` | `hospital_diagnosis` (ICD10CM/ICD9CM + `poa_present`) | clifpy `calculate_cci(hierarchy=True)` |
+| `bmi_admission` | `vitals` `weight_kg`, `height_cm` | nearest to admission within `[0, +24h]`, else first available; **report `bmi_lag_hours`** |
+| `hospital_id_admission` | `adt.hospital_id`, first interval by `in_dttm` | hospital at the start of the encounter block |
+| `hospital_id_discharge` | `adt.hospital_id`, last interval by `out_dttm` | hospital at the end; the pair identifies within-block transfer |
+
+**`race` is collected for reporting, not for modelling** *(SG, 2026-09-05)*.
+Baseline characteristics need it whether or not any model uses it. Entering it as
+a covariate is a separate decision that has **not** been made — the role is stated
+in the config so nobody adds it to a formula assuming it was already agreed. Note
+that `Unknown` is a permissible CLIF category, not a missing value: report it as
+its own row, and count a null `race_category` separately.
+
+**`ethnicity_category` is deliberately not collected** *(SG, 2026-09-05)*. It is
+the companion field — race and Hispanic ethnicity are separate questions under the
+OMB categories CLIF follows, and Table 1 often reports both — so its absence is a
+decision, not an oversight. Do not add it back without asking.
+
+**The two `hospital_id` columns are endpoints, not the whole variable.** They come
+from `adt` intervals rather than from the first/last hospitalization, because
+`hospital_id` can change *within* one hospitalization and a hospitalization-grain
+rule would miss a mid-stay transfer. They differ exactly when a patient moves
+between hospitals inside a block; report the count where they disagree (zero at a
+single-hospital site, and the pair costs nothing there).
+
+> ⚠ `CRRT-dose-lmtp` collapsed `hospital_id` to the admitting hospital and
+> recorded what that cost: it *"silently discarded the very variation that makes
+> it worth carrying, and at a single-hospital site the loss would have been
+> invisible"* (`code/01_build_cohort.py:116-135`). Phase 0 therefore **also**
+> writes `hospital_intervals.parquet` at ADT-interval grain. Cheap now, expensive
+> to backfill — the same argument that put `propofol_dose` in Table 1 before
+> anything used it. The two named columns are what Table 1 reports; the intervals
+> are what a per-window hospital assignment would need.
+
+### Encounter blocks — the unit of analysis
+
+A `hospitalization_id` is one encounter, not one clinical course. Hospitalizations
+are stitched with clifpy `stitch_encounters(hospitalization, adt,
+time_interval=6)`, matching that repo (`lmtp_design.json:538`) and clifpy's own
+default.
+
+**This matters directly here:** a patient intubated, transferred, and still
+intubated has **one** ventilation episode. Without stitching their trajectory is
+truncated at the transfer and the remainder is either dropped or treated as a
+second patient.
+
+Block-level fields: `block_admission_dttm` = min(`admission_dttm`);
+`block_discharge_dttm` = max(`discharge_dttm`); `discharge_category` from the
+**last** hospitalization by `discharge_dttm`. Assert no block loses its
+disposition — the outcome definition depends on it.
+
+**`stitch_encounters` requires `adt.hospital_id`** (with `in_dttm`, `out_dttm`,
+`location_category`). That is not optional, and is a second reason `hospital_id`
+must be collected — a site that cannot supply it cannot run this step.
+
+**`encounter_block` is the analysis key throughout, Phases 0–6** *(SG,
+2026-09-05)*. `id_num` is a dense integer rank of `encounter_block`, carried
+because `gbmt` and `lcmm` want a numeric unit. `patient_id` is carried alongside
+it — not as a key, but because the problem below cannot be measured without it.
+
+#### ⚠ The one real problem: a patient can have more than one qualifying block
+
+Stitching merges hospitalizations within 6h. It does **not** merge a January
+admission with a June one. A patient intubated on both occasions produces **two
+encounter blocks**, and under `encounter_block` as the analysis key they enter the
+model as two independent units.
+
+They are not independent. Two ventilation courses in one patient share
+comorbidity, physiology, and often the same unit and clinicians. The consequences
+run in a known direction:
+
+- **Standard errors on class membership are understated** — the effective sample
+  size is smaller than the row count.
+- **A spurious class can appear.** GBTM will happily fit a "patient signature"
+  group whose coherence is repeat admissions rather than a distinct dosing
+  strategy — and that class would look clinically interesting.
+- **Phase 6 inherits it.** Competing-risks estimates assume independent
+  observations too.
+
+**We cannot fix this the way `CRRT-dose-lmtp` does.** That study also uses
+`encounter_block` as the row unit, but hands `lmtp` a separate clustering `id` =
+`patient_id` (`03_lmtp_fit.R:1086`), which absorbs the correlation. **No method in
+this pipeline accepts one.** Verified by execution, 2026-09-05:
+
+| Function | Arguments | Cluster argument? |
+|---|---|---|
+| `gbmt::gbmt` | `x.names, unit, time, ng, d, data, scaling, pruning, delete.empty, nstart, tol, maxit, quiet` | **none** |
+| `cmprsk::crr` | `ftime, fstatus, cov1, cov2, tf, cengroup, failcode, cencode, subset, na.action, gtol, maxiter, init, variance` | **none** (`cengroup` stratifies the censoring distribution, it does not cluster) |
+
+So the correlation cannot be absorbed at the model stage.
+
+#### First, a correction: `gbmt` runs either way
+
+"No clustering argument" is not "will not work". **Verified by execution,
+2026-09-05:** on a synthetic cohort of **168 episodes from 120 patients, 48 of
+whom contributed two**, `gbmt` converged in **5.9s** at `ng = 3` and returned
+three clean groups (sizes 54 / 44 / 70). Repeat episodes never prevent the model
+from fitting.
+
+**The cost is inferential, not functional**, and it lands in one place that
+matters more than the others:
+
+- **Class enumeration (§7).** Correlated units inflate the log-likelihood faster
+  than BIC's `npar × log(ss)` penalty grows, so the criterion tilts toward
+  **more** classes. That is a directional bias on the single most consequential
+  decision in the study.
+- **Stage-2 standard errors** are understated; CIs too narrow.
+- **A "patient signature" class** can appear — coherent because of repeat
+  admissions rather than a dosing strategy.
+
+The magnitude is unmeasured. `validation/repeat_encounter_cost.R` is written to
+measure it (BIC-selected `ng` first-episodes-only vs all-episodes, over a sweep of
+repeat fractions, with ARI between the solutions) but **has not been run to
+completion** — the full sweep is slow and was deprioritised.
+
+#### Current default: keep all blocks — and the choice stays open
+
+*(SG, 2026-09-05.)* **A patient admitted twice for different reasons may have
+totally different fentanyl trajectories, and each is clinically interesting.** The
+study therefore describes **ventilation episodes**, not patients, and a patient
+contributing two episodes contributes two genuinely distinct observations rather
+than one observation counted twice.
+
+> **This is deliberately reversible.** *"We will have `patient_id` and
+> `encounter_block` as columns and can decide later which to use and whether to
+> exclude patients with multiple encounters."* Phase 0 carries **both** on every
+> row, so switching to first-episode-only is a one-line filter on the finished
+> table — sort by block start, group by `patient_id`, keep the first — not a
+> pipeline change. Nothing downstream may hardcode the choice; read
+> `encounter_blocks.blocks_per_patient` from the config.
+
+This resolves the estimand question rather than the statistical one, and the
+difference is worth being precise about:
+
+- **What it settles.** The unit of analysis is now stated and defensible. The two
+  episodes are not a duplicate; they are different clinical courses, and a design
+  that discarded the second would discard real information.
+- **What remains.** Residual within-patient correlation is still present, and no
+  method here can absorb it. Its size is an empirical question, not a
+  philosophical one, and it depends entirely on **how many patients repeat and how
+  alike their episodes are.**
+
+**Therefore these are required outputs, not optional diagnostics:**
+
+1. The number and % of patients contributing **more than one** encounter block,
+   and the distribution of blocks per patient. This is the single number that
+   bounds everything above — if it is 2%, nothing here matters; if it is 20%, the
+   limitations paragraph has to be specific.
+2. For any retained class solution, the number of classes containing **two
+   episodes from the same patient**, against what independence would predict. A
+   "patient signature" class is the concrete failure mode, and this is what
+   detects it rather than assuming it away.
+3. A limitations sentence naming the dependence and the fact that `gbmt` and
+   `crr` cannot cluster on it.
+
+Both counts come free from Phase 0 and cost nothing to carry. They are what makes
+the decision above defensible to a reviewer rather than merely stated.
+
+#### What stitching fixes, and what it does not
+
+A benefit worth stating: `discharge_category` includes **`Acute Care Hospital`**,
+which is a transfer *out*. Without stitching, a patient transferred to a partner
+hospital and dying there reads as "discharged to Acute Care Hospital" — alive —
+and the mortality outcome is wrong. Taking `discharge_category` from the **last**
+hospitalization in the block fixes that.
+
+It only fixes it **when both hospitalizations are in this CLIF dataset.** A
+transfer to an outside system is still lost, and still reads as a discharge alive.
+That is a limitation to state, not something stitching solves.
+
+Component column names for CCI are **read from clifpy, never transcribed** — a
+hand-written list drifts, and the first draft of exactly such a list in
+`CRRT-dose-lmtp` got five of seventeen names wrong.
+
+### Time-varying covariates
+
+| Variable | Type | Summary | LOCF | Cap | Missingness class |
+|---|---|---|---|---|---|
+| `inf_dose`, `bolus_dose`, `total_dose` | exposure | **see §5** — not restated here | — | — | drip off is a true `0` |
+| `sofa_total` | derived score | **max** (worst) | yes | 24h | `time_varying` |
+| `nee` | state (rate) | **max of the summed step function** | **no** | — | `absence_means_zero` |
+| `oxygenation` | derived ratio | **min** (worst) | yes | 8h | `time_varying` |
+| `oxygenation_source` | provenance | stamped, not summarised | never | — | own level, never imputed |
+| `imv_status` | state | **any in window** | **no** | — | `absence_means_not_ventilated` |
+| `crrt_status` | state | **any in window** | **no** | — | `absence_means_zero` |
+| `bun` | measurement | **max** | yes | 24h | `time_varying` |
+| `bicarbonate` | measurement | **min** | yes | 24h | `time_varying` |
+| `pco2_arterial` | measurement | **max** | yes | 24h | `time_varying` |
+| `lactate` | measurement | **max** | yes | 24h | `time_varying` |
+| `inr` | measurement | **max** | yes | 24h | `time_varying` |
+| `bilirubin_total` | measurement | **max** | yes | 24h | `time_varying` |
+
+`bicarbonate` is the one lab summarised by `min`: unlike the other five, its
+abnormal direction is down.
+
+`imv_status` uses **any-in-window** rather than `CRRT-dose-lmtp`'s
+state-at-window-end-boundary. At 4h resolution a boundary state discards most of
+the window. This is a deliberate divergence, not an inheritance.
+
+### The three missingness classes
+
+**1. `time_varying`** — no observation means NA, then LOCF from the most recent
+earlier window, **subject to a per-variable cap**. Members: `sofa_total`,
+`oxygenation`, and the six labs.
+
+**2. `absence_means_zero`** — set to `0` for every at-risk window with no record;
+**not LOCF-eligible**; the count set to zero is reported. Members: `nee`,
+`crrt_status`.
+
+> For a continuously infused medication, the absence of a record does not mean the
+> value was not measured — it means the drug was not running. Carrying the previous
+> window's vasopressor dose forward into a window with no infusion recorded would
+> *invent* pressor exposure for a patient who had been weaned off it, most often in
+> exactly the recovering patients. Labs are the opposite case: an unmeasured
+> lactate is unknown, not zero.
+
+`CRRT-dose-lmtp`'s first run reported `nee` 17% and `inotrope` 84% "missing" —
+which was **absence being mislabelled as ignorance**. *(source:
+`CRRT-dose-lmtp/config/lmtp_design.json:468`)*
+
+**3. `absence_means_not_ventilated`** — same treatment, for `imv_status`.
+Invasive ventilation is charted continuously, so a window with no device record
+was almost certainly not on a ventilator rather than unobserved.
+
+### Why the LOCF caps exist, and why they are per-variable
+
+`CRRT-dose-lmtp` has **no** time cap on its node-level LOCF because its grid is
+three 24h nodes — the structure caps the carry at ~48h. **Ours does not.** With
+18 windows an uncapped carry reaches 72h, and the sibling repo shipped exactly
+that bug: `CLIF-epidemiology-of-CRRT` forward-filled labs with no `limit=`, and
+its baseline lactates were **~20% stale carry-ins, median lag 27h, maximum ~1331h
+(~55 days)** — and the staleness was **differential by treatment arm (28.7%
+low-dose vs 13.7% high-dose)**, which is a bias, not noise. *(source:
+`crrt-manuscript-tools/.claude/lessons.md:581`; fix at
+`CLIF-epidemiology-of-CRRT/code/02_construct_crrt_tableone.py:487-500`)*
+
+**All six labs carry a 24h cap** (6 windows). *(SG, 2026-09-05.)* This supersedes
+the per-variable clinical half-lives first drafted here (lactate 8h, pCO₂ 8h,
+bicarbonate 12h).
+
+The reasoning is about the decision being represented, not the kinetics: **a
+clinician acts on the last value available to them**, not on the value the
+half-life would justify, and an ICU patient gets minimum daily labs. A 24h carry
+is therefore both what the sampling supports and a faithful representation of the
+information the bedside actually had.
+
+| Cap | Variables | Reasoning |
+|---|---|---|
+| **24h** (6 windows) | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total`, `sofa_total` | Minimum daily labs in the ICU; the clinician acts on the last available value. |
+| **8h** (2 windows) | `oxygenation` | **Not a lab.** SpO₂ is charted at least hourly, so an 8h gap in oxygenation is a data fault rather than a draw-cadence artefact. The daily-labs argument does not extend to it. |
+
+**The cap still binds.** It bounds any carry at 6 windows and rules out the
+uncapped failure mode entirely. But 24h is loosest exactly where the biology is
+fastest — lactate's plasma half-life is ~20 min, and pCO₂ tracks minute
+ventilation, which changes within minutes of a vent adjustment (frequent by
+construction in a cohort anchored at intubation). **The `<var>_locf` flags are
+what make that checkable**: before leaning on `lactate` or `pco2_arterial` in an
+analysis, look at what fraction of their values were carried rather than
+measured.
+
+Per-variable caps are retained in the schema, so a single variable can be
+tightened later without restructuring anything.
+
+**Whole-gap, not carry-with-expiry.** A gap *longer* than the cap is NA for its
+entire length, not carried for `cap_hours` and then dropped. The rule classifies
+the gap, and a gap judged too long to bridge was too long throughout it. *(ported
+from `CRRT-dose-lmtp/code/02_build_lmtp_df.py:559-621`)*
+
+**Never extrapolate** past the patient's last observation of that variable, or
+past the end of their at-risk period. Extrapolating past the last charted value is
+silent and biases in the same direction a real effect would.
+
+**First window** with no earlier observation stays NA. Imputation belongs with the
+model, not with dataset construction.
+
+### NEE
+
+Six drugs, summed as a step function, **maximum over the window**:
+
+| Drug | Factor | Preferred unit |
+|---|---|---|
+| norepinephrine | 1.0 | mcg/kg/min |
+| epinephrine | 1.0 | mcg/kg/min |
+| phenylephrine | 0.1 | mcg/kg/min |
+| dopamine | 0.01 | mcg/kg/min |
+| **vasopressin** | **2.5** | **u/min** (not weight-based) |
+| angiotensin | 10.0 | mcg/kg/min |
+
+*(source: `CRRT-dose-lmtp/config/lmtp_design.json:193-198`, verified by direct
+read 2026-09-05)*
+
+A row-wise maximum is wrong: a patient on moderate doses of three pressors is
+sicker than one on a slightly higher dose of a single agent. The step function
+also holds a rate forward between records (`hold_hours: 4`), so a drug charted at
+01:00 still counts at 01:30 when a second is charted. `mar_action_category ==
+"stop"` is a rate of **0**, not a missing value.
+
+> ⚠ **`hold_hours: 4` is inherited, not verified here.** It rests on a median
+> inter-record interval of 57 min (p90 68 min) *at the CRRT coordinating site*.
+> Confirm the vasopressor charting interval at UCMC before relying on it.
+
+**Source — Goradia et al.** *(supplied by SG, 2026-09-05.)*
+
+> Goradia S, Abu Sardaneh A, Narayan SW, Penm J, Patanwala AE. **Vasopressor dose
+> equivalence: A scoping review and suggested formula.** *J Crit Care*
+> 2021;61:233–240. [doi:10.1016/j.jcrc.2020.11.002](https://doi.org/10.1016/j.jcrc.2020.11.002).
+> PMID **33220576**.
+
+Its suggested formula matches this table exactly — phenylephrine ÷ 10, dopamine ÷
+100, vasopressin × 2.5 per u/min, angiotensin II × 10. Verified against Crossref
+and PubMed, 2026-09-05.
+
+Worth recording: `CRRT-dose-lmtp` carries these same six factors with **no
+citation anywhere in that repo**, its only support being a dimensional check. Cite
+Goradia, not the sibling repo.
+
+**The unit guard is mandatory and must raise.** clifpy does not null a dose it
+cannot convert — it leaves the *raw* value in `med_dose_converted` and reports the
+failure in `med_dose_unit_converted`. A check-for-NA guard therefore sees nothing
+wrong, and 20 ng/kg/min of angiotensin becomes "20 mcg/kg/min", which a
+coefficient of 10 turns into 200. Measured in `CRRT-dose-lmtp` before its guard
+existed: **`nee` reached 8,001 mcg/kg/min-equivalent**. Raise rather than drop —
+dropping removes a drug from NEE for the patients who received it, biasing a
+confounder in a known direction in the sickest patients. *(source:
+`CRRT-dose-lmtp/code/02_build_lmtp_df.py:1135-1179`)*
+
+Bounds must be applied to **raw** doses per (drug, charted unit) *before*
+conversion; they are written in the converted unit and are meaningless against a
+raw one.
+
+### Oxygenation — one column, not two
+
+`oxygenation` is **one covariate on the P/F scale**: measured P/F where an
+arterial gas exists, Severinghaus-derived P/F otherwise. The fallback is **per
+window, not per reading**, so a window's value comes from exactly one source, and
+`oxygenation_source` names it (`pf`, `pf_room_air`, `sf`, `sf_room_air`, `none`).
+
+This is the correction of a real defect. `CRRT-dose-lmtp` originally carried
+`pf_ratio` and `sf_ratio` as separate covariates intending S/F to act as a
+fallback, and **nothing implemented the fallback** — both entered as independent
+covariates, each median-imputed when absent, while **85% of blocks missing P/F had
+S/F observed**. The model was filling a constant into a column whose information
+sat in the next one. *(source: `lmtp_design.json:419`)*
+
+**Severinghaus, not Rice.** Rice et al. (Chest 2007) gives a linear
+`S/F = 64 + 0.84 × P/F`. Brown et al. (Chest 2016, **PMID 26836924**) showed a
+Severinghaus-based nonlinear imputation beats linear and log-linear on both error
+and mortality association, largest at low P/F, and prospectively validated it
+(**PMID 28538439**). The SpO₂–PaO₂ relationship is sigmoidal, so no linear map
+fits across the range. clifpy implements exactly this in its SOFA respiratory
+component, so following it also keeps us consistent with the CLIF reference
+implementation. Rice was measured against the CRRT cohort before being rejected:
+fitted slopes of **0.44 / 0.39 / 0.37 against Rice's 0.84**, degrading with P/F.
+
+Gate: SpO₂ **strictly below 97**. Above it the dissociation curve is flat and an
+imputed PaO₂ reports the FiO₂ rather than the patient. Severinghaus(97) = 90.6
+mmHg; SpO₂ = 100 returns NaN.
+
+**FiO₂ lookback = 4h.** Pair every PaO₂ (and every qualifying SpO₂) with the most
+recent non-null `fio2_set` **at or before** it, searching back at most 4h —
+`merge_asof(direction="backward", tolerance=4h)` *is* that rule. Never pair to a
+future FiO₂.
+
+The eight-step pipeline is written out in one place in `covariates.json`
+(`oxygenation.pipeline`) rather than scattered, because each step was agreed
+separately and that is what makes the chain impossible to see. Three parts of it
+carry warnings worth repeating here:
+
+- **clifpy's waterfall has a known defect we must repair, not accept.** Its
+  `fill_block` treats trach collar as a segment breaker and does not confine the
+  damage to trach-collar rows — **it wipes `fio2_set` across the whole
+  encounter**. At the CRRT coordinating site, 189/2,141 encounters (8.8%) contain
+  a trach collar and carry **50.4% of all post-waterfall FiO₂ nulls**; 100% of the
+  10,748 room-air rows still missing FiO₂ sit in a trach-collar encounter, even
+  though clifpy sets room air to 0.21 — *it sets the value and the fill then
+  destroys it*. Repair by re-merging the raw table. **Report upstream.**
+- **HFNC, CPAP, NIPPV, Other and Trach Collar are left missing on purpose**, and
+  the count is reported. This is the substantive decision, not an omission: on
+  those devices flow and FiO₂ are independent settings, so a formula would
+  manufacture values that look measured.
+- **S/F cannot rescue a missing FiO₂.** FiO₂ is the shared denominator of both
+  ratios, so S/F is a fallback for a missing PaO₂ and *never* for a missing FiO₂ —
+  when FiO₂ is absent both die together. The `room_air_when_unmonitored` rule
+  addresses that case and is deliberately narrow: it fires only where **no**
+  `respiratory_support` row exists within the lookback, never where a row exists
+  carrying a null `fio2_set` (there the device mix is dominated by nulls and nasal
+  cannula, and nasal cannula at unknown flow is not 0.21).
+
+### SOFA is the convenience summary, not the severity measure
+
+`sofa_total` uses clifpy `compute_sofa_polars` with
+**`fill_na_scores_with_zero=False`** — the default scores a *missing* component as
+0, i.e. normal, biasing severity downward exactly where the data are thinnest.
+
+Four defects were verified against clifpy 0.3.8 in this repo's `.venv` on
+2026-09-05. **All four bias severity downward, and all four are silent:**
+
+1. `sofa.py:16-19` — cardiovascular counts only norepinephrine, epinephrine,
+   dopamine and dobutamine. **Vasopressin, phenylephrine, angiotensin and
+   milrinone are commented out**, so a patient on vasopressin alone scores
+   cardiovascular SOFA on MAP alone.
+2. `sofa.py:172-176` — P/F < 200 scores 3 or 4 **only** when `device_category ∈
+   {IMV, NIPPV, CPAP}`. A High Flow NC patient at P/F 150 returns **NULL**, not 2.
+3. `sofa.py:273` — `fio2_set BETWEEN 0.21 AND 1`, so a site charting FiO₂ as
+   21–100 has every value nulled.
+4. Renal SOFA is **creatinine-only**; CLIF core carries no `intake_output` table,
+   so urine output is absent rather than proxied.
+
+Consequently SOFA is the easy single summary, and **the explicit markers above —
+`nee`, `oxygenation`, and the six labs — are what the analysis should lean on.**
+Do not report SOFA as though it were complete.
+
+### Weight: two rules, deliberately different
+
+Weight is a **normaliser, not a covariate**, and it needs two rules that must not
+be unified:
+
+- **Dose denominator — fixed at the anchor (intubation).** If the denominator
+  moves, a change in mcg/kg/hr can be a change in *weight* rather than a change in
+  *dosing*, and the trajectory shape becomes partly an artefact of fluid balance.
+  Match backward first (a weight recorded after intubation already reflects
+  resuscitation), forward only for the residue, and **report the lag** —
+  `CRRT-dose-lmtp` declined to cap this with a `tolerance=`, on the grounds that
+  choosing a cutoff is a study decision rather than a coding one, and reported
+  median 14h / p95 131h / max 585h instead.
+- **NEE denominator — current weight** (clifpy `find_most_recent_weight`). NEE is
+  an intensity the clinician is titrating now.
+
+Do not pass the cohort's fixed per-patient weight into clifpy's converter, which
+would silently make NEE use the fixed weight too.
+
+### Reporting missingness — the order of operations matters
+
+1. Complete the (patient × window) grid, so "no row" and "row with NA" become the
+   same thing and every count uses the same denominator.
+2. Apply `absence_means_zero` and `absence_means_not_ventilated`.
+3. **Count missingness — at-risk windows only.**
+4. **Then** LOCF.
+5. Emit a parallel `<var>_locf` boolean per variable.
+
+Counting *after* the fill makes the extent of filling invisible. The at-risk
+restriction matters too: a post-event window has no covariates because follow-up
+had ended, which is **structure, not data quality** — mixing the two would make
+late windows look far worse than they are.
+
+Report **per variable per window** *and* **per pattern**: a per-variable table
+cannot show which variables go missing *together*, and that is what determines
+whether an imputation model is well posed. Suppress pattern cells below 11,
+rolling the remainder into one "other" row that states how many it absorbed.
+
+**No variable is dropped for excess missingness.** A variable both frequently
+missing and poorly predicted by the others is as likely an extract or mapping
+problem as genuine clinical non-measurement — that is a finding, not a reason to
+discard it.
+
+### What enforces all of this
+
+`config/covariates.json` is only a policy statement unless something checks it.
+Two mechanisms:
+
+- **`tests/test_covariates.py`** — 16 static checks, all verified to fire by
+  breaking them: summary rules are in the dispatch vocabulary; every variable has
+  exactly one missingness class; class membership lists agree with the
+  per-variable declarations; LOCF-eligible variables have caps and ineligible ones
+  do not; no cap is shorter than one window (a guaranteed no-op reads as policy
+  and is not); absence-means-zero variables are never LOCF-eligible; NEE
+  coefficients match the source category list and carry a citation with a DOI;
+  window arithmetic is self-consistent; **the grid declared here matches the one
+  in the site config**, which is the classic "same threshold in two places, now
+  drifted" failure; **and the table in this section matches the config** —
+  variable for variable, cap for cap, class for class.
+- **That last check is why this section can be trusted.** A hand-written mirror of
+  a machine-readable file is exactly the pair that drifts:
+  `CRRT-dose-lmtp/docs/lmtp_df_build_notes.md` is stamped `0.2.0` against a
+  `0.13.0` config and is wrong on three counts as a result — the outlier source,
+  the pH handling, and the very separate-S/F-column design this section rejects.
+  It even states its own precedence rule ("if a number below disagrees with that
+  file, the file is right and this document is stale"), which is an admission that
+  nothing enforces it. Here something does.
+- **A consumption assertion in `01_build_cohort.py`** *(still to write)* — every
+  variable the config declares must reach a column in `trajectory_long.parquet`,
+  or the build fails loudly. Adding a key to this config must never be a silent
+  no-op. In `CRRT-dose-lmtp` this exact check caught `pf_source`: declared from the
+  start, never built, and therefore absent from the frame while the config's own
+  justification assumed it was present.
 
 ---
 
@@ -746,3 +1295,15 @@ a state column and you undercount.
 | `gbmt` has no covariate argument | `gbmt()` signature |
 | APPA ≥ 0.7, OCC > 5 thresholds | Nagin (2005), *Group-based modeling of development* |
 | Class enumeration criteria performance | Nylund, Asparouhov & Muthén (2007) |
+| NEE coefficients (norepi 1.0, epi 1.0, phenylephrine 0.1, dopamine 0.01, vasopressin 2.5 per u/min, angiotensin 10.0) | Goradia et al., *J Crit Care* 2021;61:233–240, doi:10.1016/j.jcrc.2020.11.002, PMID 33220576. Same factors appear uncited in `CRRT-dose-lmtp/config/lmtp_design.json:193-198` |
+| Uniform 24h lab LOCF cap | SG, 2026-09-05: clinicians act on the last available value, and ICU patients get minimum daily labs |
+| NEE `hold_hours` = 4; vasopressor median inter-record interval 57 min, p90 68 min | `CRRT-dose-lmtp/docs/lmtp_df_build_notes.md:217-219` (CRRT coordinating site; unverified at UCMC) |
+| NEE reached 8,001 mcg/kg/min-equivalent before the unit guard | `CRRT-dose-lmtp/code/02_build_lmtp_df.py:1138-1152` |
+| Severinghaus over Rice; slopes 0.44/0.39/0.37 vs Rice's 0.84 | `CRRT-dose-lmtp/config/lmtp_design.json:420`; Brown PMID 26836924, validated PMID 28538439 |
+| 85% of blocks missing P/F had S/F observed | `CRRT-dose-lmtp/config/lmtp_design.json:419` |
+| FiO₂ lookback 4h; SpO₂ ceiling 97, strict | `lmtp_design.json:134`, `:155`; code `02_build_lmtp_df.py:933`, `:961` |
+| clifpy waterfall wipes `fio2_set` across whole trach-collar encounters; 189/2,141 (8.8%) carry 50.4% of nulls | `CRRT-dose-lmtp/config/lmtp_design.json:375` |
+| Uncapped lab LOCF: ~20% stale, median lag 27h, max ~1331h, differential 28.7% vs 13.7% | `crrt-manuscript-tools/.claude/lessons.md:581` |
+| `nee` 17% / `inotrope` 84% "missing" = absence mislabelled as ignorance | `CRRT-dose-lmtp/config/lmtp_design.json:468` |
+| clifpy SOFA defects (vasopressor set, non-IMV P/F NULL, FiO₂ 0.21–1 gate, creatinine-only renal) | clifpy 0.3.8 `utils/sofa.py:16-19`, `:172-176`, `:273`; verified in `.venv` 2026-09-05 |
+| Weight lag when matched to an anchor: median 14h, p95 131h, max 585h | `CRRT-dose-lmtp/code/01_build_cohort.py:588-593` |

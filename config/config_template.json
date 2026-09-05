@@ -20,7 +20,9 @@
         "vitals",
         "labs",
         "patient_assessments",
-        "patient_procedures"
+        "patient_procedures",
+        "crrt_therapy",
+        "hospital_diagnosis"
     ],
 
     "_comment_medications": "Run a documentation probe against your data first to confirm its med_category values, then edit these. Vocabularies differ between sources.",
@@ -29,6 +31,8 @@
         "opioid_bolus_categories": ["fentanyl"],
         "other_sedative_categories": ["propofol", "midazolam"]
     },
+
+    "_comment_covariates": "Covariate aggregation and missingness rules are PROTOCOL and live in config/covariates.json, which IS tracked in git. This file is not tracked (it carries local paths), so nothing estimand-defining may live here alone.",
 
     "_comment_protocol": "cohort / outcomes / model define the estimand. If two sites set these differently the pooled result is not meaningful -- do not edit them to make a run work.",
 

@@ -48,10 +48,39 @@ medication tables, for later use.
 
 ### Covariates
 
-| Table | Fields | Notes |
+Every covariate's window-aggregation rule and missingness class is declared in
+**[`config/covariates.json`](config/covariates.json)** and mirrored in design
+notes §11. That file is the source of truth; `tests/test_covariates.py` enforces
+its internal consistency.
+
+| Table | Fields | Used for |
 |---|---|---|
-| `labs` | `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value_numeric` | aggregation rule per lab — see design notes §11 |
-| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | RASS; ordinal, so **not** averaged |
+| `labs` | `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value_numeric` | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total`, `po2_arterial`, `creatinine`, `platelet_count` |
+| `vitals` | `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value` | `spo2`, `map` (SOFA); `weight_kg`, `height_cm` (BMI, dose denominator) |
+| `medication_admin_continuous` | `hospitalization_id`, `admin_dttm`, `med_category`, `med_dose`, `med_dose_unit`, `mar_action_category` | NEE: norepinephrine, epinephrine, phenylephrine, dopamine, vasopressin, angiotensin |
+| `respiratory_support` | **all columns** | FiO₂ waterfall + `device_category` for `imv_status`. Load every column — the waterfall needs `device_name`, `mode_category`, `lpm_set`, `peep_set` to build its blocks |
+| `crrt_therapy` | `hospitalization_id`, `recorded_dttm`, `crrt_mode_category` | `crrt_status`. **Point-in-time table, no start/stop** — interval reconstruction, not a lookup |
+| `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format`, `poa_present` | Charlson Comorbidity Index |
+| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); RASS is ordinal, so **not** averaged |
+| `patient` | `patient_id`, `sex_category`, `race_category` | sex; **race — Table 1 reporting only, not a model covariate** |
+| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`, `location_category` | `hospital_id_admission` / `_discharge`; **`hospital_id` is required by `stitch_encounters`** |
+
+**Encounter blocks are the unit of analysis.** Hospitalizations are stitched with
+clifpy `stitch_encounters(..., time_interval=6)`: a `hospitalization_id` is one
+encounter, not one clinical course, and a patient intubated, transferred, and
+still intubated has one ventilation episode. Without stitching that trajectory is
+truncated at the transfer. See design notes §11.
+
+**Two clifpy cautions**, both verified against 0.3.8 in this repo's `.venv` and
+documented in `covariates.json`:
+
+- `compute_sofa_polars` must be called with `fill_na_scores_with_zero=False`, and
+  its cardiovascular component ignores vasopressin, phenylephrine, angiotensin
+  and milrinone. SOFA is the convenience summary here; the explicit markers are
+  the severity measure.
+- `convert_dose_units_by_med_category` does **not** null a dose it cannot
+  convert — it returns the raw value and reports the failure in the unit string.
+  Guard the unit string and raise. See design notes §11.
 
 ## Cohort identification
 
@@ -77,6 +106,18 @@ python3 code/check_config.py      # confirms it is usable before you run anythin
 One config file, one site, one data source — the standard CLIF layout. To run
 against a different source (a MIMIC-to-CLIF conversion, say), edit `site_name`,
 `data_directory` and `dataset_version` in this file; there is no second code path.
+
+**`config/covariates.json` is a different kind of file and is committed.** It
+holds the covariate protocol — every variable's source, window-aggregation rule,
+LOCF cap and missingness class — and carries its own `definition_version`, which
+is stamped onto shareable outputs. The test for what belongs there: *if two sites
+set this differently, is the pooled result still meaningful?* If no, it is
+protocol. Nothing estimand-defining may live only in the gitignored
+`config.json`.
+
+```bash
+.venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
+```
 
 ### Key settings
 
@@ -183,6 +224,7 @@ CLIF-fentanyl-trajectories/
 ├── renv.lock                     # R, pinned
 ├── run_pipeline.sh / .ps1
 ├── config/
+│   ├── covariates.json           # committed -- covariate PROTOCOL (definition_version)
 │   ├── config_template.json      # committed
 │   └── config.json               # gitignored, site-local
 ├── code/
@@ -198,6 +240,8 @@ CLIF-fentanyl-trajectories/
 │       ├── paths.R               # output dirs + provenance
 │       ├── paths.py              #   (the two must agree)
 │       └── dependencies.R        # package list for renv's scanner
+├── tests/
+│   └── test_covariates.py        # integrity checks on config/covariates.json
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R
