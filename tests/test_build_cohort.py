@@ -149,6 +149,45 @@ def test_pattern_table_pools_small_cells():
     assert len(pooled) == 1, f"rare patterns must be pooled below {min_cell}"
 
 
+# ------------------------------------------------------- clifpy waterfall casing
+def test_waterfall_lowercasing_is_restored_to_mcide_casing():
+    """clifpy's waterfall returns device_category as 'imv', not 'IMV'. Comparing
+    against the canonical value then matches nothing and empties the cohort
+    without raising -- which is exactly what happened on the first UCMC run."""
+    df = pd.DataFrame({"device_category": ["imv", "room air", "nasal cannula",
+                                           "high flow nc", None],
+                       "mode_category": ["pressure control", None, None, None, None]})
+    out = B._canonicalise_devices(df)
+    assert out["device_category"].tolist()[:4] == [
+        "IMV", "Room Air", "Nasal Cannula", "High Flow NC"]
+    assert out["mode_category"].iloc[0] == "Pressure Control"
+    assert pd.isna(out["device_category"].iloc[4])
+
+
+def test_an_unknown_device_value_raises_rather_than_becoming_null():
+    df = pd.DataFrame({"device_category": ["imv", "jet ventilator"]})
+    try:
+        B._canonicalise_devices(df)
+    except SystemExit as e:
+        assert "jet ventilator" in str(e)
+    else:
+        raise AssertionError("a value outside the schema must raise, not silently null")
+
+
+def test_empty_cohort_raises_instead_of_crashing_on_nan():
+    blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
+                            "block_discharge_dttm": pd.Timestamp("2026-01-02")}])
+    no_anchor = pd.DataFrame(columns=["encounter_block", "anchor_dttm"])
+    try:
+        B.build_cohort(blocks, no_anchor)
+    except SystemExit as e:
+        assert "bug, not a" in str(e) and "mCIDE casing" in str(e)
+    except Exception as e:
+        raise AssertionError(f"expected a clear SystemExit, got {type(e).__name__}: {e}")
+    else:
+        raise AssertionError("an empty cohort must raise")
+
+
 # --------------------------------------------------------------------- SOFA
 def _sofa_row(**kw):
     base = dict(map=85.0, platelet_count=250.0, bilirubin_total=0.5,

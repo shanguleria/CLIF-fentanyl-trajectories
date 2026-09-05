@@ -73,32 +73,104 @@ def note(label: str, n: int) -> None:
 
 
 # --------------------------------------------------------------------- loading
-def load_tables() -> dict:
-    kw = dict(
+LAB_NEEDED = sorted(set(LAB_VARS.values()) | {"po2_arterial", "creatinine", "platelet_count"})
+VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
+ASSESS_NEEDED = ["gcs_total"]
+
+
+def _kw(**extra) -> dict:
+    return dict(
         data_directory=CONFIG["data_directory"],
         filetype=CONFIG["filetype"],
         timezone=CONFIG["timezone"],
         output_directory=str(REPO / "logs"),
+        **extra,
     )
+
+
+def _mac_categories() -> list[str]:
+    meds = CONFIG["medications"]
+    return sorted(set(meds["opioid_infusion_categories"]) | set(meds["other_sedative_categories"])
+                  | set(NEE_COEF) | set(SOFA_PRESSORS))
+
+
+def load_core() -> dict:
+    """Tables small enough to load whole, plus the IMV screen."""
     t = {
-        "patient": Patient.from_file(**kw).df,
-        "hospitalization": Hospitalization.from_file(**kw).df,
-        "adt": Adt.from_file(**kw).df,
-        "hospital_diagnosis": HospitalDiagnosis.from_file(**kw).df,
-        "labs": Labs.from_file(**kw).df,
-        "vitals": Vitals.from_file(**kw).df,
-        "assessments": PatientAssessments.from_file(**kw).df,
-        "mac": MedicationAdminContinuous.from_file(**kw).df,
-        "mai": MedicationAdminIntermittent.from_file(**kw).df,
-        "crrt": CrrtTherapy.from_file(**kw).df,
+        "patient": Patient.from_file(**_kw()).df,
+        "hospitalization": Hospitalization.from_file(**_kw()).df,
+        "adt": Adt.from_file(**_kw()).df,
     }
-    # All columns: the waterfall needs device/mode/setting fields this script never reads.
-    rs = RespiratorySupport.from_file(**kw)
-    t["resp_raw"] = rs.df.copy()
-    t["resp"] = rs.waterfall(verbose=False, return_dataframe=True)
     for name, df in t.items():
         print(f"  {name:.<52} {len(df):,} rows")
+
+    screen = RespiratorySupport.from_file(
+        **_kw(columns=["hospitalization_id", "device_category"])).df
+    imv_ids = set(screen.loc[screen["device_category"] == "IMV", "hospitalization_id"])
+    print(f"  {'resp_support IMV screen':.<52} {len(imv_ids):,} hospitalizations")
+    return t, imv_ids
+
+
+def load_cohort_tables(hosp_ids: list[str]) -> dict:
+    """Everything else, filtered to the cohort's hospitalizations and categories.
+
+    Pushed down to the read: an unfiltered site-wide load makes the respiratory
+    waterfall alone take hours.
+    """
+    hid = {"hospitalization_id": hosp_ids}
+    t = {
+        "hospital_diagnosis": HospitalDiagnosis.from_file(**_kw(filters=hid)).df,
+        "crrt": CrrtTherapy.from_file(**_kw(filters=hid)).df,
+        "labs": Labs.from_file(
+            **_kw(filters={**hid, "lab_category": LAB_NEEDED})).df,
+        "vitals": Vitals.from_file(
+            **_kw(filters={**hid, "vital_category": VITAL_NEEDED})).df,
+        "assessments": PatientAssessments.from_file(
+            **_kw(filters={**hid, "assessment_category": ASSESS_NEEDED})).df,
+        "mac": MedicationAdminContinuous.from_file(
+            **_kw(filters={**hid, "med_category": _mac_categories()})).df,
+        "mai": MedicationAdminIntermittent.from_file(
+            **_kw(filters={**hid, "med_category": CONFIG["medications"]["opioid_bolus_categories"]})).df,
+    }
+    rs = RespiratorySupport.from_file(**_kw(filters=hid))
+    t["resp_raw"] = rs.df.copy()
+    print(f"  {'respiratory_support':.<52} {len(rs.df):,} rows  (waterfall next)")
+    t["resp"] = _canonicalise_devices(rs.waterfall(verbose=False, return_dataframe=True))
+    for name, df in t.items():
+        if name != "resp_raw":
+            print(f"  {name:.<52} {len(df):,} rows")
     return t
+
+
+def _canonicalise_devices(df: pd.DataFrame) -> pd.DataFrame:
+    """Restore mCIDE casing for the category columns the waterfall lowercases.
+
+    clifpy's waterfall returns device_category as 'imv'/'room air' rather than
+    the schema's 'IMV'/'Room Air'. Comparing against the canonical value then
+    matches nothing and empties the cohort without raising.
+    """
+    import yaml
+
+    sch = yaml.safe_load(
+        (Path(__import__("clifpy").__file__).parent / "schemas"
+         / "respiratory_support_schema.yaml").read_text())
+    out = df.copy()
+    for col in ("device_category", "mode_category"):
+        if col not in out.columns:
+            continue
+        allowed = next((c.get("permissible_values", []) for c in sch["columns"]
+                        if c["name"] == col), [])
+        lut = {v.lower(): v for v in allowed}
+        lowered = out[col].astype("string").str.lower().str.strip()
+        mapped = lowered.map(lut)
+        unmapped = lowered.notna() & mapped.isna()
+        if unmapped.any():
+            raise SystemExit(
+                f"{col}: values the schema does not list: "
+                f"{sorted(lowered[unmapped].unique())[:10]}"
+            )
+        out[col] = mapped
+    return out
 
 
 def assert_categories_present(t: dict) -> None:
@@ -184,6 +256,11 @@ def find_anchor(t: dict, mapping: pd.DataFrame) -> pd.DataFrame:
 def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
     c = blocks.merge(anchor, on="encounter_block", how="inner", validate="one_to_one")
     note("blocks with an intubation anchor", len(c))
+    if c.empty:
+        raise SystemExit(
+            "no block has an intubation anchor. An empty cohort is a bug, not a "
+            "finding -- check that device_category still carries its mCIDE casing."
+        )
     c = c[c["age"] >= CONFIG["cohort"]["min_age"]]
     note(f"adult blocks (age >= {CONFIG['cohort']['min_age']})", len(c))
 
@@ -193,9 +270,14 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
 
     c = c.sort_values("encounter_block", kind="stable").reset_index(drop=True)
     c["id_num"] = np.arange(1, len(c) + 1)
-    n_multi = int((c.groupby("patient_id").size() > 1).sum())
-    note("patients contributing more than one block", n_multi)
-    note("blocks per patient (max)", int(c.groupby("patient_id").size().max()))
+    if c.empty:
+        raise SystemExit(
+            "cohort is empty. Check the STROBE counts above for the step that "
+            "dropped everything -- an empty cohort is a bug, not a finding."
+        )
+    per_patient = c.groupby("patient_id").size()
+    note("patients contributing more than one block", int((per_patient > 1).sum()))
+    note("blocks per patient (max)", int(per_patient.max()))
     return c
 
 
@@ -888,14 +970,26 @@ def main() -> None:
     print(f"grid {WINDOW_H}h x {N_WINDOWS} to {EXTENT_H}h   stitch {STITCH_H}h   "
           f"infusion hold {INF_HOLD_H}h\n")
 
-    print("Loading tables")
-    t = load_tables()
-    assert_categories_present(t)
+    print("Loading core tables")
+    t, imv_ids = load_core()
 
     print("\nEncounter blocks")
     blocks, mapping = build_blocks(t)
     hi = hospital_intervals(t, mapping)
     ends = hospital_endpoints(hi)
+
+    # Restrict before the waterfall: it is the expensive step and only the
+    # cohort's rows can affect the result.
+    imv_blocks = set(mapping.loc[mapping["hospitalization_id"].isin(imv_ids), "encounter_block"])
+    blocks = blocks[blocks["encounter_block"].isin(imv_blocks)]
+    note("blocks containing any IMV record", len(blocks))
+    mapping = mapping[mapping["encounter_block"].isin(imv_blocks)]
+    hosp_ids = sorted(mapping["hospitalization_id"].astype(str).unique())
+    note("hospitalizations to load", len(hosp_ids))
+
+    print("\nLoading cohort tables")
+    t.update(load_cohort_tables(hosp_ids))
+    assert_categories_present(t)
 
     print("\nCohort")
     anchor = find_anchor(t, mapping)
@@ -923,6 +1017,7 @@ def main() -> None:
         if len(part):
             long = long.merge(part, on=["encounter_block", "window_idx"], how="left")
 
+    hi = hi[hi["encounter_block"].isin(cohort["encounter_block"])]
     ti = time_invariant(t, mapping, cohort).merge(bmi, on="encounter_block", how="left")
     ti = ti.merge(ends, on="encounter_block", how="left")
     long = long.merge(ti.drop(columns=["patient_id"]), on="encounter_block", how="left")
