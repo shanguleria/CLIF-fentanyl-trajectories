@@ -149,6 +149,73 @@ def test_pattern_table_pools_small_cells():
     assert len(pooled) == 1, f"rare patterns must be pooled below {min_cell}"
 
 
+# --------------------------------------------------------------------- SOFA
+def _sofa_row(**kw):
+    base = dict(map=85.0, platelet_count=250.0, bilirubin_total=0.5,
+                creatinine=0.8, gcs_total=15.0, oxygenation=450.0, imv_status=1.0)
+    base.update(kw)
+    return B.score_sofa(pd.DataFrame([base])).iloc[0]
+
+
+def test_healthy_patient_scores_zero():
+    r = _sofa_row()
+    assert r["sofa_total"] == 0 and r["sofa_n_components"] == 6
+
+
+def test_absent_pressors_must_be_null_not_zero():
+    """The trap: `epi <= 0.1` fires on a charted 0, giving every unpressored
+    patient a cardiovascular score of 3."""
+    assert _sofa_row()["sofa_cv"] == 0, "no pressor columns at all -> score on MAP"
+    on_zero = _sofa_row(epinephrine_mcg_kg_min=0.0)
+    assert on_zero["sofa_cv"] == 3, (
+        "a charted 0 DOES trigger the <= 0.1 clause -- which is why the builder "
+        "must leave absent pressors NULL"
+    )
+
+
+def test_low_dose_norepinephrine_scores_three():
+    assert _sofa_row(norepinephrine_mcg_kg_min=0.05)["sofa_cv"] == 3
+
+
+def test_high_dose_norepinephrine_scores_four():
+    assert _sofa_row(norepinephrine_mcg_kg_min=0.5)["sofa_cv"] == 4
+
+
+def test_respiratory_scores_off_the_ventilator_instead_of_returning_null():
+    """clifpy and the epi repo both return NULL for P/F < 200 off IMV/NIPPV/CPAP."""
+    off = _sofa_row(oxygenation=150.0, imv_status=0.0)
+    assert not pd.isna(off["sofa_resp"]), "severe hypoxaemia off the vent must score"
+    assert off["sofa_resp"] == 2
+    on = _sofa_row(oxygenation=150.0, imv_status=1.0)
+    assert on["sofa_resp"] == 3, "the same P/F on the vent scores higher"
+
+
+def test_total_is_null_only_when_no_component_is_available():
+    empty = B.score_sofa(pd.DataFrame([{}])).iloc[0]
+    assert empty["sofa_n_components"] == 0
+    assert pd.isna(empty["sofa_total"])
+
+
+def test_partial_sofa_totals_what_it_has_and_says_how_many():
+    r = _sofa_row(platelet_count=np.nan, gcs_total=np.nan)
+    assert r["sofa_n_components"] == 4
+    assert not pd.isna(r["sofa_total"]), (
+        "a partial SOFA is summed, not nulled -- but n_components records the gap"
+    )
+
+
+def test_each_component_hits_its_documented_cutpoints():
+    assert _sofa_row(platelet_count=19.0)["sofa_coag"] == 4
+    assert _sofa_row(platelet_count=149.0)["sofa_coag"] == 1
+    assert _sofa_row(bilirubin_total=12.0)["sofa_liver"] == 4
+    assert _sofa_row(bilirubin_total=1.2)["sofa_liver"] == 1
+    assert _sofa_row(creatinine=5.0)["sofa_renal"] == 4
+    assert _sofa_row(creatinine=1.2)["sofa_renal"] == 1
+    assert _sofa_row(gcs_total=5.0)["sofa_cns"] == 4
+    assert _sofa_row(gcs_total=14.0)["sofa_cns"] == 1
+    assert _sofa_row(oxygenation=399.0)["sofa_resp"] == 1
+
+
 # ------------------------------------------------- the consumption assertion
 def test_consumption_assertion_fires_on_a_declared_but_absent_column():
     df = _long(n_blocks=1)

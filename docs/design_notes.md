@@ -1239,29 +1239,45 @@ carry warnings worth repeating here:
   carrying a null `fio2_set` (there the device mix is dominated by nulls and nasal
   cannula, and nasal cannula at unknown flow is not 0.21).
 
-### SOFA is the convenience summary, not the severity measure
+### SOFA — computed here, from our own per-window components
 
-`sofa_total` uses clifpy `compute_sofa_polars` with
-**`fill_na_scores_with_zero=False`** — the default scores a *missing* component as
-0, i.e. normal, biasing severity downward exactly where the data are thinnest.
+`sofa_total` is **not** taken from clifpy. The six components are scored from the
+same per-window aggregates the rest of the table uses, so `sofa_resp` is derived
+from the same `oxygenation` column the analysis reports. Cutpoints are Vincent
+1996; implementation in `code/01_build_cohort.py:score_sofa`, 9 tests.
 
-Four defects were verified against clifpy 0.3.8 in this repo's `.venv` on
-2026-09-05. **All four bias severity downward, and all four are silent:**
+Inputs: `map` (min), `platelet_count` (min), `bilirubin_total` (max),
+`creatinine` (max), `gcs_total` (min), `oxygenation` (min), `imv_status`, and the
+four SOFA vasopressors as max mcg/kg/min.
 
-1. `sofa.py:16-19` — cardiovascular counts only norepinephrine, epinephrine,
-   dopamine and dobutamine. **Vasopressin, phenylephrine, angiotensin and
-   milrinone are commented out**, so a patient on vasopressin alone scores
-   cardiovascular SOFA on MAP alone.
-2. `sofa.py:172-176` — P/F < 200 scores 3 or 4 **only** when `device_category ∈
-   {IMV, NIPPV, CPAP}`. A High Flow NC patient at P/F 150 returns **NULL**, not 2.
-3. `sofa.py:273` — `fio2_set BETWEEN 0.21 AND 1`, so a site charting FiO₂ as
-   21–100 has every value nulled.
-4. Renal SOFA is **creatinine-only**; CLIF core carries no `intake_output` table,
-   so urine output is absent rather than proxied.
+**A correction to an earlier draft of this section.** It listed clifpy's
+cardiovascular component as defective for counting only dopamine, dobutamine,
+epinephrine and norepinephrine — omitting vasopressin, phenylephrine and
+angiotensin. **That was wrong.** The original SOFA cardiovascular score is
+*defined* on those four agents; a patient on vasopressin alone scoring by MAP is a
+limitation of the score itself, not of the implementation. clifpy and
+`CLIF-epidemiology-of-CRRT` both render it faithfully. Recorded because the
+earlier claim would have justified a "fix" that silently redefined the score.
 
-Consequently SOFA is the easy single summary, and **the explicit markers above —
-`nee`, `oxygenation`, and the six labs — are what the analysis should lean on.**
-Do not report SOFA as though it were complete.
+What is genuinely worth changing:
+
+| | clifpy / epi repo | Here |
+|---|---|---|
+| **Respiratory below P/F 200 off IMV/NIPPV/CPAP** | returns **NULL** | scores **2** (<200) / **3** (<100); on the vent, 3 / 4 |
+| **Missing components** | `fill_na_scores_with_zero` defaults to scoring them **0**, i.e. normal | summed with `min_count=1`, and **`sofa_n_components` records how many were available** |
+| **FiO₂ scale** | gated `BETWEEN 0.21 AND 1`, nulling everything at a percent-scale site | normalised first (§11 above), so the gate is moot |
+| **Renal** | creatinine only | same — CLIF core has no `intake_output`, so urine output is **absent, not proxied**. A stated limitation. |
+
+**The null-versus-zero trap, which is the reason this needed care.** The standard
+cardiovascular chain scores 3 on `epinephrine ≤ 0.1`, meaning *receiving* a low
+dose. If an absent drug is coded `0` rather than left NULL, `0 ≤ 0.1` is true and
+**every unpressored patient scores 3.** Demonstrated: a patient on no pressors
+with MAP 85 scores **0** with NULLs and **3** with zeros.
+
+This collides directly with this study's own `absence_means_zero` convention for
+`nee` (§11 above). The two are deliberately different: **`nee` zeroes an absent
+infusion; the SOFA pressor inputs must not.** `_sofa_pressors()` keeps them NULL,
+and a test asserts both halves.
 
 ### Weight: two rules, deliberately different
 

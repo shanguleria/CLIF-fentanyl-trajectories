@@ -101,14 +101,15 @@
 
     "sofa_total": {
       "label": "Total SOFA score",
-      "algorithm": "clifpy compute_sofa_polars with fill_na_scores_with_zero=False.",
+      "algorithm": "Scored in 01_build_cohort.py:score_sofa from this table's own per-window components. See _COMPUTED_HERE_NOT_BY_CLIFPY.",
       "summary": "max",
       "_summary_why": "Worst in window is the severity signal.",
       "locf": {"eligible": true, "cap_hours": 24},
       "_cap_why": "SOFA is conventionally a daily score; its components are charted on daily-to-shift cadence. A day is the longest a total score stays believable.",
       "missing_class": "time_varying",
       "_fill_na_scores_with_zero_FALSE": "clifpy's default scores a MISSING component as 0, i.e. normal, which biases severity downward exactly where the data are thinnest. Must be False.",
-      "_KNOWN_DEFECTS_IN_CLIFPY_SOFA": "Verified against clifpy 0.3.8 in this repo's .venv, 2026-09-05. FOUR defects, all silent, all biasing severity DOWNWARD: (1) sofa.py:16-19 -- the cardiovascular component counts only norepinephrine, epinephrine, dopamine and dobutamine; vasopressin, phenylephrine, angiotensin and milrinone are commented out, so a patient on vasopressin alone scores cardiovascular SOFA on MAP alone. (2) sofa.py:172-176 -- P/F under 200 scores 3 or 4 ONLY when device_category is IMV, NIPPV or CPAP; a High Flow NC patient at P/F 150 returns NULL, not a score. (3) sofa.py:273 -- fio2_set is gated BETWEEN 0.21 AND 1, so a site charting FiO2 as 21-100 has every value nulled. (4) renal SOFA is creatinine-only; CLIF core carries no intake_output table, so urine output is absent rather than proxied. CONSEQUENCE: sofa_total is the convenience summary, and the explicit severity markers below (nee, oxygenation, the six labs) are the ones the analysis should lean on. Do not report SOFA as though it were complete."
+      "_COMPUTED_HERE_NOT_BY_CLIFPY": "Scored in 01_build_cohort.py:score_sofa from the same per-window aggregates the rest of the table uses, so sofa_resp derives from the same oxygenation column the analysis reports. Cutpoints are Vincent 1996. Two changes from clifpy and from CLIF-epidemiology-of-CRRT: (1) P/F below 200 off IMV/NIPPV/CPAP SCORES rather than returning NULL; (2) missing components are summed with min_count=1 and sofa_n_components records how many were available, instead of being scored as 0 (normal). CORRECTION to an earlier note here: clifpy omitting vasopressin/phenylephrine/angiotensin from the cardiovascular component is NOT a defect -- the original score is defined on dopamine, dobutamine, epinephrine and norepinephrine only. Renal stays creatinine-only because CLIF core has no intake_output table; urine output is absent, not proxied.",
+      "_NULL_VS_ZERO_TRAP": "The cardiovascular chain scores 3 on epinephrine <= 0.1, meaning RECEIVING a low dose. An absent drug coded 0 makes that clause fire, so every unpressored patient scores 3 -- measured: MAP 85 with no pressors scores 0 with NULLs and 3 with zeros. This collides with absence_means_zero for nee. The two are deliberately different: nee zeroes an absent infusion, the SOFA pressor inputs must not."
     },
 
     "nee": {

@@ -500,6 +500,118 @@ def _severinghaus(spo2: pd.Series) -> pd.Series:
     return np.cbrt(b + a) - np.cbrt(b - a)
 
 
+SOFA_PRESSORS = ["norepinephrine", "epinephrine", "dopamine", "dobutamine"]
+
+
+def _sofa_inputs(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+    """Per-window SOFA components not already carried as covariates."""
+    labs = t["labs"].merge(mapping, on="hospitalization_id", how="inner")
+    labs, _ = apply_long(labs, "labs", "lab_category", "lab_value_numeric", config=OUTLIERS)
+    labs = _to_windows(labs, cohort, "lab_result_dttm")
+    plt_ = (labs[labs["lab_category"] == "platelet_count"]
+            .groupby(["encounter_block", "window_idx"], as_index=False)["lab_value_numeric"]
+            .min().rename(columns={"lab_value_numeric": "platelet_count"}))
+    creat = (labs[labs["lab_category"] == "creatinine"]
+             .groupby(["encounter_block", "window_idx"], as_index=False)["lab_value_numeric"]
+             .max().rename(columns={"lab_value_numeric": "creatinine"}))
+
+    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
+    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
+    vit = _to_windows(vit, cohort, "recorded_dttm")
+    mp = (vit[vit["vital_category"] == "map"]
+          .groupby(["encounter_block", "window_idx"], as_index=False)["vital_value"]
+          .min().rename(columns={"vital_value": "map"}))
+
+    asm = t["assessments"].merge(mapping, on="hospitalization_id", how="inner")
+    asm, _ = apply_long(asm, "patient_assessments", "assessment_category",
+                        "numerical_value", config=OUTLIERS)
+    asm = _to_windows(asm, cohort, "recorded_dttm")
+    gcs = (asm[asm["assessment_category"] == "gcs_total"]
+           .groupby(["encounter_block", "window_idx"], as_index=False)["numerical_value"]
+           .min().rename(columns={"numerical_value": "gcs_total"}))
+
+    out = plt_
+    for part in (creat, mp, gcs):
+        out = out.merge(part, on=["encounter_block", "window_idx"], how="outer")
+    return out
+
+
+def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+    """Max mcg/kg/min per window for the four SOFA vasopressors.
+
+    Absent drugs stay NULL. Coding them 0 makes the `<= 0.1` clause in the
+    cardiovascular score fire, giving every unpressored patient a score of 3.
+    """
+    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
+
+    m = t["mac"][t["mac"]["med_category"].isin(SOFA_PRESSORS)].merge(
+        mapping, on="hospitalization_id", how="inner")
+    m = m[m["encounter_block"].isin(cohort["encounter_block"])]
+    cols = ["encounter_block", "window_idx"] + [f"{d}_mcg_kg_min" for d in SOFA_PRESSORS]
+    if m.empty:
+        return pd.DataFrame(columns=cols)
+
+    m, _ = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
+    conv, _ = convert_dose_units_by_med_category(
+        m, vitals_df=t["vitals"],
+        preferred_units={d: "mcg/kg/min" for d in SOFA_PRESSORS})
+    got = conv["med_dose_unit_converted"].astype("string").str.lower()
+    conv = conv[got.eq("mcg/kg/min")].rename(columns={"med_dose_converted": "dose_std"})
+    conv = conv[conv["dose_std"] > 0]
+    conv = _to_windows(conv, cohort, "admin_dttm")
+    if conv.empty:
+        return pd.DataFrame(columns=cols)
+
+    wide = (conv.groupby(["encounter_block", "window_idx", "med_category"], as_index=False)
+                ["dose_std"].max()
+                .pivot(index=["encounter_block", "window_idx"],
+                       columns="med_category", values="dose_std").reset_index())
+    wide.columns.name = None
+    for d in SOFA_PRESSORS:
+        wide[f"{d}_mcg_kg_min"] = wide[d] if d in wide.columns else np.nan
+    return wide[cols]
+
+
+def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
+    """Six SOFA components and their total. Vincent 1996; see design_notes.md §11."""
+    g = lambda c: df[c] if c in df.columns else pd.Series(np.nan, index=df.index)
+    dopa, epi = g("dopamine_mcg_kg_min"), g("epinephrine_mcg_kg_min")
+    norepi, dobu = g("norepinephrine_mcg_kg_min"), g("dobutamine_mcg_kg_min")
+    mp, plt_, bili = g("map"), g("platelet_count"), g("bilirubin_total")
+    creat, gcs, pf = g("creatinine"), g("gcs_total"), g("oxygenation")
+    on_vent = g("imv_status").fillna(0).astype(bool)
+
+    out = pd.DataFrame(index=df.index)
+    out["sofa_cv"] = np.select(
+        [(dopa > 15) | (epi > 0.1) | (norepi > 0.1),
+         (dopa > 5) | (epi.notna() & (epi <= 0.1)) | (norepi.notna() & (norepi <= 0.1)),
+         (dopa.notna() & (dopa <= 5)) | (dobu > 0),
+         mp < 70, mp >= 70],
+        [4, 3, 2, 1, 0], default=np.nan)
+    out["sofa_coag"] = np.select(
+        [plt_ < 20, plt_ < 50, plt_ < 100, plt_ < 150, plt_ >= 150],
+        [4, 3, 2, 1, 0], default=np.nan)
+    out["sofa_liver"] = np.select(
+        [bili >= 12, bili >= 6, bili >= 2, bili >= 1.2, bili < 1.2],
+        [4, 3, 2, 1, 0], default=np.nan)
+    out["sofa_resp"] = np.select(
+        [(pf < 100) & on_vent, (pf < 100) & ~on_vent,
+         (pf < 200) & on_vent, (pf < 200) & ~on_vent,
+         pf < 300, pf < 400, pf >= 400],
+        [4, 3, 3, 2, 2, 1, 0], default=np.nan)
+    out["sofa_cns"] = np.select(
+        [gcs < 6, gcs <= 9, gcs <= 12, gcs <= 14, gcs == 15],
+        [4, 3, 2, 1, 0], default=np.nan)
+    out["sofa_renal"] = np.select(
+        [creat >= 5, creat >= 3.5, creat >= 2, creat >= 1.2, creat < 1.2],
+        [4, 3, 2, 1, 0], default=np.nan)
+
+    parts = ["sofa_cv", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
+    out["sofa_n_components"] = out[parts].notna().sum(axis=1)
+    out["sofa_total"] = out[parts].sum(axis=1, min_count=1)
+    return out
+
+
 def status_covariates(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     rs = _to_windows(t["resp"].merge(mapping, on="hospitalization_id", how="inner"),
                      cohort, "recorded_dttm")
@@ -817,9 +929,17 @@ def main() -> None:
     long = long.merge(cohort[["encounter_block", "weight_kg"]], on="encounter_block",
                       how="left")
 
-    # sofa_total is declared but not yet built; see claude-todo.md.
-    if "sofa_total" not in long.columns:
-        long["sofa_total"] = np.nan
+    print("\n  SOFA")
+    sofa_in = _sofa_inputs(t, mapping, cohort)
+    press = _sofa_pressors(t, mapping, cohort)
+    if len(press):
+        sofa_in = sofa_in.merge(press, on=["encounter_block", "window_idx"], how="outer")
+    long = long.merge(sofa_in, on=["encounter_block", "window_idx"], how="left")
+    long = pd.concat([long.reset_index(drop=True),
+                      score_sofa(long).reset_index(drop=True)], axis=1)
+    comp = long.loc[long["at_risk"], "sofa_n_components"]
+    note("at-risk windows with a complete 6-component SOFA", int((comp == 6).sum()))
+    note("at-risk windows with no SOFA component at all", int((comp == 0).sum()))
 
     print("\nMissingness and LOCF")
     long, per_variable, per_pattern = apply_missingness(long)
