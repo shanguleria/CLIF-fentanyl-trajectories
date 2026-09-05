@@ -1296,10 +1296,31 @@ restriction matters too: a post-event window has no covariates because follow-up
 had ended, which is **structure, not data quality** — mixing the two would make
 late windows look far worse than they are.
 
-Report **per variable per window** *and* **per pattern**: a per-variable table
-cannot show which variables go missing *together*, and that is what determines
-whether an imputation model is well posed. Suppress pattern cells below 11,
-rolling the remainder into one "other" row that states how many it absorbed.
+Report **per variable** *and* **per pattern**: a per-variable table cannot show
+which variables go missing *together*, and that is what determines whether an
+imputation model is well posed. Suppress pattern cells below 11, rolling the
+remainder into one "other" row that states how many it absorbed.
+
+Phase 0 emits `output/final_no_phi/phase0_missingness.csv` with **both sides of
+the fill**, since they answer different questions — how much was carried, and
+what is still absent in the analysis data:
+
+| Column | Meaning |
+|---|---|
+| `n_observed` | actually measured in the window |
+| `n_zero_by_rule` | set to 0 by `absence_means_zero` / `absence_means_not_ventilated` — **not** missing |
+| `n_missing_pre_locf`, `pct_missing_pre_locf` | before any carry-forward |
+| `n_filled_by_locf`, `pct_filled_by_locf` | how much the cap actually carried |
+| `n_missing_final`, `pct_missing_final` | what remains for the model to handle |
+
+`n_observed + n_filled_by_locf + n_missing_final == n_at_risk` for every
+LOCF-eligible variable, which is asserted in `tests/test_build_cohort.py`.
+Separating `n_zero_by_rule` is what stops an absent vasopressor record reading as
+a data gap — the mislabelling that made the reference repo report `nee` as 17%
+"missing" at its first node.
+
+`oxygenation_source` is reported alongside as its own breakdown, so the share of
+oxygenation resting on the room-air assumption is visible rather than folded in.
 
 **No variable is dropped for excess missingness.** A variable both frequently
 missing and poorly predicted by the others is as likely an extract or mapping

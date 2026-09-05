@@ -1,20 +1,9 @@
-"""
-Outlier bounds: the single place bounds are applied.
+"""Applies config/outlier_config.json. The only place bounds are applied.
 
-Every bound comes from config/outlier_config.json. No bound is ever hardcoded in
-a pipeline script -- change one there and it applies everywhere.
-
-THREE LOUD-FAILURE BEHAVIOURS, all deliberate, all tested. Each replaces a
-silent failure that a sibling CLIF repo actually shipped:
-
-  1. A missing config file RAISES. Skipping outlier handling silently changes
-     results, so "the file wasn't there" must never be a quiet no-op.
-  2. A category present in the data with no bound in the config is PRINTED.
-     A category with no entry looks exactly like a category that was checked and
-     found clean, so the gap is reported rather than assumed away.
-  3. Raw and converted medication doses go through DIFFERENT functions. A bound
-     is only comparable to a value already in its unit; applying a converted
-     bound to a raw charted dose nulls correct data in the wrong unit.
+Medication bounds are two-layered: apply_med_raw() runs before clifpy's unit
+conversion and keys on the charted unit; apply_med_converted() runs after. A
+missing config raises; a category with no bound is reported, never skipped
+silently. Rationale: design_notes.md §11.
 """
 from __future__ import annotations
 
@@ -29,7 +18,7 @@ CONFIG_PATH = REPO / "config" / "outlier_config.json"
 
 
 class OutlierConfigError(RuntimeError):
-    """Raised when the bounds cannot be loaded or are asked for in the wrong unit."""
+    """Bounds cannot be loaded, or were asked for in the wrong unit."""
 
 
 def load_config(path: Path | None = None) -> dict:
@@ -128,13 +117,7 @@ def apply_med_raw(
     df: pd.DataFrame, drug_col: str, dose_col: str, unit_col: str,
     config: dict | None = None,
 ) -> tuple[pd.DataFrame, OutlierReport]:
-    """Bound RAW charted medication doses, per (drug, charted unit).
-
-    Must run BEFORE unit conversion. A (drug, unit) pair with no bound is
-    reported, because that is the half of the problem the unit guard cannot see:
-    those values are already in their charted unit, so nothing about them is a
-    conversion failure -- they are simply wrong at source.
-    """
+    """Bound raw charted doses per (drug, charted unit). Must run before conversion."""
     cfg = config or load_config()
     raw = {k: v for k, v in cfg["med_dose_raw"].items() if not k.startswith("_")}
 
@@ -161,11 +144,7 @@ def apply_med_raw(
 def apply_med_converted(
     df: pd.DataFrame, drug_col: str, dose_col: str, config: dict | None = None,
 ) -> tuple[pd.DataFrame, OutlierReport]:
-    """Bound CONVERTED medication doses, per drug, in the analysis unit.
-
-    Must run AFTER unit conversion and after the unit guard has confirmed the
-    returned unit string.
-    """
+    """Bound converted doses per drug. Must run after conversion and the unit guard."""
     cfg = config or load_config()
     conv = {k: v for k, v in cfg["med_dose_converted"].items() if not k.startswith("_")}
 
@@ -187,11 +166,7 @@ def apply_med_converted(
 
 
 def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
-    """The value past which a total_dose is PROOF the bounds did not run.
-
-    Derived, not written down, so it cannot drift when a bound changes.
-    Not a clinical limit -- a real value is 0.5 to 5 mcg/kg/hr.
-    """
+    """Ceiling past which a total_dose proves the bounds did not run. Derived, not fixed."""
     cfg = config or load_config()
     max_mcg_hr = cfg["med_dose_raw"]["fentanyl"]["mcg/hr"][1]
     min_weight = cfg["analysis_unit_bounds"]["vitals"]["weight_kg"][0]
@@ -199,11 +174,7 @@ def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
 
 
 def nee_sanity_ceiling(coefficients: dict, config: dict | None = None) -> float:
-    """Arithmetic ceiling for NEE, given the coefficient table.
-
-    CRRT-dose-lmtp measured nee = 8,001 against a ceiling of 17.45 before its
-    unit guard existed. Asserting against this surfaces that in one line.
-    """
+    """Arithmetic ceiling for NEE given the coefficient table."""
     cfg = config or load_config()
     conv = cfg["med_dose_converted"]
     return sum(conv[d][1] * c for d, c in coefficients.items() if d in conv)

@@ -1,10 +1,4 @@
-"""Where this run reads and writes, and the provenance stamped on what it shares.
-
-One site, one data source, one output tree -- the standard CLIF layout. The site
-is whatever `config/config.json` declares; pointing the pipeline at a different
-source (a MIMIC-to-CLIF conversion, say) means editing `site_name`,
-`data_directory` and `dataset_version` in that file, not adding a code path.
-"""
+"""Output directories and the provenance block stamped on shareable outputs."""
 from __future__ import annotations
 
 import subprocess
@@ -12,8 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# Written into intermediate_phi/ when it is created. Created at runtime rather
-# than tracked, so it survives `git clean -fdx`.
+# Written into intermediate_phi/ at runtime so it survives `git clean -fdx`.
 PHI_LABEL = """# intermediate_phi
 
 Patient-level intermediates: one row per patient, or per patient-window.

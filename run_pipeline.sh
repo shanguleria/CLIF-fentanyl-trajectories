@@ -31,6 +31,10 @@ if ! "$PY" tests/test_outliers.py; then
   echo "ERROR: outlier bounds failed their tests. Nothing was run." >&2
   exit 1
 fi
+if ! "$PY" tests/test_build_cohort.py; then
+  echo "ERROR: Phase 0 logic failed its tests. Nothing was run." >&2
+  exit 1
+fi
 echo
 
 echo "== Phase 0: build cohort (Python) =="

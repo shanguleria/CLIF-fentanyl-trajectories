@@ -1,26 +1,9 @@
-"""
-FiO2 unit normalisation.
+"""FiO2 scale detection and normalisation to a fraction in [0.21, 1.0].
 
-The analysis requires FiO2 as a FRACTION in [0.21, 1.0]. Sites chart it both
-ways, and getting this wrong is silent: clifpy's SOFA gates on
-`fio2_set BETWEEN 0.21 AND 1` (utils/sofa.py:273), so at a percent-scale site
-every FiO2 -- and therefore every P/F -- is nulled without an error.
-
-THE DESIGN, and the reason it is not simply "divide anything over 1 by 100":
-
-    Scale is decided at the COLUMN level. Bounds are applied at the VALUE level.
-
-A column is rescaled only when its distribution says the whole column is on the
-percent scale. An individual out-of-range value in an otherwise-fractional column
-is a data-entry error, not a unit, and is NULLED rather than rescaled.
-CRRT-dose-lmtp records why (config/lmtp_design.json:135): its FiO2 column held an
-observed maximum of 88,880, and "the observed maximum of 88,880 gives no basis
-for guessing intent, and rescaling on a guess would manufacture plausible-looking
-P/F values out of data entry errors."
-
-A column that is neither clearly fraction nor clearly percent RAISES. Mixed units
-in one column is a site data problem a person must look at, not something to
-resolve with a heuristic.
+Scale is decided per column; bounds are applied per value. A column is rescaled
+only if its distribution says it is on the percent scale; an out-of-range value
+in an otherwise-fractional column is nulled, not rescaled. Ambiguous columns
+raise. Rationale: design_notes.md §11, config/covariates.json oxygenation.fio2_scale.
 """
 from __future__ import annotations
 
@@ -39,7 +22,7 @@ MIN_SHARE = _F["column_scale_min_share"]
 
 
 class Fio2ScaleError(ValueError):
-    """Raised when a fio2 column is neither clearly fraction nor clearly percent."""
+    """A fio2 column is neither clearly fraction nor clearly percent."""
 
 
 @dataclass
@@ -73,19 +56,13 @@ class Fio2Report:
 
 
 def detect_fio2_scale(values: pd.Series) -> tuple[str, Fio2Report]:
-    """Decide whether a fio2 column is on the fraction or the percent scale.
-
-    Returns (scale, report). scale is "fraction" or "percent"; anything else
-    raises, because a column that is neither is a data problem rather than a
-    unit problem.
-    """
+    """Return (scale, report); raises Fio2ScaleError if the column is ambiguous."""
     v = pd.to_numeric(values, errors="coerce")
     nonnull = v.dropna()
     n = len(nonnull)
 
     in_frac = int(((nonnull >= FRACTION_BAND[0]) & (nonnull <= FRACTION_BAND[1])).sum())
     in_pct = int(((nonnull >= PERCENT_BAND[0]) & (nonnull <= PERCENT_BAND[1])).sum())
-    # 1.0 and 100 are each valid in exactly one band, so the bands do not overlap.
     neither = n - in_frac - in_pct
 
     rep = Fio2Report(
@@ -111,11 +88,7 @@ def detect_fio2_scale(values: pd.Series) -> tuple[str, Fio2Report]:
 
 
 def normalize_fio2(values: pd.Series) -> tuple[pd.Series, Fio2Report]:
-    """Return fio2 as a fraction in [0.21, 1.0], plus a report of what was done.
-
-    A percent-scale column is divided by 100 as a WHOLE COLUMN. Values still
-    outside the fraction band afterwards are NULLED, never rescaled individually.
-    """
+    """Return (fio2 as a fraction, report). Rescales whole columns, nulls stray values."""
     scale, rep = detect_fio2_scale(values)
     out = pd.to_numeric(values, errors="coerce")
 

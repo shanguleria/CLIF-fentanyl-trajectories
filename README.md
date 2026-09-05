@@ -119,6 +119,7 @@ protocol. Nothing estimand-defining may live only in the gitignored
 .venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
 .venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
 .venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
+.venv/bin/python tests/test_build_cohort.py # 17 checks on Phase 0 logic
 ```
 
 ### Key settings
@@ -248,7 +249,8 @@ CLIF-fentanyl-trajectories/
 ├── tests/
 │   ├── test_covariates.py        # integrity checks on config/covariates.json
 │   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
-│   └── test_outliers.py          # bounds are applied, and gaps are reported
+│   ├── test_outliers.py          # bounds are applied, and gaps are reported
+│   └── test_build_cohort.py      # Phase 0 logic on synthetic frames
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R

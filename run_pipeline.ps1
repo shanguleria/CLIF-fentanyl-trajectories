@@ -19,6 +19,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "config/covariates.json failed its integr
 if ($LASTEXITCODE -ne 0) { Write-Error "fio2 unit handling failed its tests. Nothing was run." }
 & $py tests/test_outliers.py
 if ($LASTEXITCODE -ne 0) { Write-Error "outlier bounds failed their tests. Nothing was run." }
+& $py tests/test_build_cohort.py
+if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 logic failed its tests. Nothing was run." }
 Write-Host ""
 
 Write-Host "== Phase 0: build cohort (Python) =="
