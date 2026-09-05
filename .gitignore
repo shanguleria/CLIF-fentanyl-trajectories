@@ -29,3 +29,6 @@ venv/
 
 # ---- site config (contains local paths) ----
 config/config.json
+
+# ---- local session state (progress log, todo, lessons) ----
+.claude/
