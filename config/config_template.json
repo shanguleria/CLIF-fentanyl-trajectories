@@ -25,7 +25,7 @@
         "hospital_diagnosis"
     ],
 
-    "_comment_medications": "Run a documentation probe against your data first to confirm its med_category values, then edit these. Vocabularies differ between sources.",
+    "_comment_medications": "Confirm these against your data before running; vocabularies differ between sources. Phase 0 asserts them and prints the med_category values it actually found, so a mismatch fails loudly rather than producing an empty cohort.",
     "medications": {
         "opioid_infusion_categories": ["fentanyl"],
         "opioid_bolus_categories": ["fentanyl"],

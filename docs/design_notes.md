@@ -168,9 +168,41 @@ in practice on realistic (overlapping) data. Mitigations for Model B:
 | Empty windows | true `0` for both streams | drip off is a real zero, not missing |
 | Weight | denominator of the dose (mcg/kg/hr), **fixed at the anchor** | a normaliser, not a covariate. Two different weight rules are required — see §11 *Weight* |
 
-**Verify before relying on LOCF:** check what fraction of infusion stops are
-charted as an explicit `0` row versus an end timestamp with nothing after. The
-LOCF approach is only valid if stops are explicit. *(open — see §9)*
+### The hourly grid — RESOLVED 2026-09-05 (SG)
+
+The infusion rate is materialised as an **hourly waterfall grid**: every 1h
+timepoint carries the rate in effect, so a 4h window total is a sum over its four
+cells. Same structure as `nee` (§11), which keeps the two exposures consistent.
+
+| Step | Rule |
+|---|---|
+| Bin | to hours; take the **last** charted rate per (block, hour), stable-sorted on (time, value) |
+| Stops | `mar_action_category == "stop"` is a rate of **0**, not a missing value |
+| Fill | forward-fill at most `hold_hours` |
+| Remainder | **0** — `absence_means_zero`, per the table above |
+| Bounds | never past the block's first/last charted medication record, or the at-risk span |
+| Extubated windows | `imv_status == 0` forces dose to 0, applied **after** the grid (§10a(a)) |
+
+**This resolves the open "are stops charted explicitly?" question by making the
+answer not matter for correctness** — but only because of the hold cap. Without
+it, LOCF on an infusion rate runs to the end of follow-up: a drip that stopped at
+hour 10 with no stop row charted would still show a rate at hour 72. Because this
+is the **exposure**, that is not noise around the result, it *is* the result.
+
+> ⚠ `hold_hours = 4` is **inherited from `nee`**, where the CRRT coordinating
+> site's median inter-record interval was 57 min (p90 68 min). **The fentanyl
+> charting interval at UCMC is the single parameter most worth measuring before
+> the first real run.** If fentanyl is charted less densely than vasopressors, 4h
+> under-fills and dose is understated; if stops are reliably charted, the cap
+> rarely binds at all.
+
+**The grid is a discretised time-weighted mean, not an exact one.** A rate change
+at 10:30 is attributed to whichever cell the last-rate-per-hour rule picks, so the
+error is bounded by the within-hour timing of rate changes — at most one hour of
+one rate per change. At 4h windows that is small and uniform across patients, but
+it is an approximation and belongs in the Methods. `grid_resolution_minutes` in
+`config/covariates.json` lowers it to 15 or 30 for a sensitivity analysis; nothing
+else changes.
 
 ### Worked example of the LOCF trap
 
@@ -381,7 +413,11 @@ assumption, or as a separate paper.
 
 ## 9. Open questions
 
-- [ ] Confirm infusion stops are charted as explicit `0` rows in our data (§5).
+- [x] **RESOLVED 2026-09-05 (SG).** Confirm infusion stops are charted as
+      explicit `0` rows (§5). Superseded by the hourly grid + `hold_hours` cap,
+      which makes the answer non-load-bearing for correctness. The **fentanyl
+      charting interval** is now the thing to measure instead, since it sets the
+      cap.
 - [ ] Decide the time anchor: intubation vs ICU admission.
 - [ ] Decide the truncation window, and quantify how many patients it excludes —
       informative censoring (death, early extubation) is the largest validity
@@ -1149,6 +1185,30 @@ Gate: SpO₂ **strictly below 97**. Above it the dissociation curve is flat and 
 imputed PaO₂ reports the FiO₂ rather than the patient. Severinghaus(97) = 90.6
 mmHg; SpO₂ = 100 returns NaN.
 
+**FiO₂ must be a fraction, and that is enforced rather than assumed** *(SG,
+2026-09-05)*. `code/utils/fio2.py`, tested in `tests/test_fio2.py` (10 checks,
+wired into both runners). Getting it wrong is silent: clifpy's SOFA gates on
+`fio2_set BETWEEN 0.21 AND 1` (`sofa.py:273`), so at a percent-scale site every
+FiO₂ — and every P/F with it — is nulled with no error raised.
+
+The rule that makes this safe:
+
+> **Scale is decided at the column level. Bounds are applied at the value level.**
+
+A column is divided by 100 only when ≥95% of its non-null values sit in `[21, 100]`.
+An individual out-of-range value in an otherwise-fractional column is a **data
+entry error, not a unit**, and is nulled rather than rescaled — otherwise
+`fio2 = 88880` becomes a plausible-looking number instead of the discard it should
+be. A column that is neither clearly fraction nor clearly percent **raises**:
+mixed units inside one column is a site data problem for a person, not something a
+heuristic should resolve. Measured behaviour on the three cases:
+
+| Column | Detected | Action |
+|---|---|---|
+| 99.5% in `[0.21, 1]`, one value of 88880 | fraction | left alone; **1 value nulled**, and the report names it |
+| 100% in `[21, 100]` | percent | **whole column ÷ 100**; 0 nulled |
+| 50/50 fraction and percent | — | **raises**, naming both shares |
+
 **FiO₂ lookback = 4h.** Pair every PaO₂ (and every qualifying SpO₂) with the most
 recent non-null `fio2_set` **at or before** it, searching back at most 4h —
 `merge_asof(direction="backward", tolerance=4h)` *is* that rule. Never pair to a
@@ -1251,6 +1311,7 @@ discard it.
 `config/covariates.json` is only a policy statement unless something checks it.
 Two mechanisms:
 
+- **`tests/test_fio2.py`** — 10 checks on the unit rule above.
 - **`tests/test_covariates.py`** — 16 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the

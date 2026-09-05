@@ -150,6 +150,16 @@
       "_cap_why": "Derived from a blood gas or an SpO2. SpO2 is charted at least hourly, so a window with no oxygenation at all is unusual and a long carry would be masking a real data gap rather than bridging a charting one.",
       "_ONE_COLUMN_NOT_TWO": "oxygenation is ONE covariate: measured P/F where an arterial gas exists, Severinghaus-derived P/F otherwise. Fallback is PER WINDOW, not per reading, so a window's value comes from exactly one source. CRRT-dose-lmtp carried pf_ratio and sf_ratio as separate covariates intending S/F to act as a fallback and NOTHING IMPLEMENTED THE FALLBACK: both entered as independent covariates, each median-imputed when absent, while 85% of blocks missing P/F had S/F observed. The model was filling a constant into a column whose information sat in the next one. Keep pf_ratio and sf_ratio as DIAGNOSTICS; they are not analysis covariates.",
       "fio2_lookback_hours": 4,
+      "fio2_scale": {
+        "required_unit": "fraction",
+        "fraction_band": [0.21, 1.0],
+        "percent_band": [21, 100],
+        "column_scale_min_share": 0.95,
+        "_why": "DECIDED SG 2026-09-05: FiO2 must be a FRACTION. Enforced by code/utils/fio2.py, not assumed. Getting it wrong is silent -- clifpy's SOFA gates on fio2_set BETWEEN 0.21 AND 1 (utils/sofa.py:273), so at a percent-scale site every FiO2, and therefore every P/F, is nulled with no error raised.",
+        "_SCALE_IS_A_COLUMN_PROPERTY_BOUNDS_ARE_A_VALUE_PROPERTY": "The whole column is rescaled only when at least column_scale_min_share of its non-null values fall in the percent band. An individual out-of-range value in an otherwise-fractional column is a DATA ENTRY ERROR, not a unit, and is nulled rather than divided by 100. CRRT-dose-lmtp records why (lmtp_design.json:135): its column held an observed maximum of 88,880, and 'the observed maximum of 88,880 gives no basis for guessing intent, and rescaling on a guess would manufacture plausible-looking P/F values out of data entry errors.'",
+        "_AMBIGUOUS_RAISES": "A column that is neither clearly fraction nor clearly percent raises Fio2ScaleError. Mixed units inside one column is a site data problem for a person to look at, not something a heuristic should silently resolve.",
+        "_bands_do_not_overlap": "1.0 is the top of the fraction band and 21 the bottom of the percent band, so every value falls in at most one. Values in (1, 21) -- too high for a fraction, below room air as a percent -- count toward neither and push the column toward ambiguous, which is the correct signal."
+      },
       "spo2_ceiling": 97,
       "_spo2_gate": "STRICTLY less than spo2_ceiling, matching clifpy's own gate. Above it the dissociation curve is flat and an imputed PaO2 reports the FiO2 rather than the patient. Severinghaus(97) = 90.6 mmHg; SpO2 = 100 returns NaN.",
       "pipeline": {
@@ -269,6 +279,40 @@
       "_cap_why": "The slowest-moving of the six; it changes over days, not hours. Drawn daily. A 24h cap is conservative relative to its biology and is set by the charting cadence rather than the kinetics.",
       "missing_class": "time_varying"
     }
+  },
+
+  "exposure": {
+    "_role": "The primary exposure. Not a covariate, but it shares the window machinery, so its rules live here with them.",
+    "columns": ["inf_dose", "bolus_dose", "total_dose"],
+    "units": "mcg/kg/hr",
+    "_three_columns_why": "Kept separate so the Model A / Model B choice (design_notes.md section 1) is deferred to analysis time rather than baked into the pipeline.",
+
+    "grid_resolution_minutes": 60,
+    "_grid_why": "DECIDED SG 2026-09-05: build an hourly waterfall grid of infusion rates, LOCF-filled at every timepoint, so a 4h window total is a simple sum over its cells. Same structure as nee, which keeps the two exposures consistent and auditable.",
+    "_grid_APPROXIMATION_TO_STATE": "An hourly grid is a DISCRETISED time-weighted mean, not an exact one. A rate change at 10:30 is attributed to whichever cell the last-rate-per-hour rule picks, so the error is bounded by the within-hour timing of rate changes and is at most one hour of one rate per change. At 4h windows this is small and it is uniform across patients, but it is an approximation and belongs in the methods rather than in a footnote. Lower this key to 15 or 30 if a sensitivity analysis wants it; nothing else changes.",
+
+    "infusion": {
+      "source": {"table": "medication_admin_continuous", "categories_from": "config.json medications.opioid_infusion_categories"},
+      "_category_CONFIRMED": "SG 2026-09-05: medication_admin_continuous carries med_category == 'fentanyl' explicitly at UCMC. The config value is verified, not assumed. Phase 0 must STILL assert it and print the categories actually present -- the assertion is what carries this to the next site, whose vocabulary may differ.",
+      "summary": "mean of the hourly grid cells in the window",
+      "hold_hours": 4,
+      "algorithm": "Bin to hours. Take the LAST charted rate per (block, hour), stable-sorted on (time, value). Complete the grid across the block's at-risk span. Treat mar_action_category == 'stop' as a rate of 0, NOT a missing value. Forward-fill at most hold_hours. Everything still empty is 0.",
+      "missing_class": "absence_means_zero",
+      "_absence_why": "Identical to nee, and to design_notes.md section 5: 'drip off is a real zero, not missing.' The LOCF bridges a CHARTING GAP inside a running infusion; it does not carry a rate across a stopped one.",
+      "_HOLD_CAP_IS_LOAD_BEARING": "Without it, LOCF on an infusion rate runs to the end of follow-up. A patient whose drip stopped at hour 10 with no stop row charted would show a non-zero rate at hour 72, and because this is the EXPOSURE rather than a covariate, that error is the outcome of the study rather than noise around it. hold_hours = 4 is inherited from nee, where the coordinating site's median inter-record interval was 57 min (p90 68). VERIFY THE FENTANYL CHARTING INTERVAL AT UCMC; this is the single parameter most worth measuring before the first real run.",
+      "_never_extrapolate": "Bounded by the block's first and last charted medication record, and by the at-risk span. Never filled past either.",
+      "_extubated_windows": "imv_status == 0 forces dose to 0 for that window, per design_notes.md section 10a(a), decided 2026-09-05. That gate is applied AFTER the grid, so an extubated gap reads as the true zero it was."
+    },
+
+    "bolus": {
+      "source": {"table": "medication_admin_intermittent", "categories_from": "config.json medications.opioid_bolus_categories"},
+      "_category_CONFIRMED": "SG 2026-09-05: medication_admin_intermittent carries med_category == 'fentanyl' explicitly at UCMC. Same assertion requirement as the infusion arm. NOTE that other_sedative_categories (propofol, midazolam) were NOT confirmed in the same breath and remain assumed.",
+      "summary": "sum",
+      "_NEVER_LOCF": "A bolus is an EVENT, not a state. It never enters the hourly grid and is never forward-filled. Carrying it forward replicates one dose into every later window: design_notes.md section 5 works the example, where one 50 mcg bolus becomes several hundred mcg. The grid and the sum come out of the same pipeline, so the rule must be applied per column, not globally.",
+      "conversion": "Window bolus total / weight / window_hours, so it lands on the same mcg/kg/hr scale as the infusion and the two are additive."
+    },
+
+    "total": "inf_dose + bolus_dose, both already in mcg/kg/hr."
   },
 
   "encounter_blocks": {

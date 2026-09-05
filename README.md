@@ -117,6 +117,7 @@ protocol. Nothing estimand-defining may live only in the gitignored
 
 ```bash
 .venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
+.venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
 ```
 
 ### Key settings
@@ -237,11 +238,13 @@ CLIF-fentanyl-trajectories/
 │   ├── 06_two_indicator.R
 │   ├── 07_outcomes.R
 │   └── utils/
+│       ├── fio2.py               # FiO2 scale detection + normalisation
 │       ├── paths.R               # output dirs + provenance
 │       ├── paths.py              #   (the two must agree)
 │       └── dependencies.R        # package list for renv's scanner
 ├── tests/
-│   └── test_covariates.py        # integrity checks on config/covariates.json
+│   ├── test_covariates.py        # integrity checks on config/covariates.json
+│   └── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R
