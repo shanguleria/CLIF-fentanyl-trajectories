@@ -17,6 +17,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "config is not usable. Nothing was run." 
 if ($LASTEXITCODE -ne 0) { Write-Error "config/covariates.json failed its integrity checks. Nothing was run." }
 & $py tests/test_fio2.py
 if ($LASTEXITCODE -ne 0) { Write-Error "fio2 unit handling failed its tests. Nothing was run." }
+& $py tests/test_outliers.py
+if ($LASTEXITCODE -ne 0) { Write-Error "outlier bounds failed their tests. Nothing was run." }
 Write-Host ""
 
 Write-Host "== Phase 0: build cohort (Python) =="

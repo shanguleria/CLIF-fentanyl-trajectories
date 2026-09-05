@@ -1312,6 +1312,16 @@ discard it.
 Two mechanisms:
 
 - **`tests/test_fio2.py`** — 10 checks on the unit rule above.
+- **`tests/test_outliers.py`** — 14 checks on `config/outlier_config.json`, the
+  only place a bound is written. Bounds live in **two layers** because a bound is
+  only comparable to a value already in its unit: `med_dose_raw` per (drug,
+  charted unit) applied *before* conversion, `med_dose_converted` per drug applied
+  *after*. Angiotensin is bounded there rather than inherited — clifpy has no
+  angiotensin entry, which made its bounds a partial net. Two derived sanity
+  ceilings are computed rather than written down, so they cannot drift when a
+  bound changes: fentanyl **25.0 mcg/kg/hr** and NEE **17.45 mcg/kg/min-equiv** —
+  the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
+  independent check that both ported tables match theirs.
 - **`tests/test_covariates.py`** — 16 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the

@@ -1,0 +1,99 @@
+{
+  "definition_version": "0.1.0",
+  "_date": "2026-09-05",
+
+  "_purpose": "Single source of truth for outlier bounds. Every bound the pipeline applies comes from this file; no bound is ever hardcoded in a script. Applied by code/utils/outliers.py. Change a bound here and it applies everywhere.",
+
+  "_TWO_LAYERS_AND_WHY": "Bounds are only comparable to a value ALREADY IN THAT UNIT, so there are two layers and they are not interchangeable. (1) med_dose_raw is per (drug, CHARTED unit) and is applied BEFORE clifpy's unit conversion. (2) med_dose_converted is per drug in the analysis unit and is applied AFTER. Applying a converted-unit bound to a raw charted dose is a units error: CRRT-dose-lmtp records that at one participating institution angiotensin is charted in ng/kg/min, where a correct 20 would read as 20x a [0,1] ceiling and be nulled -- removing the drug from NEE for exactly the refractory-shock patients (lmtp_design.json:460).",
+
+  "_LOUD_FAILURE_CONTRACT": "A missing file must RAISE, never be skipped: skipping outlier handling silently changes results. A category present in the data with no bound in this file must be PRINTED, never silently passed over -- an unbounded frame must never look bounded. Both are enforced in code/utils/outliers.py and tested.",
+
+  "_provenance": "Labs, vitals, respiratory settings and med_dose_converted are ported from CRRT-dose-lmtp/config/outlier_config.json (2026-09-05), which is itself the resolved version of clifpy's shipped schemas/outlier_config.yaml. med_dose_raw is seeded from clifpy's nested medication schema, WITH ANGIOTENSIN ADDED -- clifpy has no angiotensin entry at all, which made its bounds a partial net.",
+
+  "analysis_unit_bounds": {
+    "_note": "Flat {variable: [min, max]} in the unit the analysis uses. Applied to long CLIF tables per category, and to wide frames per column.",
+
+    "labs": {
+      "bun": [0.0, 250.0],
+      "bicarbonate": [0.0, 50.0],
+      "pco2_arterial": [0.0, 250.0],
+      "lactate": [0.0, 40.0],
+      "inr": [0.0, 15.0],
+      "bilirubin_total": [0.0, 80.0],
+      "po2_arterial": [0.0, 700.0],
+      "creatinine": [0.0, 20.0],
+      "platelet_count": [0.0, 2000.0]
+    },
+    "_lactate_note": "[0, 40] rather than clifpy's [0, 30], following CRRT-dose-lmtp's measured decision: 45 of 431,788 results at that site fell in (30, 40] and are real; 12 exceeded 40 and are nulled either way.",
+
+    "vitals": {
+      "spo2": [50.0, 100.0],
+      "map": [0.0, 250.0],
+      "weight_kg": [20.0, 1100.0],
+      "height_cm": [50.0, 255.0],
+      "heart_rate": [0.0, 300.0],
+      "temp_c": [32.0, 44.0],
+      "respiratory_rate": [0.0, 100.0],
+      "sbp": [0.0, 300.0],
+      "dbp": [0.0, 200.0]
+    },
+    "_weight_note": "[20, 1100] rather than clifpy's [30, 1100]. weight_kg is the DOSE DENOMINATOR here, so its lower bound sets the derived sanity ceiling below.",
+
+    "respiratory_support": {
+      "fio2_set": [0.21, 1.0],
+      "lpm_set": [0.0, 60.0],
+      "peep_set": [0.0, 50.0]
+    },
+    "_fio2_note": "This bound is applied AFTER code/utils/fio2.py has decided the column's scale and normalised it to a fraction. Applying it first would null every value at a percent-scale site. See covariates.json time_varying.oxygenation.fio2_scale.",
+
+    "patient_assessments": {
+      "gcs_total": [3.0, 15.0],
+      "RASS": [-5.0, 4.0]
+    },
+    "_RASS_note": "Bounded but NOT collected as a covariate (design_notes.md section 6). Present so that if RASS is ever added, it does not arrive unbounded."
+  },
+
+  "med_dose_raw": {
+    "_note": "Per (drug, CHARTED unit). Applied BEFORE unit conversion. A drug/unit pair absent here is reported, not silently skipped.",
+
+    "fentanyl":       {"mcg/kg/hr": [0.0, 10.0], "mcg/hr": [0.0, 500.0], "mg/hr": [0.0, 1.0]},
+    "propofol":       {"mcg/kg/min": [0.0, 200.0], "mg/hr": [0.0, 400.0], "mg/kg/hr": [0.0, 10.0]},
+    "midazolam":      {"mcg/kg/min": [0.0, 10.0], "mg/hr": [0.0, 20.0]},
+    "norepinephrine": {"mcg/kg/min": [0.0, 3.0], "mcg/min": [0.0, 200.0], "mg/hr": [0.0, 10.0]},
+    "epinephrine":    {"mcg/kg/min": [0.0, 2.0], "mcg/min": [0.0, 100.0], "mg/hr": [0.0, 5.0]},
+    "phenylephrine":  {"mcg/kg/min": [0.0, 10.0], "mcg/min": [0.0, 500.0], "mg/hr": [0.0, 20.0]},
+    "dopamine":       {"mcg/kg/min": [0.0, 50.0], "mg/hr": [0.0, 100.0]},
+    "vasopressin":    {"units/min": [0.0, 0.1], "units/hr": [0.0, 6.0]},
+    "angiotensin":    {"ng/kg/min": [0.0, 1000.0], "mcg/kg/min": [0.0, 1.0]},
+    "dobutamine":     {"mcg/kg/min": [0.0, 20.0], "mg/hr": [0.0, 50.0]},
+    "milrinone":      {"mcg/kg/min": [0.0, 1.0], "mg/hr": [0.0, 2.0]},
+
+    "_ANGIOTENSIN_IS_OURS": "clifpy has NO angiotensin entry, so this pair is written here rather than inherited. ng/kg/min [0, 1000] is the same ceiling as mcg/kg/min [0, 1], expressed in the unit some sites actually chart. Without it, angiotensin passes through the raw layer unbounded and the unit guard is the only thing standing between a mis-unit dose and a coefficient of 10."
+  },
+
+  "med_dose_converted": {
+    "_note": "Per drug, in the NEE analysis unit: mcg/kg/min for all EXCEPT vasopressin, which is u/min. Applied AFTER clifpy's conversion and after the unit guard has confirmed the returned unit string.",
+
+    "norepinephrine": [0.0, 3.0],
+    "epinephrine": [0.0, 3.0],
+    "phenylephrine": [0.0, 10.0],
+    "dopamine": [0.0, 20.0],
+    "vasopressin": [0.0, 0.1],
+    "angiotensin": [0.0, 1.0],
+    "dobutamine": [0.0, 40.0],
+    "milrinone": [0.0, 1.0]
+  },
+
+  "_KNOWN_DIVERGENCES_BETWEEN_THE_TWO_LAYERS": {
+    "_why_recorded": "The raw and converted layers come from different sources and do not everywhere agree. Where they disagree, the TIGHTER one binds first and the looser one never fires. That is not necessarily wrong, but it must not be discovered by accident. Checked 2026-09-05; verify against real data before the first analytic run.",
+    "epinephrine": "raw mcg/kg/min ceiling 2.0 (clifpy) is BELOW the converted ceiling 3.0 (CRRT). A charted 2.5 mcg/kg/min is nulled at the raw layer and the converted bound never sees it. Deliberate for now -- clifpy's raw value is the more clinically defensible epinephrine ceiling -- but the converted 3.0 is therefore inert for this drug.",
+    "dopamine": "raw mcg/kg/min ceiling 50.0 (clifpy) is ABOVE the converted ceiling 20.0 (CRRT). Here the converted layer binds. Dopamine above 20 mcg/kg/min is beyond usual practice, so the tighter converted bound is the intended one.",
+    "dobutamine": "raw 20.0 vs converted 40.0 -- raw binds. Same shape as epinephrine."
+  },
+
+  "derived_sanity_ceiling": {
+    "_note": "NOT a clinical limit. This is the value past which a number is PROOF that the bounds above did not run. Derived rather than written down, so it cannot drift when a bound changes -- ported from CRRT-dose-lmtp/code/01_build_cohort.py:176-182.",
+    "total_fentanyl_mcg_kg_hr": "max(med_dose_raw.fentanyl['mcg/hr']) / min(analysis_unit_bounds.vitals.weight_kg) = 500.0 / 20.0 = 25.0. Assert every total_dose is at or below this. A real value is 0.5 to 5.",
+    "nee_mcg_kg_min": "sum of med_dose_converted maxima over the six NEE drugs, each times its coefficient. Assert every nee is at or below it. CRRT-dose-lmtp measured 8,001 against an arithmetic ceiling of 17.45 before its unit guard existed -- the assertion is what makes that visible in one line rather than in a distribution plot."
+  }
+}

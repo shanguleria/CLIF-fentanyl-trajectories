@@ -401,7 +401,7 @@
 
   "outlier_bounds": {
     "_source": "config/outlier_config.json, applied by a single shared helper. No bound is ever hardcoded in a pipeline script.",
-    "_STATUS": "NOT YET WRITTEN. Blocks Phase 0. Must be created before 01_build_cohort.py is implemented.",
+    "_STATUS": "WRITTEN 2026-09-05. config/outlier_config.json (definition_version 0.1.0), applied by code/utils/outliers.py, tested in tests/test_outliers.py (14 checks, in both runners). Two layers: med_dose_raw per (drug, charted unit) applied BEFORE conversion, med_dose_converted per drug applied AFTER. Angiotensin is bounded there rather than inherited, since clifpy has no angiotensin entry.",
     "_loud_failure_required": "A missing config file must RAISE, not skip silently -- skipping outlier handling silently changes results. A category with no bound must be PRINTED, never silently passed over: an unbounded frame must never look bounded.",
     "_unit_caveat": "Bounds are written in each variable's CONVERTED unit and are only comparable to a value already in that unit. See nee._BOUND_RAW_NOT_CONVERTED."
   }

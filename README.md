@@ -118,6 +118,7 @@ protocol. Nothing estimand-defining may live only in the gitignored
 ```bash
 .venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
 .venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
+.venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
 ```
 
 ### Key settings
@@ -226,6 +227,7 @@ CLIF-fentanyl-trajectories/
 ├── run_pipeline.sh / .ps1
 ├── config/
 │   ├── covariates.json           # committed -- covariate PROTOCOL (definition_version)
+│   ├── outlier_config.json       # committed -- the only place bounds are written
 │   ├── config_template.json      # committed
 │   └── config.json               # gitignored, site-local
 ├── code/
@@ -239,12 +241,14 @@ CLIF-fentanyl-trajectories/
 │   ├── 07_outcomes.R
 │   └── utils/
 │       ├── fio2.py               # FiO2 scale detection + normalisation
+│       ├── outliers.py           # applies config/outlier_config.json
 │       ├── paths.R               # output dirs + provenance
 │       ├── paths.py              #   (the two must agree)
 │       └── dependencies.R        # package list for renv's scanner
 ├── tests/
 │   ├── test_covariates.py        # integrity checks on config/covariates.json
-│   └── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
+│   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
+│   └── test_outliers.py          # bounds are applied, and gaps are reported
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R
