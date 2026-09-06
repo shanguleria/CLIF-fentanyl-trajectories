@@ -1339,6 +1339,29 @@ a data gap — the mislabelling that made the reference repo report `nee` as 17%
 `oxygenation_source` is reported alongside as its own breakdown, so the share of
 oxygenation resting on the room-air assumption is visible rather than folded in.
 
+**Oxygenation absence is decomposed by cause** *(SG, 2026-09-06)*, as three
+mutually exclusive rows in the same CSV. "Missing" is not one thing here, and the
+three have different remedies:
+
+| Reason | What it means | Remedy |
+|---|---|---|
+| no PaO₂ and no SpO₂ measured | nothing to pair | none — not recoverable from this data |
+| SpO₂ present but all ≥ 97 | the Severinghaus transform is undefined on the plateau | the true P/F is **right-censored, not high** — see the limitation above |
+| usable measurement but no FiO₂ within the lookback | a PaO₂ or a sub-ceiling SpO₂ existed and could not be paired | the **4h `fio2_lookback_hours`** is the binding constraint, and widening it is a real option |
+
+Only the third is a lookback problem. Reporting them together is what stops a
+lookback fix being applied to a plateau problem, or vice versa.
+
+**`pco2_venous` was considered as a fallback for `pco2_arterial` and rejected**
+*(SG, 2026-09-06)*. It would have recovered a great deal — 181,540 venous results
+against 635,165 arterial, with 1,495 hospitalizations (8.1%) holding venous and no
+arterial — and Chong et al. (PMID 33780397), already cited here for the pH offset,
+gives arterial pCO₂ = venous pCO₂ − 5 mmHg. It is rejected because **CLIF does not
+distinguish central from peripheral venous sampling**, and peripheral venous pCO₂
+diverges from arterial most severely in shock and post-arrest patients — precisely
+this study's population. A single fixed offset would be least valid exactly where
+it matters most. The missingness is accepted and reported instead.
+
 **No variable is dropped for excess missingness.** A variable both frequently
 missing and poorly predicted by the others is as likely an extract or mapping
 problem as genuine clinical non-measurement — that is a finding, not a reason to

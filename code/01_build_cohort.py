@@ -598,6 +598,21 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
     pf_w, sf_w = summarise(pf, "pf_ratio"), summarise(sf, "sf_ratio")
     out = pf_w.merge(sf_w, on=["encounter_block", "window_idx"], how="outer")
 
+    # Raw availability BEFORE pairing, so a missing oxygenation can be attributed
+    # to the measurement, the SpO2 ceiling, or the FiO2 lookback.
+    def flag(d: pd.DataFrame, time_col: str, name: str) -> pd.DataFrame:
+        w = _to_windows(d, cohort, time_col)
+        return (w.groupby(["encounter_block", "window_idx"], as_index=False)
+                 .size().rename(columns={"size": name})[
+                     ["encounter_block", "window_idx", name]])
+
+    avail = flag(pao2, "lab_result_dttm", "_n_pao2")
+    for d, col in ((spo2, "_n_spo2"),
+                   (spo2[spo2["vital_value"] < SPO2_CEILING], "_n_spo2_usable")):
+        avail = avail.merge(flag(d, "recorded_dttm", col),
+                            on=["encounter_block", "window_idx"], how="outer")
+    out = out.merge(avail, on=["encounter_block", "window_idx"], how="outer")
+
     use_pf = out["pf_ratio"].notna()
     out["oxygenation"] = out["pf_ratio"].where(use_pf, out["sf_ratio"])
     out["oxygenation_source"] = np.select(
@@ -607,7 +622,7 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
          out["sf_ratio"].notna() & out["sf_ratio_all_assumed"].fillna(False)],
         ["pf", "pf_room_air", "sf", "sf_room_air"], default="none")
     return out[["encounter_block", "window_idx", "oxygenation", "oxygenation_source",
-                "pf_ratio", "sf_ratio"]]
+                "pf_ratio", "sf_ratio", "_n_pao2", "_n_spo2", "_n_spo2_usable"]]
 
 
 def _severinghaus(spo2: pd.Series) -> pd.Series:
@@ -722,6 +737,54 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
 
 
 SOFA_PARTS = ["sofa_cv", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
+
+
+def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
+    """Why an at-risk window carries no oxygenation, before any carry-forward.
+
+    Three mutually exclusive causes: nothing was measured; SpO2 was measured but
+    sat on the plateau where the Severinghaus transform is undefined; or a usable
+    measurement existed but no FiO2 could be paired to it within the lookback.
+    """
+    a = long[long["at_risk"]].copy()
+    n_at_risk = len(a)
+    pre_na = a["oxygenation"].isna()
+    if "oxygenation_locf" in a.columns:
+        pre_na = pre_na | a["oxygenation_locf"].fillna(False)
+
+    n_pao2 = a["_n_pao2"].fillna(0)
+    n_spo2 = a["_n_spo2"].fillna(0)
+    n_usable = a["_n_spo2_usable"].fillna(0)
+
+    nothing = pre_na & (n_pao2 == 0) & (n_spo2 == 0)
+    plateau = pre_na & (n_pao2 == 0) & (n_spo2 > 0) & (n_usable == 0)
+    no_fio2 = pre_na & ~nothing & ~plateau
+
+    rows = []
+    for label, mask, why in (
+        ("no PaO2 and no SpO2 measured", nothing,
+         "nothing to pair; not recoverable from this data"),
+        (f"SpO2 present but all >= {SPO2_CEILING} (plateau)", plateau,
+         "Severinghaus is undefined on the plateau; P/F is right-censored, not high"),
+        ("usable measurement but no FiO2 within the lookback", no_fio2,
+         f"the {FIO2_LOOKBACK_H}h fio2 pairing window is the binding constraint here"),
+    ):
+        k = int(mask.sum())
+        rows.append({"variable": f"oxygenation absent: {label}",
+                     "kind": "absence_reason", "class": why, "locf_cap_hours": "",
+                     "n_at_risk": n_at_risk, "n_observed": 0, "n_zero_by_rule": 0,
+                     "n_missing_pre_locf": k,
+                     "pct_missing_pre_locf": round(100.0 * k / n_at_risk, 2),
+                     "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
+                     "n_missing_final": k,
+                     "pct_missing_final": round(100.0 * k / n_at_risk, 2)})
+    total = int(pre_na.sum())
+    print(f"    oxygenation absent before LOCF: {total:,} of {n_at_risk:,} "
+          f"({100*total/n_at_risk:.1f}%)")
+    for r in rows:
+        print(f"      {r['variable'][20:]:<52} {r['n_missing_pre_locf']:>8,}"
+              f" {r['pct_missing_pre_locf']:>6.2f}%")
+    return pd.DataFrame(rows)
 
 
 def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
@@ -1200,7 +1263,9 @@ def main() -> None:
     long = pd.concat([long.reset_index(drop=True),
                       score_sofa(long).reset_index(drop=True)], axis=1)
     per_variable = pd.concat(
-        [per_variable, _sofa_report_row(long)], ignore_index=True)
+        [per_variable, _sofa_report_row(long),
+         oxygenation_absence_reasons(long)], ignore_index=True)
+    long = long.drop(columns=[c for c in long.columns if c.startswith("_n_")])
     cols = ["variable", "kind", "locf_cap_hours", "n_observed", "n_zero_by_rule",
             "pct_missing_pre_locf", "pct_filled_by_locf", "pct_missing_final"]
     print("\n  missingness, at-risk rows only")

@@ -149,6 +149,52 @@ def test_pattern_table_pools_small_cells():
     assert len(pooled) == 1, f"rare patterns must be pooled below {min_cell}"
 
 
+# ------------------------------------------------- oxygenation absence reasons
+def _oxy(n_pao2, n_spo2, n_usable, oxy=np.nan):
+    return pd.DataFrame([{"at_risk": True, "oxygenation": oxy,
+                          "_n_pao2": n_pao2, "_n_spo2": n_spo2,
+                          "_n_spo2_usable": n_usable}])
+
+
+def _reason_counts(df):
+    r = B.oxygenation_absence_reasons(df)
+    return {row["variable"].split(": ", 1)[1]: row["n_missing_pre_locf"]
+            for _, row in r.iterrows()}
+
+
+def test_nothing_measured_is_attributed_to_the_measurement():
+    c = _reason_counts(_oxy(0, 0, 0))
+    assert c["no PaO2 and no SpO2 measured"] == 1
+    assert sum(c.values()) == 1, "the three reasons must be mutually exclusive"
+
+
+def test_spo2_on_the_plateau_is_attributed_to_the_ceiling_not_the_lookback():
+    """SpO2 measured but all >= 97: the transform is undefined, not the FiO2 absent."""
+    c = _reason_counts(_oxy(0, 5, 0))
+    assert c[f"SpO2 present but all >= {B.SPO2_CEILING} (plateau)"] == 1
+    assert c["usable measurement but no FiO2 within the lookback"] == 0
+
+
+def test_a_usable_measurement_with_no_value_is_attributed_to_fio2():
+    """A PaO2 exists and no oxygenation came out, so the FiO2 pairing failed."""
+    c = _reason_counts(_oxy(3, 0, 0))
+    assert c["usable measurement but no FiO2 within the lookback"] == 1
+    c2 = _reason_counts(_oxy(0, 5, 5))
+    assert c2["usable measurement but no FiO2 within the lookback"] == 1
+
+
+def test_a_window_with_a_value_is_not_counted_as_absent():
+    c = _reason_counts(_oxy(3, 5, 5, oxy=250.0))
+    assert sum(c.values()) == 0
+
+
+def test_the_three_reasons_partition_the_absent_windows():
+    df = pd.concat([_oxy(0, 0, 0), _oxy(0, 5, 0), _oxy(3, 0, 0),
+                    _oxy(0, 5, 5), _oxy(2, 2, 2, oxy=300.0)], ignore_index=True)
+    c = _reason_counts(df)
+    assert sum(c.values()) == 4, "four absent windows, each counted exactly once"
+
+
 # --------------------------------------------------------- outcome ascertainment
 def test_extubation_is_a_gap_longer_than_the_success_window():
     """The rule is 'not followed by reintubation within 72h', so an IMV record
