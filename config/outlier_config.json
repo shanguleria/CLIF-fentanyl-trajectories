@@ -59,15 +59,16 @@
     "fentanyl":       {"mcg/kg/hr": [0.0, 10.0], "mcg/hr": [0.0, 500.0], "mg/hr": [0.0, 1.0]},
     "propofol":       {"mcg/kg/min": [0.0, 200.0], "mg/hr": [0.0, 400.0], "mg/kg/hr": [0.0, 10.0]},
     "midazolam":      {"mcg/kg/min": [0.0, 10.0], "mg/hr": [0.0, 20.0]},
-    "norepinephrine": {"mcg/kg/min": [0.0, 3.0], "mcg/min": [0.0, 200.0], "mg/hr": [0.0, 10.0]},
+    "norepinephrine": {"mcg/kg/min": [0.0, 3.0], "mcg/min": [0.0, 200.0], "mg/min": [0.0, 0.2], "mg/hr": [0.0, 10.0]},
     "epinephrine":    {"mcg/kg/min": [0.0, 2.0], "mcg/min": [0.0, 100.0], "mg/hr": [0.0, 5.0]},
     "phenylephrine":  {"mcg/kg/min": [0.0, 10.0], "mcg/min": [0.0, 500.0], "mg/hr": [0.0, 20.0]},
-    "dopamine":       {"mcg/kg/min": [0.0, 50.0], "mg/hr": [0.0, 100.0]},
-    "vasopressin":    {"units/min": [0.0, 0.1], "units/hr": [0.0, 6.0]},
+    "dopamine":       {"mcg/kg/min": [0.0, 50.0], "mcg/min": [0.0, 5000.0], "mg/hr": [0.0, 100.0]},
+    "vasopressin":    {"units/min": [0.0, 0.1], "units/hr": [0.0, 6.0], "milli-units/min": [0.0, 100.0], "milli-units/kg/min": [0.0, 5.0], "milli-units/kg/hr": [0.0, 300.0]},
     "angiotensin":    {"ng/kg/min": [0.0, 1000.0], "mcg/kg/min": [0.0, 1.0]},
     "dobutamine":     {"mcg/kg/min": [0.0, 20.0], "mg/hr": [0.0, 50.0]},
     "milrinone":      {"mcg/kg/min": [0.0, 1.0], "mg/hr": [0.0, 2.0]},
 
+    "_UNITS_MEASURED_AT_UCMC": "Added 2026-09-06 after the NO BOUND report named them. Measured over the vasopressor rows: angiotensin is 100% ng/kg/min (34,589); phenylephrine 13.3% mcg/min (37,095); vasopressin 99.9% Units/min (277,720) with 200 rows (0.07%) in milli-unit variants; dopamine 1 row mcg/min; norepinephrine 3 mcg/min and 3 mg/min. Vasopressin is dosed in units/min clinically (SG), so the milli-unit rows are a charting artifact -- bounded here rather than dropped, and converted to units/min downstream. Unit matching is case-insensitive: the schema says units/min, this site charts Units/min, and a case-sensitive lookup left 277,720 vasopressin rows unbounded.",
     "_ANGIOTENSIN_IS_OURS": "clifpy has NO angiotensin entry, so this pair is written here rather than inherited. ng/kg/min [0, 1000] is the same ceiling as mcg/kg/min [0, 1], expressed in the unit some sites actually chart. Without it, angiotensin passes through the raw layer unbounded and the unit guard is the only thing standing between a mis-unit dose and a coefficient of 10."
   },
 

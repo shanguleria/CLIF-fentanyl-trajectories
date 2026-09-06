@@ -128,7 +128,10 @@ def apply_med_raw(
         n = len(idx)
         rep.n_checked += n
         label = f"{drug} [{unit}]"
-        per_unit = raw.get(drug)
+        # Units are compared case- and space-insensitively: the schema says
+        # "units/min" and sites chart "Units/min".
+        per_unit = {k.lower().strip(): v for k, v in (raw.get(drug) or {}).items()}
+        unit = str(unit).lower().strip()
         if not per_unit or unit not in per_unit:
             rep.unbounded.append(label)
             rep.per_key[label] = (n, 0)

@@ -499,16 +499,23 @@ def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
 
     m, rep = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
     print(rep)
-    conv, _ = convert_dose_units_by_med_category(
-        m, vitals_df=t["vitals"], preferred_units=NEE_PREFERRED)
+    m = _attach_current_weight(m, t, mapping, cohort)
+    conv, _ = convert_dose_units_by_med_category(m, preferred_units=NEE_PREFERRED)
 
     # clifpy leaves the raw value in place when it cannot convert; check the unit string.
     want = conv["med_category"].map(NEE_PREFERRED).astype("string").str.lower()
     got = conv["med_dose_unit_converted"].astype("string").str.lower()
     bad = conv["med_dose"].notna() & (got.isna() | (got != want))
     if bad.any():
-        counts = conv.loc[bad].groupby(["med_category", "med_dose_unit_converted"]).size()
-        raise SystemExit(f"unit conversion failed and was not nulled:\n{counts}")
+        counts = (conv.loc[bad].groupby(["med_category", "med_dose_unit",
+                                         "med_dose_unit_converted"]).size())
+        n_no_w = int(conv.loc[bad, "weight_kg"].isna().sum())
+        raise SystemExit(
+            f"unit conversion failed and clifpy did not null it "
+            f"({int(bad.sum()):,} rows; {n_no_w:,} have no weight):\n{counts}\n"
+            f"clifpy leaves the RAW value in med_dose_converted and reports the "
+            f"failure only in the unit string, so this must raise rather than pass."
+        )
 
     conv = conv.rename(columns={"med_dose_converted": "dose_std"})
     conv, rep = apply_med_converted(conv, "med_category", "dose_std", config=OUTLIERS)
@@ -659,6 +666,41 @@ def _sofa_inputs(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Dat
     return out
 
 
+def _attach_current_weight(med: pd.DataFrame, t: dict, mapping: pd.DataFrame,
+                           cohort: pd.DataFrame) -> pd.DataFrame:
+    """Attach the most recent charted weight at each admin time.
+
+    clifpy demands a weight whenever the PREFERRED unit is weight-based, and that
+    branch is first in its CASE, so a missing weight masks every other cause of a
+    conversion failure. Attaching the column here also makes clifpy skip its own
+    vitals lookup. NEE follows CURRENT weight, unlike the dose denominator, which
+    is fixed at the anchor -- see covariates.json weight._DO_NOT_UNIFY.
+    """
+    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
+    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
+    w = (vit.loc[vit["vital_category"] == "weight_kg",
+                 ["encounter_block", "recorded_dttm", "vital_value"]]
+            .dropna().sort_values("recorded_dttm", kind="stable"))
+
+    out = med.sort_values("admin_dttm", kind="stable")
+    out = pd.merge_asof(out, w, left_on="admin_dttm", right_on="recorded_dttm",
+                        by="encounter_block", direction="backward",
+                        suffixes=("", "_w"))
+    out = out.rename(columns={"vital_value": "weight_kg"})
+
+    first = w.groupby("encounter_block")["vital_value"].first().rename("_first_w")
+    out = out.merge(first, on="encounter_block", how="left")
+    filled = out["weight_kg"].isna() & out["_first_w"].notna()
+    out.loc[filled, "weight_kg"] = out.loc[filled, "_first_w"]
+    if int(filled.sum()):
+        print(f"    weight backfilled from the block's first charted value: "
+              f"{int(filled.sum()):,} rows administered before any weight")
+    still = int(out["weight_kg"].isna().sum())
+    if still:
+        print(f"    {still:,} rows have no weight anywhere in the block")
+    return out.drop(columns=[c for c in ("_first_w", "recorded_dttm") if c in out.columns])
+
+
 def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Max mcg/kg/min per window for the four SOFA vasopressors.
 
@@ -675,9 +717,9 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
         return pd.DataFrame(columns=cols)
 
     m, _ = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
+    m = _attach_current_weight(m, t, mapping, cohort)
     conv, _ = convert_dose_units_by_med_category(
-        m, vitals_df=t["vitals"],
-        preferred_units={d: "mcg/kg/min" for d in SOFA_PRESSORS})
+        m, preferred_units={d: "mcg/kg/min" for d in SOFA_PRESSORS})
     got = conv["med_dose_unit_converted"].astype("string").str.lower()
     conv = conv[got.eq("mcg/kg/min")].rename(columns={"med_dose_converted": "dose_std"})
     conv = conv[conv["dose_std"] > 0]
