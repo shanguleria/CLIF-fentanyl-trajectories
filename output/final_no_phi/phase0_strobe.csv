@@ -1,0 +1,32 @@
+step,n
+hospitalizations,166814
+encounter blocks after stitching,166677
+distinct hospital_id,1
+blocks transferring between hospitals,0
+blocks containing any IMV record,18503
+hospitalizations to load,18522
+blocks with any IMV record,18503
+blocks with an intubation anchor,18503
+adult blocks (age >= 18),18503
+blocks with follow-up after the anchor,18490
+patients contributing more than one block,1212
+blocks per patient (max),17
+blocks with no weight at all,42
+blocks whose weight came from after the anchor,1997
+blocks with a usable weight,18448
+blocks with a BMI,17392
+patient-window rows,332064
+at-risk rows,305606
+windows whose total_dose exceeds 25 mcg/kg/hr (bolus stacking),1
+at-risk windows with any fentanyl,104704
+at-risk windows with a bolus,32969
+"blocks with no diagnosis rows (CCI unknown, not 0)",17
+at-risk windows with a complete 6-component SOFA,28463
+at-risk windows with no SOFA component at all,350
+landmark-eligible blocks (ventilated at T=72h),7092
+blocks with an extubation at or after T,5442
+blocks with an unresolved discharge_category,5
+  extubation outcome = successful extubation,3563
+  extubation outcome = death,2055
+  extubation outcome = censored,1474
+  30-day analysis: died,2474

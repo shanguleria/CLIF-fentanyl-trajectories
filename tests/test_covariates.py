@@ -155,7 +155,7 @@ def _parse_section_11_table() -> dict[str, dict[str, str]]:
     for line in NOTES[start:end].split("\n"):
         if not line.startswith("|") or line.startswith("|---"):
             continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
+        cells = [c.replace("*", "").strip() for c in line.strip("|").split("|")]
         if len(cells) != 6 or cells[0] == "Variable":
             continue
         names = re.findall(r"`([^`]+)`", cells[0])

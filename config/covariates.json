@@ -104,8 +104,8 @@
       "algorithm": "Scored in 01_build_cohort.py:score_sofa from this table's own per-window components. See _COMPUTED_HERE_NOT_BY_CLIFPY.",
       "summary": "max",
       "_summary_why": "Worst in window is the severity signal.",
-      "locf": {"eligible": true, "cap_hours": 24},
-      "_cap_why": "SOFA is conventionally a daily score; its components are charted on daily-to-shift cadence. A day is the longest a total score stays believable.",
+      "locf": {"eligible": false},
+      "_no_outer_locf_why": "AMENDED 2026-09-06. sofa_total previously carried its own 24h LOCF on top of the component fills, which double-carried: a score computed from already-carried inputs was then carried again. The components are filled first and the score is derived from them, so a window with no component at all stays NA rather than inheriting an older score.",
       "missing_class": "time_varying",
       "_fill_na_scores_with_zero_FALSE": "clifpy's default scores a MISSING component as 0, i.e. normal, which biases severity downward exactly where the data are thinnest. Must be False.",
       "_COMPUTED_HERE_NOT_BY_CLIFPY": "Scored in 01_build_cohort.py:score_sofa from the same per-window aggregates the rest of the table uses, so sofa_resp derives from the same oxygenation column the analysis reports. Cutpoints are Vincent 1996. Two changes from clifpy and from CLIF-epidemiology-of-CRRT: (1) P/F below 200 off IMV/NIPPV/CPAP SCORES rather than returning NULL; (2) missing components are summed with min_count=1 and sofa_n_components records how many were available, instead of being scored as 0 (normal). CORRECTION to an earlier note here: clifpy omitting vasopressin/phenylephrine/angiotensin from the cardiovascular component is NOT a defect -- the original score is defined on dopamine, dobutamine, epinephrine and norepinephrine only. Renal stays creatinine-only because CLIF core has no intake_output table; urine output is absent, not proxied.",
@@ -283,8 +283,8 @@
       "label": "Total bilirubin",
       "source": {"table": "labs", "category": "bilirubin_total", "value": "lab_value_numeric", "time": "lab_result_dttm"},
       "summary": "max",
-      "locf": {"eligible": true, "cap_hours": 24},
-      "_cap_why": "The slowest-moving of the six; it changes over days, not hours. Drawn daily. A 24h cap is conservative relative to its biology and is set by the charting cadence rather than the kinetics.",
+      "locf": {"eligible": true, "cap_hours": 72},
+      "_cap_why": "72h, the one lab that departs from the uniform 24h rule (SG, 2026-09-06). It is the slowest-moving of the six -- bilirubin changes over days, not hours -- and it is not drawn daily in most ICU patients. MEASURED: at a 24h cap it was present in only 14.1% of at-risk windows, which capped 6-component SOFA at roughly that figure regardless of every other component. The kinetics support the longer carry; the 24h cap was set by charting cadence, which is the wrong constraint for this analyte.",
       "missing_class": "time_varying"
     }
   },

@@ -721,6 +721,35 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
     return wide[cols]
 
 
+SOFA_PARTS = ["sofa_cv", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
+
+
+def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
+    """Per-component coverage and the sofa_total row of the missingness report."""
+    a = long[long["at_risk"]]
+    n = len(a)
+    print(f"    {'component':<14}{'scored':>10}{'pct':>8}")
+    for c in SOFA_PARTS:
+        k = int(a[c].notna().sum())
+        print(f"    {c:<14}{k:>10,}{100*k/n:>7.1f}%")
+    dist = a["sofa_n_components"].value_counts().sort_index()
+    shown = "  ".join(f"{int(k)}:{100*v/n:.1f}%" for k, v in dist.items())
+    print(f"    components per window -> {shown}")
+    print(f"    sofa_total median {a['sofa_total'].median():.0f} "
+          f"(IQR {a['sofa_total'].quantile(.25):.0f}-{a['sofa_total'].quantile(.75):.0f})")
+    miss = int(a["sofa_total"].isna().sum())
+    return pd.DataFrame([{
+        "variable": "sofa_total", "kind": "derived",
+        "class": "scored after all inputs are filled", "locf_cap_hours": "",
+        "n_at_risk": n, "n_observed": n - miss, "n_zero_by_rule": 0,
+        "n_missing_pre_locf": miss,
+        "pct_missing_pre_locf": round(100.0 * miss / n, 2) if n else float("nan"),
+        "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
+        "n_missing_final": miss,
+        "pct_missing_final": round(100.0 * miss / n, 2) if n else float("nan"),
+    }])
+
+
 def locf_sofa_inputs(df: pd.DataFrame) -> pd.DataFrame:
     """Carry the SOFA component inputs forward before the score is computed.
 
@@ -909,6 +938,11 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
         if not k.startswith("_") and (v.get("locf") or {}).get("eligible") and k in df.columns
     }
     df = df.sort_values(["encounter_block", "window_idx"], kind="stable")
+    for v, cap in SOFA_INPUT_CAPS.items():
+        if v in df.columns:
+            df[v] = df.groupby("encounter_block")[v].ffill(
+                limit=max(int(cap // WINDOW_H), 1))
+
     filled = {}
     for v, cap in locf_caps.items():
         limit = max(int(cap // WINDOW_H), 1)
@@ -1155,15 +1189,18 @@ def main() -> None:
     if len(press):
         sofa_in = sofa_in.merge(press, on=["encounter_block", "window_idx"], how="outer")
     long = long.merge(sofa_in, on=["encounter_block", "window_idx"], how="left")
-    long = locf_sofa_inputs(long)
-    long = pd.concat([long.reset_index(drop=True),
-                      score_sofa(long).reset_index(drop=True)], axis=1)
-    comp = long.loc[long["at_risk"], "sofa_n_components"]
-    note("at-risk windows with a complete 6-component SOFA", int((comp == 6).sum()))
-    note("at-risk windows with no SOFA component at all", int((comp == 0).sum()))
 
     print("\nMissingness and LOCF")
     long, per_variable, per_pattern = apply_missingness(long)
+
+    # SOFA is scored only once every input has been carried forward. Scoring it
+    # earlier used raw bilirubin and oxygenation while the other four components
+    # were filled, which is what held 6-component coverage at 9.3%.
+    print("\n  SOFA")
+    long = pd.concat([long.reset_index(drop=True),
+                      score_sofa(long).reset_index(drop=True)], axis=1)
+    per_variable = pd.concat(
+        [per_variable, _sofa_report_row(long)], ignore_index=True)
     cols = ["variable", "kind", "locf_cap_hours", "n_observed", "n_zero_by_rule",
             "pct_missing_pre_locf", "pct_filled_by_locf", "pct_missing_final"]
     print("\n  missingness, at-risk rows only")

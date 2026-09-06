@@ -1006,7 +1006,7 @@ hand-written list drifts, and the first draft of exactly such a list in
 | Variable | Type | Summary | LOCF | Cap | Missingness class |
 |---|---|---|---|---|---|
 | `inf_dose`, `bolus_dose`, `total_dose` | exposure | **see §5** — not restated here | — | — | drip off is a true `0` |
-| `sofa_total` | derived score | **max** (worst) | yes | 24h | `time_varying` |
+| `sofa_total` | derived score | scored from filled components | **no** | — | `time_varying` |
 | `nee` | state (rate) | **max of the summed step function** | **no** | — | `absence_means_zero` |
 | `oxygenation` | derived ratio | **min** (worst) | yes | 8h | `time_varying` |
 | `oxygenation_source` | provenance | stamped, not summarised | never | — | own level, never imputed |
@@ -1017,7 +1017,7 @@ hand-written list drifts, and the first draft of exactly such a list in
 | `pco2_arterial` | measurement | **max** | yes | 24h | `time_varying` |
 | `lactate` | measurement | **max** | yes | 24h | `time_varying` |
 | `inr` | measurement | **max** | yes | 24h | `time_varying` |
-| `bilirubin_total` | measurement | **max** | yes | 24h | `time_varying` |
+| `bilirubin_total` | measurement | **max** | yes | **72h** | `time_varying` |
 
 `bicarbonate` is the one lab summarised by `min`: unlike the other five, its
 abnormal direction is down.
@@ -1075,7 +1075,8 @@ information the bedside actually had.
 
 | Cap | Variables | Reasoning |
 |---|---|---|
-| **24h** (6 windows) | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total`, `sofa_total` | Minimum daily labs in the ICU; the clinician acts on the last available value. |
+| **24h** (6 windows) | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr` | Minimum daily labs in the ICU; the clinician acts on the last available value. |
+| **72h** (18 windows) | `bilirubin_total` | *(SG, 2026-09-06.)* The one lab that departs from the uniform rule. It is the slowest-moving of the six — bilirubin changes over days — and is not drawn daily in most ICU patients. **Measured:** at 24h it was present in only **14.1%** of at-risk windows, which capped 6-component SOFA at roughly that figure regardless of every other component. The kinetics support the longer carry; 24h was set by charting cadence, the wrong constraint for this analyte. |
 | **8h** (2 windows) | `oxygenation` | **Not a lab.** SpO₂ is charted at least hourly, so an 8h gap in oxygenation is a data fault rather than a draw-cadence artefact. The daily-labs argument does not extend to it. |
 
 **The cap still binds.** It bounds any carry at 6 windows and rules out the

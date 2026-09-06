@@ -1,13 +1,19 @@
 # ---- PHI and patient-level artifacts: NEVER commit ----
-# output/intermediate_phi/ is the ONLY place patient-level artifacts are written.
-# Rule is by directory, not by extension: an extension rule misses the file type
-# nobody thought of.
-output/intermediate_phi/
+# Everything under output/ is treated as PHI unless explicitly allowed back.
+# NOTE the trailing /* rather than a bare `output/`: git does not descend into an
+# excluded DIRECTORY, so a bare `output/` makes every negation below dead and
+# takes final_no_phi with it.
+output/*
+!output/final_no_phi/
+output/final_no_phi/*
+!output/final_no_phi/**/
+!output/final_no_phi/**/*.csv
+!output/final_no_phi/**/*.json
+!output/final_no_phi/*.csv
+!output/final_no_phi/*.json
 logs/
 *.parquet
-*.csv
 !config/*.csv
-!output/**/final_no_phi/**/*.csv
 
 # ---- R ----
 .Rproj.user/

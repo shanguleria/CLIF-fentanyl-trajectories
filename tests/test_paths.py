@@ -51,8 +51,26 @@ def test_phi_rule_is_by_directory_not_by_extension():
         assert rc == 0, f"{path} is COMMITTABLE -- the PHI directory rule is not covering it"
 
 
+def test_a_new_directory_under_output_is_ignored_by_default():
+    """output/ denies by default and allows back explicitly, so a directory added
+    later is PHI-safe without anyone remembering to add a rule. A bare `output/`
+    would not work: git does not descend into an excluded directory, which kills
+    every negation below it and takes final_no_phi with it."""
+    for path in ("output/some_new_dir/x.csv", "output/some_new_dir/x.parquet",
+                 "output/scratch/notes.txt"):
+        rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
+        assert rc == 0, f"{path} is COMMITTABLE; output/ must deny by default"
+
+
+def test_a_stray_parquet_in_the_shareable_set_is_still_blocked():
+    rc = subprocess.run(["git", "check-ignore", "-q",
+                         "output/final_no_phi/leak.parquet"], cwd=REPO).returncode
+    assert rc == 0, "final_no_phi allows .csv and .json back, not patient-level formats"
+
+
 def test_shareable_outputs_are_not_ignored():
     for path in ("output/final_no_phi/phase0_strobe.csv",
+                 "output/final_no_phi/phase0_provenance.json",
                  "output/final_no_phi/validation/scaling_experiments.csv"):
         rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
         assert rc != 0, f"{path} is ignored, but final_no_phi is the shareable set"
