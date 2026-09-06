@@ -14,7 +14,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "code"))
-from utils.paths import site_dirs  # noqa: E402
+from utils.paths import (  # noqa: E402
+    MANIFEST, clear_owned_outputs, config_digests, require_manifest, site_dirs,
+)
 
 SOURCE = list((REPO / "code").rglob("*.py")) + list((REPO / "code").rglob("*.R")) \
     + list((REPO / "validation").rglob("*.py")) + list((REPO / "validation").rglob("*.R"))
@@ -74,6 +76,68 @@ def test_shareable_outputs_are_not_ignored():
                  "output/final_no_phi/validation/scaling_experiments.csv"):
         rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
         assert rc != 0, f"{path} is ignored, but final_no_phi is the shareable set"
+
+
+def test_absent_manifest_stops_a_downstream_phase():
+    """A stale parquet on disk looks perfectly valid. The manifest is written last,
+    so its absence means the run did not complete."""
+    import json, tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
+        try:
+            require_manifest(d, {}, REPO)
+        except SystemExit as e:
+            assert "never completed" in str(e)
+        else:
+            raise AssertionError("an absent manifest must stop the phase")
+
+
+def test_a_changed_config_invalidates_the_outputs():
+    import json, tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
+        stale = dict(config_digests(REPO))
+        stale["covariates.json"] = "0" * 16
+        (Path(tmp) / MANIFEST).write_text(json.dumps({"config_digests": stale}))
+        try:
+            require_manifest(d, {}, REPO)
+        except SystemExit as e:
+            assert "config has changed" in str(e) and "covariates.json" in str(e)
+        else:
+            raise AssertionError("a changed config must invalidate the outputs")
+
+
+def test_a_matching_manifest_passes():
+    import json, tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
+        (Path(tmp) / MANIFEST).write_text(
+            json.dumps({"config_digests": config_digests(REPO)}))
+        require_manifest(d, {}, REPO)
+
+
+def test_clearing_removes_a_stale_output():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = {"out_phi": Path(tmp), "out_final": Path(tmp)}
+        (Path(tmp) / "trajectory_long.parquet").write_text("stale")
+        n = clear_owned_outputs(d, {"out_phi": ["trajectory_long.parquet"]})
+        assert n == 1
+        assert not (Path(tmp) / "trajectory_long.parquet").exists(), (
+            "a crash after clearing must leave nothing, not a stale file"
+        )
+
+
+def test_the_review_csvs_are_inside_the_phi_boundary():
+    """They are one row per patient-window, so they are PHI regardless of format."""
+    for name in ("trajectory_long.csv", "time_to_event.csv"):
+        path = f"output/intermediate_phi/{name}"
+        rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
+        assert rc == 0, f"{path} is COMMITTABLE -- a per-patient CSV is still PHI"
 
 
 def test_the_phi_directory_carries_its_warning_label():

@@ -121,7 +121,7 @@ protocol. Nothing estimand-defining may live only in the gitignored
 .venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
 .venv/bin/python tests/test_build_cohort.py # 30 checks on Phase 0 logic
 .venv/bin/python tests/test_doses.py        # 11 checks on dose unit conversion
-.venv/bin/python tests/test_paths.py        #  5 checks on where output may go
+.venv/bin/python tests/test_paths.py        # 12 checks on output locations + staleness
 ```
 
 ### Key settings
@@ -263,6 +263,7 @@ CLIF-fentanyl-trajectories/
 │   └── design_notes.md           # protocol, decisions, evidence
 ├── output/
 │   ├── intermediate_phi/         # gitignored -- ALL patient-level artifacts
+│   │                             #   .parquet = pipeline input, .csv = review copy
 │   └── final_no_phi/             # the shareable set (incl. validation/)
 └── logs/                         # gitignored
 ```

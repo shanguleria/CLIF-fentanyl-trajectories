@@ -31,7 +31,9 @@ from utils.outliers import (  # noqa: E402
     apply_long, apply_med_converted, apply_med_raw, fentanyl_sanity_ceiling,
     load_config as load_outliers, nee_sanity_ceiling,
 )
-from utils.paths import provenance, site_dirs  # noqa: E402
+from utils.paths import (  # noqa: E402
+    clear_owned_outputs, provenance, site_dirs, write_manifest,
+)
 
 CONFIG = json.loads((REPO / "config" / "config.json").read_text())
 COV = json.loads((REPO / "config" / "covariates.json").read_text())
@@ -67,6 +69,17 @@ LAB_VARS = {
 ZERO_VARS = COV["missing_values"]["absence_means_zero"]["members"]
 NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
 SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
+
+# Everything this script owns. Cleared before it runs so a crash cannot leave a
+# stale file, or worse a mismatched pair written by two different code versions.
+OWNED = {
+    "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
+                "time_to_event.parquet", "time_to_event.csv",
+                "hospital_intervals.parquet"],
+    "out_final": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
+                  "phase0_strobe.csv", "phase0_provenance.json",
+                  "phase0_manifest.json"],
+}
 
 STROBE: list[tuple[str, int]] = []
 
@@ -1177,6 +1190,9 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
 
 def main() -> None:
     dirs = site_dirs(REPO)
+    n_cleared = clear_owned_outputs(dirs, OWNED)
+    if n_cleared:
+        print(f"cleared {n_cleared} output(s) from a previous run")
     prov = provenance(CONFIG)
     print(f"site {prov['site_name']}  clif {prov['clif_version']}  code {prov['code_version']}")
     print(f"grid {WINDOW_H}h x {N_WINDOWS} to {EXTENT_H}h   stitch {STITCH_H}h   "
@@ -1277,20 +1293,35 @@ def main() -> None:
     tte = build_time_to_event(cohort, long, imv_records, mapping)
 
     out = dirs["out_phi"]
+    # Parquet is what later phases read; CSV is the same table for human review.
     long.to_parquet(out / "trajectory_long.parquet", index=False)
+    long.to_csv(out / "trajectory_long.csv", index=False)
     tte.to_parquet(out / "time_to_event.parquet", index=False)
+    tte.to_csv(out / "time_to_event.csv", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
     per_variable.to_csv(dirs["out_final"] / "phase0_missingness.csv", index=False)
     if len(per_pattern):
-        per_pattern.to_csv(dirs["out_final"] / "phase0_missingness_patterns.csv", index=False)
+        per_pattern.to_csv(dirs["out_final"] / "phase0_missingness_patterns.csv",
+                           index=False)
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
         dirs["out_final"] / "phase0_strobe.csv", index=False)
     (dirs["out_final"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
+
+    # Written last: its presence is what marks these outputs complete and current.
+    write_manifest(dirs, CONFIG, REPO, {
+        "trajectory_long": len(long),
+        "time_to_event": len(tte),
+        "hospital_intervals": len(hi),
+    })
 
     print(f"\nwritten to {out}")
     print(f"  trajectory_long.parquet  {len(long):,} rows x {long.shape[1]} cols")
     print(f"  time_to_event.parquet    {len(tte):,} rows")
     print(f"  hospital_intervals.parquet {len(hi):,} rows")
+    for name in ("trajectory_long.csv", "time_to_event.csv"):
+        mb = (out / name).stat().st_size / 1e6
+        print(f"  {name:<26} {mb:,.1f} MB  (review copy)")
+    print(f"  phase0_manifest.json written -- outputs are marked complete")
 
 
 if __name__ == "__main__":

@@ -1367,6 +1367,32 @@ missing and poorly predicted by the others is as likely an extract or mapping
 problem as genuine clinical non-measurement — that is a finding, not a reason to
 discard it.
 
+### Re-runs must not read stale outputs
+
+Phase 0 is re-run often, and several runs during development died part-way. A
+crash between two writes leaves a **mismatched pair** from two different code
+versions, which is worse than either file being absent — and a stale parquet on
+disk looks perfectly valid to whatever reads it next.
+
+Three mechanisms, in order:
+
+1. **`clear_owned_outputs()` runs first.** The script declares the files it owns
+   and deletes them before doing any work, so a crash leaves nothing.
+2. **`phase0_manifest.json` is written last**, after every output has succeeded.
+   It carries the code version, the SHA-256 of `config.json`, `covariates.json`
+   and `outlier_config.json`, and the row counts. Its presence *is* the
+   completion signal.
+3. **`require_manifest()` gates every downstream phase.** An absent manifest, or
+   a config digest that no longer matches, stops the phase with a message telling
+   the reader to re-run rather than analyse stale tables. Implemented in both
+   `paths.py` and `paths.R`, which must agree.
+
+**Both tables are also written as `.csv` beside the `.parquet`** for human review
+*(SG, 2026-09-06)*. The parquet is what later phases read; the CSV exists so the
+tables can be opened and checked. Both are **inside `output/intermediate_phi/`** —
+a per-patient-window CSV is PHI regardless of format, and a test asserts it is
+covered by the ignore rule.
+
 ### What enforces all of this
 
 `config/covariates.json` is only a policy statement unless something checks it.
