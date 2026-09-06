@@ -288,17 +288,111 @@ def test_an_unknown_device_value_raises_rather_than_becoming_null():
 
 
 def test_empty_cohort_raises_instead_of_crashing_on_nan():
+    """Realistic path: every block is ventilated for less than the minimum, so the
+    duration filter empties the cohort."""
     blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
-                            "block_discharge_dttm": pd.Timestamp("2026-01-02")}])
-    no_anchor = pd.DataFrame(columns=["encounter_block", "anchor_dttm"])
+                            "block_discharge_dttm": pd.Timestamp("2026-01-05")}])
+    anchor = pd.DataFrame([{"encounter_block": "b0",
+                            "anchor_dttm": pd.Timestamp("2026-01-01"),
+                            "first_imv_episode_hours": B.MIN_IMV_H - 1,
+                            "first_episode_records": 2, "n_imv_episodes": 1}])
     try:
-        B.build_cohort(blocks, no_anchor)
+        B.build_cohort(blocks, anchor)
     except SystemExit as e:
-        assert "bug, not a" in str(e) and "mCIDE casing" in str(e)
-    except Exception as e:
-        raise AssertionError(f"expected a clear SystemExit, got {type(e).__name__}: {e}")
+        assert "empty" in str(e).lower() and "bug, not a" in str(e)
     else:
         raise AssertionError("an empty cohort must raise")
+
+
+def test_the_anchor_merge_mismatch_asserts_rather_than_excluding():
+    """The anchor comes from the same IMV series that selected the blocks, so a
+    mismatch is impossible rather than an exclusion, and must not silently drop."""
+    blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
+                            "block_discharge_dttm": pd.Timestamp("2026-01-05")}])
+    empty = pd.DataFrame(columns=["encounter_block", "anchor_dttm",
+                                  "first_imv_episode_hours",
+                                  "first_episode_records", "n_imv_episodes"])
+    try:
+        B.build_cohort(blocks, empty)
+    except AssertionError as e:
+        assert "should be impossible" in str(e)
+    except SystemExit:
+        raise AssertionError("a merge mismatch must assert, not read as an exclusion")
+
+
+# ------------------------------------------------------------- IMV episodes
+_MAP = pd.DataFrame([{"hospitalization_id": "h0", "encounter_block": "b0"}])
+_BASE = pd.Timestamp("2026-01-01")
+
+
+def _resp(entries):
+    """entries: (hour, device_category) -- the waterfalled series."""
+    return pd.DataFrame({
+        "hospitalization_id": ["h0"] * len(entries),
+        "recorded_dttm": [_BASE + pd.Timedelta(hours=h) for h, _ in entries],
+        "device_category": [d for _, d in entries]})
+
+
+def _raw(hours):
+    """The raw IMV record timestamps."""
+    return pd.DataFrame({
+        "hospitalization_id": ["h0"] * len(hours),
+        "recorded_dttm": [_BASE + pd.Timedelta(hours=h) for h in hours]})
+
+
+def _ep(resp_entries, raw_hours):
+    return B.imv_episodes(_resp(resp_entries), _raw(raw_hours), _MAP)
+
+
+def test_a_waterfall_transition_ends_the_episode():
+    """100% of waterfalled IMV -> non-IMV transitions go to a real device, so a
+    transition is a true extubation and ends the episode precisely."""
+    out = _ep([(h, "IMV") for h in (0, 2, 4, 6)] + [(7, "Nasal Cannula")],
+              [0, 2, 4, 6])
+    assert out["first_imv_episode_hours"].iloc[0] == 6
+    assert out["episode_ended_by"].iloc[0] == "observed transition to another device"
+
+
+def test_a_raw_gap_ends_the_episode_when_no_transition_is_charted():
+    """The waterfall carries IMV forward when nothing breaks the segment --
+    measured at p90 30h and up to 1,137h past the last raw record, in 19.3% of
+    hospitalizations. The raw-gap rule is what catches those."""
+    g = B.EPISODE_GAP_H
+    out = _ep([(h, "IMV") for h in (0, 2, 4, 4 + g + 5)], [0, 2, 4, 4 + g + 5])
+    assert out["first_imv_episode_hours"].iloc[0] == 4
+    assert out["n_imv_episodes"].iloc[0] == 2
+    assert out["episode_ended_by"].iloc[0] == "no transition charted"
+
+
+def test_normal_charting_gaps_do_not_fragment_an_episode():
+    """Raw IMV gaps at UCMC are p95 5.00h and p98 7.07h, so a threshold at or
+    below those would split continuously-ventilated patients."""
+    assert B.EPISODE_GAP_H > 7.0, (
+        f"episode gap {B.EPISODE_GAP_H}h sits inside the normal charting "
+        f"distribution (p98 = 7.07h)"
+    )
+    out = _ep([(h, "IMV") for h in (0, 4.3, 8.6, 12)], [0, 4.3, 8.6, 12])
+    assert out["n_imv_episodes"].iloc[0] == 1
+
+
+def test_first_to_last_span_is_not_used_as_duration():
+    """Span merges separate intubations weeks apart; the raw maximum was 24,063h."""
+    out = _ep([(h, "IMV") for h in (0, 1, 500, 501)], [0, 1, 500, 501])
+    assert out["first_imv_episode_hours"].iloc[0] == 1
+    assert out["n_imv_episodes"].iloc[0] == 2
+
+
+def test_a_single_imv_record_has_zero_duration():
+    out = _ep([(0, "IMV")], [0])
+    assert out["first_imv_episode_hours"].iloc[0] == 0
+    assert 0 < B.MIN_IMV_H
+
+
+def test_the_minimum_duration_is_one_analysis_window():
+    assert B.MIN_IMV_H == B.WINDOW_H, (
+        "the minimum is deliberately window_hours: a block that cannot fill one "
+        "analysis window has no trajectory to model"
+    )
 
 
 # --------------------------------------------------------------------- SOFA

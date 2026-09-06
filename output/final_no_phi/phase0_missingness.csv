@@ -1,7 +1,7 @@
 variable,kind,class,locf_cap_hours,n_at_risk,n_observed,n_zero_by_rule,n_missing_pre_locf,pct_missing_pre_locf,n_filled_by_locf,pct_filled_by_locf,n_missing_final,pct_missing_final
 nee,time_varying,absence_means_zero,,305606,305606,0,0,0.0,0,0.0,0,0.0
 oxygenation,time_varying,time_varying,8,305606,188703,0,116903,38.25,61328,20.07,55575,18.19
-oxygenation_source,time_varying,not_applicable,,305606,207071,0,98535,32.24,0,0.0,98535,32.24
+oxygenation_source,time_varying,not_applicable,,305606,298943,0,6663,2.18,0,0.0,6663,2.18
 imv_status,time_varying,absence_means_not_ventilated,,305606,286820,18786,0,0.0,0,0.0,0,0.0
 crrt_status,time_varying,absence_means_zero,,305606,20127,285479,0,0.0,0,0.0,0,0.0
 bun,time_varying,time_varying,24,305606,112403,0,193203,63.22,178305,58.34,14898,4.87
@@ -21,6 +21,6 @@ hospital_id_admission,time_invariant,,,332064,331722,0,342,0.1,0,0.0,342,0.1
 hospital_id_discharge,time_invariant,,,332064,331722,0,342,0.1,0,0.0,342,0.1
 bmi_admission,time_invariant,,,332064,313056,0,19008,5.72,0,0.0,19008,5.72
 sofa_total,derived,scored after all inputs are filled,,305606,305417,0,189,0.06,0,0.0,189,0.06
-oxygenation absent: no PaO2 and no SpO2 measured,absence_reason,nothing to pair; not recoverable from this data,,305606,0,0,98535,32.24,0,0.0,98535,32.24
-oxygenation absent: SpO2 present but all >= 97 (plateau),absence_reason,"Severinghaus is undefined on the plateau; P/F is right-censored, not high",,305606,0,0,0,0.0,0,0.0,0,0.0
+oxygenation absent: no PaO2 and no SpO2 measured,absence_reason,nothing to pair; not recoverable from this data,,305606,0,0,6663,2.18,0,0.0,6663,2.18
+oxygenation absent: SpO2 present but all >= 97 (plateau),absence_reason,"Severinghaus is undefined on the plateau; P/F is right-censored, not high",,305606,0,0,91872,30.06,0,0.0,91872,30.06
 oxygenation absent: usable measurement but no FiO2 within the lookback,absence_reason,the 4h fio2 pairing window is the binding constraint here,,305606,0,0,18368,6.01,0,0.0,18368,6.01

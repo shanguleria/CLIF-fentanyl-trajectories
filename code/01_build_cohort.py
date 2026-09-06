@@ -31,6 +31,10 @@ from utils.outliers import (  # noqa: E402
     apply_long, apply_med_converted, apply_med_raw, fentanyl_sanity_ceiling,
     load_config as load_outliers, nee_sanity_ceiling,
 )
+from utils.waterfall_cache import (  # noqa: E402
+    cache_key, describe as describe_cache, load as cache_load,
+    store as cache_store,
+)
 from utils.paths import (  # noqa: E402
     clear_owned_outputs, provenance, site_dirs, write_manifest,
 )
@@ -44,6 +48,7 @@ WINDOW_H = GRID["width_hours"]
 EXTENT_H = GRID["extent_hours"]
 N_WINDOWS = GRID["n_windows"]
 STITCH_H = COV["encounter_blocks"]["stitch_time_interval_hours"]
+MIN_IMV_H = CONFIG["cohort"]["min_imv_hours"]
 
 EXPOSURE = COV["exposure"]
 INF_HOLD_H = EXPOSURE["infusion"]["hold_hours"]
@@ -58,8 +63,8 @@ OXY = COV["time_varying"]["oxygenation"]
 FIO2_LOOKBACK_H = OXY["fio2_lookback_hours"]
 SPO2_CEILING = OXY["spo2_ceiling"]
 RA_FIO2 = OXY["fio2_scale"]["fraction_band"][0]
-SPAN_LEAD_H = OXY["waterfall_span"]["lead_hours"]
-SPAN_TRAIL_H = OXY["waterfall_span"]["trail_hours"]
+SPAN_TRIM_ENABLED = OXY["waterfall_span"].get("enabled", False)
+EPISODE_GAP_H = CONFIG["cohort"]["imv_episode_gap_hours"]
 
 LAB_VARS = {
     k: v["source"]["category"]
@@ -77,16 +82,46 @@ OWNED = {
                 "time_to_event.parquet", "time_to_event.csv",
                 "hospital_intervals.parquet"],
     "out_final": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
-                  "phase0_strobe.csv", "phase0_provenance.json",
-                  "phase0_manifest.json"],
+                  "phase0_strobe.csv", "phase0_strobe.txt", "phase0_diagnostics.csv",
+                  "phase0_provenance.json", "phase0_manifest.json"],
 }
 
 STROBE: list[tuple[str, int]] = []
+FLOW: list[dict] = []
 
 
 def note(label: str, n: int) -> None:
+    """A diagnostic count. Does not enter the cohort flow."""
     STROBE.append((label, n))
     print(f"  {label:.<52} {n:,}")
+
+
+def flow(label: str, n_after: int, reason: str = "") -> None:
+    """One row of the STROBE cohort flow. Exclusions are derived, not asserted."""
+    n_before = FLOW[-1]["n_after"] if FLOW else None
+    n_excl = None if n_before is None else n_before - n_after
+    FLOW.append({"step": label, "n_before": n_before, "n_excluded": n_excl,
+                 "reason": reason, "n_after": n_after})
+    if n_excl:
+        print(f"  {label:.<52} {n_after:>9,}   (-{n_excl:,}: {reason})")
+    else:
+        print(f"  {label:.<52} {n_after:>9,}")
+
+
+def render_flow() -> str:
+    """The exclusion diagram, as text, so a cohort change is visible at a glance."""
+    w = max(len(r["step"]) for r in FLOW) + 2
+    lines = ["CONSORT / STROBE cohort flow", "=" * (w + 26), ""]
+    for i, r in enumerate(FLOW):
+        lines.append(f"{r['step']:<{w}} {r['n_after']:>10,}")
+        if i + 1 < len(FLOW):
+            nxt = FLOW[i + 1]
+            if nxt["n_excluded"]:
+                lines.append(f"{'':<{w}}     |")
+                lines.append(f"{'':<{w}}     |-- excluded {nxt['n_excluded']:>8,}"
+                             f"  {nxt['reason']}")
+                lines.append(f"{'':<{w}}     v")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------- loading
@@ -132,7 +167,7 @@ def load_core() -> dict:
     return t, raw_anchor, imv[["hospitalization_id", "recorded_dttm"]].copy()
 
 
-def load_cohort_tables(hosp_ids: list[str], span: pd.DataFrame | None = None) -> dict:
+def load_cohort_tables(hosp_ids: list[str]) -> dict:
     """Everything else, filtered to the cohort's hospitalizations and categories.
 
     Pushed down to the read: an unfiltered site-wide load makes the respiratory
@@ -153,18 +188,25 @@ def load_cohort_tables(hosp_ids: list[str], span: pd.DataFrame | None = None) ->
         "mai": MedicationAdminIntermittent.from_file(
             **_kw(filters={**hid, "med_category": CONFIG["medications"]["opioid_bolus_categories"]})).df,
     }
-    rs = RespiratorySupport.from_file(**_kw(filters=hid))
-    t["resp_raw"] = rs.df.copy()
-    n_raw = len(rs.df)
-    if span is not None:
-        d = rs.df.merge(span, on="hospitalization_id", how="inner")
-        keep = (d["recorded_dttm"] >= d["span_lo"]) & (d["recorded_dttm"] <= d["span_hi"])
-        rs.df = d[keep].drop(columns=["span_lo", "span_hi"])
-        print(f"  {'respiratory_support':.<52} {n_raw:,} rows -> "
-              f"{len(rs.df):,} in span ({100*len(rs.df)/max(n_raw,1):.1f}%)")
-    else:
-        print(f"  {'respiratory_support':.<52} {n_raw:,} rows  (untrimmed)")
-    t["resp"] = _canonicalise_devices(rs.waterfall(verbose=False, return_dataframe=True))
+    key = cache_key(CONFIG, [_canonicalise_devices])
+    print(f"  {describe_cache(key)}")
+    cached, missing = cache_load(key, hosp_ids)
+    n_hit = 0 if cached is None else int(cached["hospitalization_id"].nunique())
+    print(f"  waterfall: {n_hit:,} hospitalizations from cache, "
+          f"{len(missing):,} to compute")
+
+    frames = [] if cached is None else [cached]
+    if missing:
+        rs = RespiratorySupport.from_file(
+            **_kw(filters={"hospitalization_id": missing}))
+        print(f"  {'respiratory_support to waterfall':.<52} {len(rs.df):,} rows")
+        fresh = _canonicalise_devices(
+            rs.waterfall(verbose=False, return_dataframe=True))
+        total = cache_store(key, fresh)
+        print(f"  waterfall cached: {total:,} rows total")
+        frames.append(fresh)
+    t["resp"] = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
     for name, df in t.items():
         if name != "resp_raw":
             print(f"  {name:.<52} {len(df):,} rows")
@@ -222,8 +264,10 @@ def assert_categories_present(t: dict) -> None:
 # ------------------------------------------------------------ blocks + cohort
 def build_blocks(t: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     _, _, mapping = stitch_encounters(t["hospitalization"], t["adt"], time_interval=STITCH_H)
-    note("hospitalizations", len(mapping))
-    note("encounter blocks after stitching", mapping["encounter_block"].nunique())
+    flow("Hospitalizations in the CLIF extract", len(mapping))
+    flow("Encounter blocks after stitching", mapping["encounter_block"].nunique(),
+         "merged into an existing block within "
+         f"{STITCH_H}h")
 
     hb = t["hospitalization"].merge(mapping, on="hospitalization_id", how="left",
                                     validate="one_to_one")
@@ -272,30 +316,100 @@ def hospital_endpoints(hi: pd.DataFrame) -> pd.DataFrame:
     return ends
 
 
-def find_anchor(t: dict, mapping: pd.DataFrame) -> pd.DataFrame:
-    """First IMV record per encounter block."""
-    rs = t["resp"].merge(mapping, on="hospitalization_id", how="inner")
-    imv = rs[rs["device_category"] == "IMV"]
-    anchor = (imv.groupby("encounter_block")["recorded_dttm"].min()
-                 .rename("anchor_dttm").reset_index())
-    note("blocks with any IMV record", len(anchor))
-    return anchor
+def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
+                 mapping: pd.DataFrame) -> pd.DataFrame:
+    """Continuous IMV episodes per encounter block.
+
+    An episode ends at whichever comes first:
+      - a waterfalled IMV -> non-IMV transition. Measured on real data, 100% of
+        these go to a real device (NIPPV, nasal cannula, trach collar, ...) and
+        none to a null device, so a transition is a true extubation.
+      - a gap between RAW IMV records longer than imv_episode_gap_hours. The
+        waterfall alone is not sufficient: where no subsequent device is ever
+        charted, nothing breaks the segment and it carries IMV forward -- measured
+        at p90 30h and up to 1,137h past the last raw record, in 19.3% of
+        hospitalizations. Those extubations are invisible to it.
+    """
+    wf = (resp[["hospitalization_id", "recorded_dttm", "device_category"]]
+          .merge(mapping, on="hospitalization_id", how="inner")
+          .sort_values(["encounter_block", "recorded_dttm"], kind="stable"))
+    wf["is_imv"] = wf["device_category"].eq("IMV")
+
+    imv = wf[wf["is_imv"]].copy()
+    # end of the current IMV run in the waterfalled series
+    nxt_non_imv = (wf[~wf["is_imv"]][["encounter_block", "recorded_dttm"]]
+                   .rename(columns={"recorded_dttm": "transition_dttm"})
+                   .sort_values("transition_dttm", kind="stable"))
+    imv = pd.merge_asof(imv.sort_values("recorded_dttm"), nxt_non_imv,
+                        left_on="recorded_dttm", right_on="transition_dttm",
+                        by="encounter_block", direction="forward")
+
+    raw = (imv_raw.merge(mapping, on="hospitalization_id", how="inner")
+                  .sort_values(["encounter_block", "recorded_dttm"], kind="stable"))
+    raw_gap = (raw.groupby("encounter_block")["recorded_dttm"].diff()
+                  .dt.total_seconds() / 3600)
+    raw["_break_before"] = raw_gap.isna() | (raw_gap > EPISODE_GAP_H)
+    raw["_episode"] = raw.groupby("encounter_block")["_break_before"].cumsum().astype(int)
+
+    first = raw[raw["_episode"] == 1]
+    out = first.groupby("encounter_block").agg(
+        anchor_dttm=("recorded_dttm", "min"),
+        raw_episode_end=("recorded_dttm", "max"),
+        first_episode_records=("recorded_dttm", "size"),
+    ).reset_index()
+    out["n_imv_episodes"] = (raw.groupby("encounter_block")["_episode"].max()
+                                .reindex(out["encounter_block"]).to_numpy())
+
+    # the waterfall transition, if one occurs before the raw gap closes the episode
+    trans = (imv.groupby("encounter_block")["transition_dttm"].min()
+                .rename("wf_transition").reset_index())
+    out = out.merge(trans, on="encounter_block", how="left")
+    # The episode ENDS at the last IMV record; the transition is what tells us it
+    # ended rather than continued. A transition charted within one gap-threshold of
+    # that last record means the extubation was observed.
+    out["first_episode_end"] = out["raw_episode_end"]
+    out["first_imv_episode_hours"] = (
+        (out["first_episode_end"] - out["anchor_dttm"]).dt.total_seconds() / 3600)
+    lag_h = ((out["wf_transition"] - out["raw_episode_end"]).dt.total_seconds() / 3600)
+    out["episode_ended_by"] = np.where(
+        out["wf_transition"].notna() & (lag_h >= 0) & (lag_h <= EPISODE_GAP_H),
+        "observed transition to another device", "no transition charted")
+
+    note("blocks with more than one IMV episode", int((out["n_imv_episodes"] > 1).sum()))
+    for k, v in out["episode_ended_by"].value_counts().items():
+        note(f"  first episode ended by {k}", int(v))
+    q = out["first_imv_episode_hours"].quantile([.25, .5, .75])
+    print(f"  first IMV episode hours: median {q[.5]:.1f} "
+          f"(IQR {q[.25]:.1f}-{q[.75]:.1f}), max {out['first_imv_episode_hours'].max():.1f}")
+    return out[["encounter_block", "anchor_dttm", "first_imv_episode_hours",
+                "first_episode_records", "n_imv_episodes", "episode_ended_by"]]
 
 
 def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
     c = blocks.merge(anchor, on="encounter_block", how="inner", validate="one_to_one")
-    note("blocks with an intubation anchor", len(c))
+    # Not a flow step: the anchor comes from the same IMV series that selected these
+    # blocks, so this can only ever be equal. It is a consistency check.
+    assert len(c) == len(blocks), (
+        f"anchor merge lost {len(blocks) - len(c)} blocks; the IMV screen and the "
+        f"episode builder disagree, which should be impossible"
+    )
     if c.empty:
         raise SystemExit(
             "no block has an intubation anchor. An empty cohort is a bug, not a "
             "finding -- check that device_category still carries its mCIDE casing."
         )
+    c = c[c["first_imv_episode_hours"] >= MIN_IMV_H]
+    flow(f"Ventilated at least {MIN_IMV_H}h (one analysis window)", len(c),
+         f"first continuous IMV episode shorter than {MIN_IMV_H}h")
+
     c = c[c["age"] >= CONFIG["cohort"]["min_age"]]
-    note(f"adult blocks (age >= {CONFIG['cohort']['min_age']})", len(c))
+    flow(f"Adult blocks (age >= {CONFIG['cohort']['min_age']})", len(c),
+         f"age < {CONFIG['cohort']['min_age']} or age missing")
 
     c["followup_end_dttm"] = c[["block_discharge_dttm"]].min(axis=1)
     c = c[c["followup_end_dttm"] > c["anchor_dttm"]]
-    note("blocks with follow-up after the anchor", len(c))
+    flow("Blocks with follow-up after the anchor", len(c),
+         "discharged or died at or before the anchor")
 
     c = c.sort_values("encounter_block", kind="stable").reset_index(drop=True)
     c["id_num"] = np.arange(1, len(c) + 1)
@@ -621,11 +735,23 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
                  .size().rename(columns={"size": name})[
                      ["encounter_block", "window_idx", name]])
 
+    # Plateau readings paired to FiO2: Severinghaus is undefined at or above the
+    # ceiling, but the FiO2 still bounds what the P/F could be.
+    plateau = spo2_all[spo2_all["vital_value"] >= SPO2_CEILING]
+    if len(plateau):
+        pl = pair(plateau.rename(columns={"recorded_dttm": "obs_dttm"}), "obs_dttm")
+        pl = _to_windows(pl, cohort, "obs_dttm")
+        pl_w = (pl.groupby(["encounter_block", "window_idx"], as_index=False)
+                  ["fio2_set"].max().rename(columns={"fio2_set": "_plateau_fio2"}))
+    else:
+        pl_w = pd.DataFrame(columns=["encounter_block", "window_idx", "_plateau_fio2"])
+
     avail = flag(pao2, "lab_result_dttm", "_n_pao2")
     for d, col in ((spo2_all, "_n_spo2"), (spo2, "_n_spo2_usable")):
         avail = avail.merge(flag(d, "recorded_dttm", col),
                             on=["encounter_block", "window_idx"], how="outer")
     out = out.merge(avail, on=["encounter_block", "window_idx"], how="outer")
+    out = out.merge(pl_w, on=["encounter_block", "window_idx"], how="left")
 
     use_pf = out["pf_ratio"].notna()
     out["oxygenation"] = out["pf_ratio"].where(use_pf, out["sf_ratio"])
@@ -636,7 +762,8 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
          out["sf_ratio"].notna() & out["sf_ratio_all_assumed"].fillna(False)],
         ["pf", "pf_room_air", "sf", "sf_room_air"], default="none")
     return out[["encounter_block", "window_idx", "oxygenation", "oxygenation_source",
-                "pf_ratio", "sf_ratio", "_n_pao2", "_n_spo2", "_n_spo2_usable"]]
+                "pf_ratio", "sf_ratio", "_n_pao2", "_n_spo2", "_n_spo2_usable",
+                "_plateau_fio2"]]
 
 
 def _severinghaus(spo2: pd.Series) -> pd.Series:
@@ -753,6 +880,16 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
 SOFA_PARTS = ["sofa_cv", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
 
 
+def _severinghaus_at(spo2: float) -> float:
+    s = spo2 / 100.0
+    a = 11700.0 / ((1.0 / s) - 1.0)
+    b = np.sqrt(50.0 ** 3 + a ** 2)
+    return float(np.cbrt(b + a) - np.cbrt(b - a))
+
+
+_SEVERINGHAUS_AT_CEILING = _severinghaus_at(SPO2_CEILING - 0.01)
+
+
 def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
     """Why an at-risk window carries no oxygenation, before any carry-forward.
 
@@ -792,6 +929,22 @@ def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
                      "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
                      "n_missing_final": k,
                      "pct_missing_final": round(100.0 * k / n_at_risk, 2)})
+    if "_plateau_fio2" in a.columns:
+        f = a.loc[plateau, "_plateau_fio2"].dropna()
+        n_pl = int(plateau.sum())
+        print(f"    plateau windows: {n_pl:,}; FiO2 pairable for {len(f):,} "
+              f"({100*len(f)/max(n_pl,1):.1f}%)")
+        if len(f):
+            bound = _SEVERINGHAUS_AT_CEILING / f
+            print(f"      FiO2 among them: median {f.median():.2f} "
+                  f"(IQR {f.quantile(.25):.2f}-{f.quantile(.75):.2f})")
+            print(f"      implied P/F lower bound: median {bound.median():.0f}, "
+                  f"and {100*(bound < 300).mean():.1f}% are below 300")
+            for lo, hi in ((0, 200), (200, 300), (300, 400), (400, 1e9)):
+                k = int(((bound >= lo) & (bound < hi)).sum())
+                lbl = f"{lo}-{hi}" if hi < 1e9 else f"{lo}+"
+                print(f"        bound {lbl:>9}: {k:>7,}  ({100*k/len(f):5.1f}%)")
+
     total = int(pre_na.sum())
     print(f"    oxygenation absent before LOCF: {total:,} of {n_at_risk:,} "
           f"({100*total/n_at_risk:.1f}%)")
@@ -1136,7 +1289,8 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
 
     at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["at_risk"]]
     eligible = set(at_T.loc[at_T["imv_status"] == 1, "encounter_block"])
-    note(f"landmark-eligible blocks (ventilated at T={T}h)", len(eligible))
+    flow(f"LANDMARK COHORT -- time_to_event (ventilated at T={T}h)", len(eligible),
+         f"extubated, died or discharged before T={T}h")
 
     tte = cohort[cohort["encounter_block"].isin(eligible)].copy()
     tte["landmark_eligible"] = True
@@ -1212,32 +1366,24 @@ def main() -> None:
     imv_ids = set(raw_anchor["hospitalization_id"])
     imv_blocks = set(mapping.loc[mapping["hospitalization_id"].isin(imv_ids), "encounter_block"])
     blocks = blocks[blocks["encounter_block"].isin(imv_blocks)]
-    note("blocks containing any IMV record", len(blocks))
+    flow("Blocks with any IMV record", len(blocks), "no invasive ventilation recorded")
     mapping = mapping[mapping["encounter_block"].isin(imv_blocks)]
     hosp_ids = sorted(mapping["hospitalization_id"].astype(str).unique())
     note("hospitalizations to load", len(hosp_ids))
 
-    # The waterfall is the whole cost of a run; trim it to the analysis span.
-    # Equivalence measured in validation/waterfall_span_equivalence.py.
-    blk_anchor = (raw_anchor.merge(mapping, on="hospitalization_id", how="inner")
-                            .groupby("encounter_block", as_index=False)["imv_dttm"].min())
-    span = mapping.merge(blk_anchor, on="encounter_block", how="inner")
-    span["span_lo"] = span["imv_dttm"] - pd.Timedelta(hours=SPAN_LEAD_H)
-    span["span_hi"] = span["imv_dttm"] + pd.Timedelta(hours=EXTENT_H + SPAN_TRAIL_H)
-    span = span[["hospitalization_id", "span_lo", "span_hi"]]
-
     print("\nLoading cohort tables")
-    t.update(load_cohort_tables(hosp_ids, span=span))
+    t.update(load_cohort_tables(hosp_ids))
     assert_categories_present(t)
 
     print("\nCohort")
-    anchor = find_anchor(t, mapping)
+    anchor = imv_episodes(t["resp"], imv_records, mapping)
     cohort = build_cohort(blocks, anchor)
 
     print("\nWeight and BMI")
     cohort = cohort.merge(attach_weight(t, mapping, cohort), on="encounter_block", how="left")
     cohort = cohort[cohort["weight_kg"].notna()]
-    note("blocks with a usable weight", len(cohort))
+    flow("ANALYTIC COHORT -- trajectory_long", len(cohort),
+         "no weight charted anywhere in the block")
     bmi = bmi_admission(t, mapping, cohort)
 
     print("\nWindows")
@@ -1260,8 +1406,10 @@ def main() -> None:
     ti = time_invariant(t, mapping, cohort).merge(bmi, on="encounter_block", how="left")
     ti = ti.merge(ends, on="encounter_block", how="left")
     long = long.merge(ti.drop(columns=["patient_id"]), on="encounter_block", how="left")
-    long = long.merge(cohort[["encounter_block", "weight_kg"]], on="encounter_block",
-                      how="left")
+    long = long.merge(
+        cohort[["encounter_block", "weight_kg", "first_imv_episode_hours",
+                "n_imv_episodes"]],
+        on="encounter_block", how="left")
 
     print("\n  SOFA")
     sofa_in = _sofa_inputs(t, mapping, cohort)
@@ -1305,7 +1453,11 @@ def main() -> None:
         per_pattern.to_csv(dirs["out_final"] / "phase0_missingness_patterns.csv",
                            index=False)
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
-        dirs["out_final"] / "phase0_strobe.csv", index=False)
+        dirs["out_final"] / "phase0_diagnostics.csv", index=False)
+    pd.DataFrame(FLOW).to_csv(dirs["out_final"] / "phase0_strobe.csv", index=False)
+    (dirs["out_final"] / "phase0_strobe.txt").write_text(render_flow() + "\n")
+    print()
+    print(render_flow())
     (dirs["out_final"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
 
     # Written last: its presence is what marks these outputs complete and current.

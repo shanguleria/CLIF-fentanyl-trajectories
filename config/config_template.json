@@ -37,7 +37,11 @@
     "_comment_protocol": "cohort / outcomes / model define the estimand. If two sites set these differently the pooled result is not meaningful -- do not edit them to make a run work.",
 
     "cohort": {
-        "time_anchor": "intubation",
+        "_comment_anchor": "CLIF has no intubation event -- only device_category transitions -- so the anchor is the start of the first continuous IMV episode, which is a PROXY for intubation. A patient transferred in already ventilated, or admitted with a tracheostomy, has hour 0 = first observation rather than start of ventilation. Report and state that.",
+        "time_anchor": "first_imv_episode_start",
+        "_comment_imv_episode": "imv_episode_gap_hours defines when consecutive IMV records belong to different episodes. 6h is set from the data, not by convention: raw IMV inter-record gaps at UCMC are p50 1.00h, p75 3.33h, p90 4.37h, p95 5.00h, so 14.6% of NORMAL charting gaps exceed 4h and a 4h break would fragment continuously-ventilated patients. At 6h only 2.65% of gaps break an episode. min_imv_hours is separate and is deliberately window_hours: a block that cannot fill one analysis window has no trajectory to model.",
+        "imv_episode_gap_hours": 8,
+        "min_imv_hours": 4,
         "min_age": 18,
         "window_hours": 4,
         "granular_extent_hours": 72,

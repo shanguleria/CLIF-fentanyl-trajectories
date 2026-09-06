@@ -2,8 +2,8 @@
   "site_name": "UCMC",
   "clif_version": "2.1.0",
   "dataset_version": "",
-  "code_version": "117c926-dirty",
-  "generated": "2026-09-06T13:18:57.196960-05:00",
+  "code_version": "afb92c8-dirty",
+  "generated": "2026-09-06T13:35:02.576987-05:00",
   "config_digests": {
     "config.json": "1736827ef8a98bdd",
     "covariates.json": "2ce6bde28f06c090",
