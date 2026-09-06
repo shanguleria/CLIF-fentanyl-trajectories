@@ -1210,6 +1210,24 @@ heuristic should resolve. Measured behaviour on the three cases:
 | 100% in `[21, 100]` | percent | **whole column ÷ 100**; 0 nulled |
 | 50/50 fraction and percent | — | **raises**, naming both shares |
 
+**Plateau windows are left NA** *(SG, 2026-09-06 — option A)*. Measured before
+deciding: **78,187 at-risk windows (31.1%)**, FiO₂ pairable for **92.8%**, implied
+floor `Severinghaus(96.99)/FiO₂` with **median 226, 81.4% below 300, 21.4% below
+200**. Three consequences belong in the limitations:
+
+1. These are **not a healthy subgroup** — their true P/F is right-censored, not high.
+2. Whatever fills them downstream learns from windows where oxygenation *was*
+   measured, and an ABG is drawn when someone is worried — so the filling
+   distribution is **sicker** than these patients.
+3. A window at FiO₂ 0.30 (floor 302) and one at FiO₂ 1.00 (floor 90) are filled
+   **identically**, discarding the FiO₂ information entirely.
+
+Rejected alternatives: **(B)** carry the floor as the value — it systematically
+understates and would fabricate a P/F in 31% of windows; **(C)** leave NA but
+carry FiO₂ as its own covariate — keeps the information without inventing a
+ratio, and remains the natural next step if the plateau proves to matter. The
+diagnostic that produced these numbers runs every time, so revisiting is cheap.
+
 **FiO₂ lookback = 4h.** Pair every PaO₂ (and every qualifying SpO₂) with the most
 recent non-null `fio2_set` **at or before** it, searching back at most 4h —
 `merge_asof(direction="backward", tolerance=4h)` *is* that rule. Never pair to a

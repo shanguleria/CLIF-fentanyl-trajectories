@@ -1,0 +1,26 @@
+variable,kind,class,locf_cap_hours,n_at_risk,n_observed,n_zero_by_rule,n_missing_pre_locf,pct_missing_pre_locf,n_filled_by_locf,pct_filled_by_locf,n_missing_final,pct_missing_final
+nee,time_varying,absence_means_zero,,251695,251695,0,0,0.0,0,0.0,0,0.0
+oxygenation,time_varying,time_varying,8,251695,155690,0,96005,38.14,51109,20.31,44896,17.84
+oxygenation_source,time_varying,not_applicable,,251695,247301,0,4394,1.75,0,0.0,4394,1.75
+imv_status,time_varying,absence_means_not_ventilated,,251695,243180,8515,0,0.0,0,0.0,0,0.0
+crrt_status,time_varying,absence_means_zero,,251695,19261,232434,0,0.0,0,0.0,0,0.0
+bun,time_varying,time_varying,24,251695,96963,0,154732,61.48,144393,57.37,10339,4.11
+bicarbonate,time_varying,time_varying,24,251695,96401,0,155294,61.7,144720,57.5,10574,4.2
+pco2_arterial,time_varying,time_varying,24,251695,86683,0,165012,65.56,95663,38.01,69349,27.55
+lactate,time_varying,time_varying,24,251695,62439,0,189256,75.19,105195,41.79,84061,33.4
+inr,time_varying,time_varying,24,251695,46240,0,205455,81.63,123248,48.97,82207,32.66
+bilirubin_total,time_varying,time_varying,72,251695,36686,0,215009,85.42,141922,56.39,73087,29.04
+inf_dose,exposure,,,251695,251695,0,0,0.0,0,0.0,0,0.0
+bolus_dose,exposure,,,251695,251695,0,0,0.0,0,0.0,0,0.0
+total_dose,exposure,,,251695,251695,0,0,0.0,0,0.0,0,0.0
+age,time_invariant,,,268146,268146,0,0,0.0,0,0.0,0,0.0
+sex,time_invariant,,,268146,268146,0,0,0.0,0,0.0,0,0.0
+cci,time_invariant,,,268146,268002,0,144,0.05,0,0.0,144,0.05
+race,time_invariant,,,268146,268146,0,0,0.0,0,0.0,0,0.0
+hospital_id_admission,time_invariant,,,268146,267840,0,306,0.11,0,0.0,306,0.11
+hospital_id_discharge,time_invariant,,,268146,267840,0,306,0.11,0,0.0,306,0.11
+bmi_admission,time_invariant,,,268146,255384,0,12762,4.76,0,0.0,12762,4.76
+sofa_total,derived,scored after all inputs are filled,,251695,251647,0,48,0.02,0,0.0,48,0.02
+oxygenation absent: no PaO2 and no SpO2 measured,absence_reason,nothing to pair; not recoverable from this data,,251695,0,0,4394,1.75,0,0.0,4394,1.75
+oxygenation absent: SpO2 present but all >= 97 (plateau),absence_reason,"Severinghaus is undefined on the plateau; P/F is right-censored, not high",,251695,0,0,78187,31.06,0,0.0,78187,31.06
+oxygenation absent: usable measurement but no FiO2 within the lookback,absence_reason,the 4h fio2 pairing window is the binding constraint here,,251695,0,0,13424,5.33,0,0.0,13424,5.33
