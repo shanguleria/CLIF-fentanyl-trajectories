@@ -592,9 +592,11 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
 
     vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
     vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
-    spo2 = vit.loc[(vit["vital_category"] == "spo2")
-                   & (vit["vital_value"] < SPO2_CEILING),
-                   ["encounter_block", "recorded_dttm", "vital_value"]]
+    # Keep the unfiltered series: the ceiling filter is what separates a plateau
+    # window from one with no measurement at all, so the flags must see both.
+    spo2_all = vit.loc[vit["vital_category"] == "spo2",
+                       ["encounter_block", "recorded_dttm", "vital_value"]]
+    spo2 = spo2_all[spo2_all["vital_value"] < SPO2_CEILING]
     sf = pair(spo2.rename(columns={"recorded_dttm": "obs_dttm"}), "obs_dttm")
     sf["ratio"] = _severinghaus(sf["vital_value"]) / sf["fio2_set"]
 
@@ -620,8 +622,7 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
                      ["encounter_block", "window_idx", name]])
 
     avail = flag(pao2, "lab_result_dttm", "_n_pao2")
-    for d, col in ((spo2, "_n_spo2"),
-                   (spo2[spo2["vital_value"] < SPO2_CEILING], "_n_spo2_usable")):
+    for d, col in ((spo2_all, "_n_spo2"), (spo2, "_n_spo2_usable")):
         avail = avail.merge(flag(d, "recorded_dttm", col),
                             on=["encounter_block", "window_idx"], how="outer")
     out = out.merge(avail, on=["encounter_block", "window_idx"], how="outer")

@@ -188,6 +188,22 @@ def test_a_window_with_a_value_is_not_counted_as_absent():
     assert sum(c.values()) == 0
 
 
+def test_plateau_is_distinguishable_from_no_measurement():
+    """The flags must come from the UNFILTERED SpO2 series. Deriving both from the
+    already-ceiling-filtered series makes n_spo2 == n_spo2_usable, so the plateau
+    condition can never fire and every plateau window is misreported as 'nothing
+    measured'. That produced a spurious 0.00% plateau on real data."""
+    plateau_only = _oxy(0, 5, 0)          # SpO2 present, none below the ceiling
+    nothing = _oxy(0, 0, 0)
+    c1, c2 = _reason_counts(plateau_only), _reason_counts(nothing)
+    key_p = f"SpO2 present but all >= {B.SPO2_CEILING} (plateau)"
+    key_n = "no PaO2 and no SpO2 measured"
+    assert c1[key_p] == 1 and c1[key_n] == 0
+    assert c2[key_n] == 1 and c2[key_p] == 0, (
+        "these two must not collapse into one another"
+    )
+
+
 def test_the_three_reasons_partition_the_absent_windows():
     df = pd.concat([_oxy(0, 0, 0), _oxy(0, 5, 0), _oxy(3, 0, 0),
                     _oxy(0, 5, 5), _oxy(2, 2, 2, oxy=300.0)], ignore_index=True)
