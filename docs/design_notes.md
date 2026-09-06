@@ -1367,6 +1367,73 @@ missing and poorly predicted by the others is as likely an extract or mapping
 problem as genuine clinical non-measurement — that is a finding, not a reason to
 discard it.
 
+### Defining a continuous IMV episode
+
+CLIF has **no intubation event** — only `device_category` transitions — so the
+anchor is the start of the first continuous IMV episode, a *proxy* for
+intubation. A patient transferred in already ventilated, or admitted with a
+tracheostomy, has hour 0 = first observation rather than start of ventilation.
+That is a limitation to state, not one we can fix.
+
+An episode ends at whichever comes first:
+
+| signal | why it is needed | measured |
+|---|---|---|
+| **waterfalled IMV → non-IMV transition** | the waterfall exists to fill charting gaps, so a transition it shows is a real device change | over 300 hospitalizations, **all 433** transitions go to a real device (NIPPV, nasal cannula, trach collar, …) and **none to a null device** |
+| **raw IMV gap > `imv_episode_gap_hours`** | where no subsequent device is ever charted, nothing breaks the segment and the waterfall carries IMV forward | it over-extends past the last raw IMV record by **p90 30h, max 1,137h**, in **19.3%** of hospitalizations — those extubations are invisible to it |
+
+Neither is sufficient alone. The waterfall is precise where a transition exists;
+the gap rule catches the one-in-five where none is ever charted.
+
+**`imv_episode_gap_hours = 8`** *(SG, 2026-09-06)*, set from the data rather than
+convention. Raw IMV inter-record gaps are **p50 1.00h, p75 3.33h, p90 4.37h, p95
+5.00h, p98 7.07h** — so only **1.5%** exceed 8h. Far enough past routine charting
+not to fragment a continuous episode, close enough to catch a genuine unobserved
+extubation, and it accommodates a long off-unit absence such as CT followed by a
+lengthy operation.
+
+A 4h threshold — tempting, since it matches the analysis window — would have been
+**wrong**: 14.6% of *normal charting* gaps exceed 4h.
+
+The episode **ends at the last IMV record**; the transition is what tells us it
+ended rather than continued. `episode_ended_by` records which signal fired.
+
+**`min_imv_hours = 4`** is a separate parameter, deliberately tied to
+`window_hours`: a block that cannot fill one analysis window has no trajectory to
+model.
+
+### The waterfall runs on the whole encounter block, and is cached
+
+Span trimming to `[anchor − 24h, anchor + 96h]` was **retired 2026-09-06 (SG)**.
+It was sized for the 72h trajectory window, but the **30-day** mortality and
+extubation outcomes need ventilation status out to day 30 — a 96h window could
+never have served them. Removing it also removes a circularity: the trim was
+derived *from* the anchor, so the anchor could not be derived from the trimmed
+table.
+
+The equivalence measurements that justified trimming remain in the config as the
+record of why it was safe for the trajectory window; they no longer describe what
+runs.
+
+Full-stay waterfalling is affordable because it is **cached**
+(`code/utils/waterfall_cache.py`). The cache is content-addressed and stored **per
+hospitalization**, which is sound because the waterfall is verified
+**per-encounter independent** — a 24-id run restricted to 12 gives identical rows
+and zero differing cells against a 12-id run.
+
+The cohort therefore **never enters the key**:
+
+| cohort change | result |
+|---|---|
+| narrows (new exclusion) | **full hit** — nothing recomputed |
+| widens (relaxed criterion) | computes **only the new patients** |
+
+The key pins the source file's size and mtime, the clifpy version, and a **hash of
+our own transform source** — so editing `_canonicalise_devices` invalidates it
+automatically, rather than relying on a version constant someone must remember to
+bump. A stale cache cannot be used silently: any changed input yields a different
+key and a miss.
+
 ### Re-runs must not read stale outputs
 
 Phase 0 is re-run often, and several runs during development died part-way. A
