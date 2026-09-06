@@ -11,7 +11,7 @@
 # Author  : Shan Guleria
 # Created : 2026-09-04
 # Inputs  : none (all data simulated)
-# Outputs : output/intermediate/scaling_experiments.csv
+# Outputs : output/final_no_phi/validation/scaling_experiments.csv
 #           logs/03_scaling_experiments_sessioninfo.txt
 # ==============================================================================
 
@@ -23,7 +23,7 @@ for (p in pkgs) {
   library(p, character.only = TRUE)
 }
 
-out_interim <- here("output", "intermediate")
+out_interim <- here("output", "final_no_phi", "validation")
 dir.create(out_interim, recursive = TRUE, showWarnings = FALSE)
 
 

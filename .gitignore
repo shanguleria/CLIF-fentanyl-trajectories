@@ -1,5 +1,7 @@
 # ---- PHI and patient-level artifacts: NEVER commit ----
-data/
+# output/intermediate_phi/ is the ONLY place patient-level artifacts are written.
+# Rule is by directory, not by extension: an extension rule misses the file type
+# nobody thought of.
 output/intermediate_phi/
 logs/
 *.parquet

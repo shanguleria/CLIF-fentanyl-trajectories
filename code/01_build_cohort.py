@@ -1,6 +1,6 @@
 """Phase 0 -- build the analytic tables from CLIF.
 
-Outputs (both PHI, written to data/intermediate_phi/):
+Outputs (PHI, written to output/intermediate_phi/):
     trajectory_long.parquet     one row per encounter block per window
     time_to_event.parquet       one row per encounter block
     hospital_intervals.parquet  one row per ADT interval
@@ -437,13 +437,23 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
         out[c] = out[c].fillna(0.0)
     out["total_dose"] = out["inf_dose"] + out["bolus_dose"]
 
+    # The derived ceiling is exact for the infusion arm only: it is
+    # max(mcg/hr) / min(weight). A window's bolus SUM has no principled ceiling,
+    # since several bounded boluses can stack, so that arm is reported not asserted.
     ceiling = fentanyl_sanity_ceiling(OUTLIERS)
-    over = out.loc[out["at_risk"], "total_dose"] > ceiling
-    if over.any():
+    over_inf = out.loc[out["at_risk"], "inf_dose"] > ceiling
+    if over_inf.any():
         raise SystemExit(
-            f"{int(over.sum()):,} windows exceed the derived ceiling of {ceiling:g} "
-            f"mcg/kg/hr, which is proof the bounds did not run, not a clinical finding."
+            f"{int(over_inf.sum()):,} windows have an INFUSION rate above the derived "
+            f"ceiling of {ceiling:g} mcg/kg/hr, which is proof the bounds did not run."
         )
+    over_total = out.loc[out["at_risk"], "total_dose"] > ceiling
+    if over_total.any():
+        top = out.loc[out["at_risk"] & (out["total_dose"] > ceiling), "total_dose"]
+        note(f"windows whose total_dose exceeds {ceiling:g} mcg/kg/hr (bolus stacking)",
+             int(over_total.sum()))
+        print(f"    max {top.max():.1f} mcg/kg/hr; these are extreme but not "
+              f"proof of a bounds failure")
     note("at-risk windows with any fentanyl", int((out.loc[out['at_risk'], 'total_dose'] > 0).sum()))
     note("at-risk windows with a bolus", int((out.loc[out['at_risk'], 'n_bolus'] > 0).sum()))
     return out
@@ -1089,7 +1099,7 @@ def main() -> None:
     print("\nTime to event")
     tte = build_time_to_event(cohort, long)
 
-    out = dirs["data_phi"]
+    out = dirs["out_phi"]
     long.to_parquet(out / "trajectory_long.parquet", index=False)
     tte.to_parquet(out / "time_to_event.parquet", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)

@@ -25,7 +25,7 @@
 #           the decision it informs is reversible with a one-line filter, so it
 #           is not blocking. Run it before the class solution is finalised.
 # Inputs  : none (all data simulated)
-# Outputs : output/intermediate/repeat_encounter_cost.csv
+# Outputs : output/final_no_phi/validation/repeat_encounter_cost.csv
 # ==============================================================================
 
 pkgs <- c("here", "gbmt")
@@ -36,7 +36,7 @@ for (p in pkgs) {
   library(p, character.only = TRUE)
 }
 
-out_interim <- here("output", "intermediate")
+out_interim <- here("output", "final_no_phi", "validation")
 dir.create(out_interim, recursive = TRUE, showWarnings = FALSE)
 
 set.seed(20260905)

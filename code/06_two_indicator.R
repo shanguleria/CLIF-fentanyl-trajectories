@@ -45,7 +45,7 @@ message(sprintf("[06_two_indicator] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 5 -- infusion vs bolus strategy model ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

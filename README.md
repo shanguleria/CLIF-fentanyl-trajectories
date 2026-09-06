@@ -119,7 +119,8 @@ protocol. Nothing estimand-defining may live only in the gitignored
 .venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
 .venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
 .venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
-.venv/bin/python tests/test_build_cohort.py # 17 checks on Phase 0 logic
+.venv/bin/python tests/test_build_cohort.py # 30 checks on Phase 0 logic
+.venv/bin/python tests/test_paths.py        #  5 checks on where output may go
 ```
 
 ### Key settings
@@ -250,16 +251,16 @@ CLIF-fentanyl-trajectories/
 │   ├── test_covariates.py        # integrity checks on config/covariates.json
 │   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
 │   ├── test_outliers.py          # bounds are applied, and gaps are reported
-│   └── test_build_cohort.py      # Phase 0 logic on synthetic frames
+│   ├── test_build_cohort.py      # Phase 0 logic on synthetic frames
+│   └── test_paths.py             # the PHI boundary is a directory rule
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R
 ├── docs/
 │   └── design_notes.md           # protocol, decisions, evidence
-├── data/intermediate_phi/        # gitignored -- PHI
 ├── output/
-│   ├── intermediate_phi/         # gitignored -- PHI
-│   └── final_no_phi/             # the shareable set
+│   ├── intermediate_phi/         # gitignored -- ALL patient-level artifacts
+│   └── final_no_phi/             # the shareable set (incl. validation/)
 └── logs/                         # gitignored
 ```
 

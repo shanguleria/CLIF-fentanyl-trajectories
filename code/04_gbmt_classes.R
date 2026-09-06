@@ -45,7 +45,7 @@ message(sprintf("[04_gbmt_classes] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 3 -- gbmt classes on combined dose ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

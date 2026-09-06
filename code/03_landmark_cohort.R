@@ -4,7 +4,7 @@
 # Purpose : Restrict to patients alive and ventilated at landmark T; report retention and failed-extubation counts.
 # Author  : Shan Guleria
 # Created : 2026-09-05
-# Inputs  : data/intermediate_phi/trajectory_long.parquet
+# Inputs  : output/intermediate_phi/trajectory_long.parquet
 # Outputs : output/intermediate_phi/landmark_cohort.parquet; retention table
 #
 # Spec: docs/design_notes.md section 10.
@@ -45,7 +45,7 @@ message(sprintf("[03_landmark_cohort] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 2 -- apply landmark T, retention reporting ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

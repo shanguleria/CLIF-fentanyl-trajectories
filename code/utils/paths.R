@@ -18,14 +18,13 @@ PHI_LABEL <- paste(
 site_dirs <- function() {
   root <- here::here()
   d <- list(
-    data_phi  = file.path(root, "data",   "intermediate_phi"),
     out_phi   = file.path(root, "output", "intermediate_phi"),
     out_final = file.path(root, "output", "final_no_phi"),
     logs      = file.path(root, "logs")
   )
   for (p in d) dir.create(p, recursive = TRUE, showWarnings = FALSE)
 
-  for (phi in c(d$data_phi, d$out_phi)) {
+  for (phi in c(d$out_phi)) {
     label <- file.path(phi, "README.md")
     if (!file.exists(label)) writeLines(PHI_LABEL, label)
   }

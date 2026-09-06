@@ -4,7 +4,7 @@
 # Purpose : Whole-cohort dose trajectory at two zoom levels, with balanced-panel overlays to separate real dose change from cohort composition change.
 # Author  : Shan Guleria
 # Created : 2026-09-05
-# Inputs  : data/intermediate_phi/trajectory_long.parquet
+# Inputs  : output/intermediate_phi/trajectory_long.parquet
 # Outputs : output/final_no_phi/ : dose curves, retention table, zero fraction
 #
 # Spec: docs/design_notes.md section 10.
@@ -45,7 +45,7 @@ message(sprintf("[02_descriptive_trajectory] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 1 -- cohort dose curves + balanced panels ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

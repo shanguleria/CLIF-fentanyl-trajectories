@@ -45,7 +45,7 @@ message(sprintf("[05_lcmm_classes] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 4 -- lcmm classes, ARI vs Phase 3 ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

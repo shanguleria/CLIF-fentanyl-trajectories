@@ -4,7 +4,7 @@
 # Purpose : Trajectory class as predictor of successful extubation (competing with death and tracheostomy) and of in-hospital death (competing with discharge alive), followed from the landmark.
 # Author  : Shan Guleria
 # Created : 2026-09-05
-# Inputs  : class assignments + data/intermediate_phi/time_to_event.parquet
+# Inputs  : class assignments + output/intermediate_phi/time_to_event.parquet
 # Outputs : output/final_no_phi/ : CIF curves, cause-specific and Fine-Gray models
 #
 # Spec: docs/design_notes.md section 10.
@@ -45,7 +45,7 @@ message(sprintf("[07_outcomes] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. TODO: Phase 6 -- competing-risks outcome models ----
-# read from  : dirs$data_phi
+# read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 

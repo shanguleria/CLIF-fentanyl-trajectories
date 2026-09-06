@@ -10,7 +10,7 @@
 # Author  : Shan Guleria
 # Created : 2026-09-04
 # Inputs  : none (simulated)
-# Outputs : output/intermediate/composition_bias_demo.png
+# Outputs : output/final_no_phi/validation/composition_bias_demo.png
 # ==============================================================================
 
 pkgs <- c("here", "ggplot2")
@@ -114,7 +114,7 @@ p <- ggplot(plot_df, aes(hour, dose, colour = curve)) +
         panel.grid.major.y = element_line(colour = gridline, linewidth = 0.4),
         plot.background = element_rect(fill = "#fcfcfb", colour = NA))
 
-out <- here("output", "intermediate")
+out <- here("output", "final_no_phi", "validation")
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 ggsave(file.path(out, "composition_bias_demo.png"), p, width = 7.5, height = 4.8, dpi = 200)
 cat("\nWrote:", file.path(out, "composition_bias_demo.png"), "\n")

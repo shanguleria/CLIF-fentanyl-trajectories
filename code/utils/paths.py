@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 # Written into intermediate_phi/ at runtime so it survives `git clean -fdx`.
 PHI_LABEL = """# intermediate_phi
 
-Patient-level intermediates: one row per patient, or per patient-window.
+Every patient-level artifact this pipeline produces: the Phase 0 analytic tables
+and the model fits that later phases read. One row per encounter block, or per
+encounter-block-window.
 
 **This directory never leaves the site.** It is not part of any export bundle
 and must not be committed, copied to a shared drive, or read into an analysis
@@ -18,9 +20,8 @@ transcript. Only `output/final_no_phi/` is shareable.
 
 
 def site_dirs(repo: Path) -> dict[str, Path]:
-    """Create and return the four directories this pipeline may write to."""
+    """Create and return the three directories this pipeline may write to."""
     d = {
-        "data_phi": repo / "data" / "intermediate_phi",
         "out_phi": repo / "output" / "intermediate_phi",
         "out_final": repo / "output" / "final_no_phi",
         "logs": repo / "logs",
@@ -28,10 +29,9 @@ def site_dirs(repo: Path) -> dict[str, Path]:
     for p in d.values():
         p.mkdir(parents=True, exist_ok=True)
 
-    for phi in (d["data_phi"], d["out_phi"]):
-        label = phi / "README.md"
-        if not label.exists():
-            label.write_text(PHI_LABEL)
+    label = d["out_phi"] / "README.md"
+    if not label.exists():
+        label.write_text(PHI_LABEL)
 
     return d
 
