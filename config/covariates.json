@@ -323,6 +323,42 @@
     "total": "inf_dose + bolus_dose, both already in mcg/kg/hr."
   },
 
+  "dose_units": {
+    "_purpose": "Medication dose unit conversion, done here rather than by clifpy. Each entry gives a multiplicative factor and what to do with weight: 'none', 'divide' (the source is not weight-based and the target is), or 'multiply' (the source is weight-based and the target is not).",
+    "_why_not_clifpy": "clifpy does NOT null a dose it cannot convert -- it leaves the RAW value in med_dose_converted and reports the failure only in med_dose_unit_converted. Measured at UCMC 2026-09-06: it failed on angiotensin ng/kg/min and phenylephrine mcg/min, which are 100% and 13.3% of those drugs here. Converting in-repo removes the dependency; the unit guard is kept as a check on our own output rather than on clifpy's.",
+    "_verify": "Every (drug, charted unit) pair present in the data must appear here or the build fails. That is what makes this table safe to trust.",
+
+    "mcg/kg/min": {
+      "_target_for": ["norepinephrine", "epinephrine", "dopamine", "phenylephrine", "angiotensin", "dobutamine", "milrinone"],
+      "mcg/kg/min":  {"factor": 1.0,                 "weight": "none"},
+      "ng/kg/min":   {"factor": 0.001,               "weight": "none"},
+      "mg/kg/hr":    {"factor": 16.666666666666668,  "weight": "none"},
+      "mcg/kg/hr":   {"factor": 0.016666666666666666, "weight": "none"},
+      "mcg/min":     {"factor": 1.0,                 "weight": "divide"},
+      "ng/min":      {"factor": 0.001,               "weight": "divide"},
+      "mg/min":      {"factor": 1000.0,              "weight": "divide"},
+      "mg/hr":       {"factor": 16.666666666666668,  "weight": "divide"},
+      "mcg/hr":      {"factor": 0.016666666666666666, "weight": "divide"}
+    },
+
+    "u/min": {
+      "_target_for": ["vasopressin"],
+      "_note": "Vasopressin is dosed in units/min clinically (SG, 2026-09-06); milli-unit variants are a charting artifact and are converted, not dropped.",
+      "units/min":            {"factor": 1.0,                    "weight": "none"},
+      "u/min":                {"factor": 1.0,                    "weight": "none"},
+      "units/hr":             {"factor": 0.016666666666666666,   "weight": "none"},
+      "u/hr":                 {"factor": 0.016666666666666666,   "weight": "none"},
+      "milli-units/min":      {"factor": 0.001,                  "weight": "none"},
+      "milliunits/min":       {"factor": 0.001,                  "weight": "none"},
+      "mu/min":               {"factor": 0.001,                  "weight": "none"},
+      "milli-units/hr":       {"factor": 1.6666666666666667e-05, "weight": "none"},
+      "milli-units/kg/min":   {"factor": 0.001,                  "weight": "multiply"},
+      "milli-units/kg/hr":    {"factor": 1.6666666666666667e-05, "weight": "multiply"},
+      "units/kg/min":         {"factor": 1.0,                    "weight": "multiply"},
+      "units/kg/hr":          {"factor": 0.016666666666666666,   "weight": "multiply"}
+    }
+  },
+
   "encounter_blocks": {
     "_role": "The unit of analysis. Not a covariate, but every covariate is computed within one, so the definition belongs with them.",
     "algorithm": "clifpy stitch_encounters(hospitalization, adt, time_interval=stitch_time_interval_hours), which returns (stitched_hospitalization, stitched_adt, mapping). Join `mapping` back onto the hospitalization table on hospitalization_id and assert every hospitalization received a block.",

@@ -120,6 +120,7 @@ protocol. Nothing estimand-defining may live only in the gitignored
 .venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
 .venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
 .venv/bin/python tests/test_build_cohort.py # 30 checks on Phase 0 logic
+.venv/bin/python tests/test_doses.py        # 11 checks on dose unit conversion
 .venv/bin/python tests/test_paths.py        #  5 checks on where output may go
 ```
 
@@ -242,6 +243,7 @@ CLIF-fentanyl-trajectories/
 │   ├── 06_two_indicator.R
 │   ├── 07_outcomes.R
 │   └── utils/
+│       ├── doses.py              # dose unit conversion (not clifpy's)
 │       ├── fio2.py               # FiO2 scale detection + normalisation
 │       ├── outliers.py           # applies config/outlier_config.json
 │       ├── paths.R               # output dirs + provenance
@@ -252,7 +254,8 @@ CLIF-fentanyl-trajectories/
 │   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
 │   ├── test_outliers.py          # bounds are applied, and gaps are reported
 │   ├── test_build_cohort.py      # Phase 0 logic on synthetic frames
-│   └── test_paths.py             # the PHI boundary is a directory rule
+│   ├── test_paths.py             # the PHI boundary is a directory rule
+│   └── test_doses.py             # every charted dose unit converts correctly
 ├── validation/                   # methodological evidence, synthetic data
 │   ├── scaling_experiments.R
 │   └── composition_bias_demo.R

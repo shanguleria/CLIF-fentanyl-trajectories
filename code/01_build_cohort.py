@@ -25,6 +25,7 @@ from clifpy import (  # noqa: E402
     PatientAssessments, RespiratorySupport, Vitals, stitch_encounters,
 )
 from clifpy.utils.comorbidity import calculate_cci  # noqa: E402
+from utils.doses import convert as convert_doses  # noqa: E402
 from utils.fio2 import normalize_fio2  # noqa: E402
 from utils.outliers import (  # noqa: E402
     apply_long, apply_med_converted, apply_med_raw, fentanyl_sanity_ceiling,
@@ -489,8 +490,6 @@ def lab_covariates(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
 
 def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Max of the summed vasopressor step function. Config: time_varying.nee."""
-    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
-
     m = t["mac"][t["mac"]["med_category"].isin(NEE_COEF)].merge(
         mapping, on="hospitalization_id", how="inner")
     m = m[m["encounter_block"].isin(cohort["encounter_block"])]
@@ -500,24 +499,10 @@ def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
     m, rep = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
     print(rep)
     m = _attach_current_weight(m, t, mapping, cohort)
-    conv, _ = convert_dose_units_by_med_category(m, preferred_units=NEE_PREFERRED)
-
-    # clifpy leaves the raw value in place when it cannot convert; check the unit string.
-    want = conv["med_category"].map(NEE_PREFERRED).astype("string").str.lower()
-    got = conv["med_dose_unit_converted"].astype("string").str.lower()
-    bad = conv["med_dose"].notna() & (got.isna() | (got != want))
-    if bad.any():
-        counts = (conv.loc[bad].groupby(["med_category", "med_dose_unit",
-                                         "med_dose_unit_converted"]).size())
-        n_no_w = int(conv.loc[bad, "weight_kg"].isna().sum())
-        raise SystemExit(
-            f"unit conversion failed and clifpy did not null it "
-            f"({int(bad.sum()):,} rows; {n_no_w:,} have no weight):\n{counts}\n"
-            f"clifpy leaves the RAW value in med_dose_converted and reports the "
-            f"failure only in the unit string, so this must raise rather than pass."
-        )
-
-    conv = conv.rename(columns={"med_dose_converted": "dose_std"})
+    conv = m.copy()
+    conv["dose_std"], drep = convert_doses(conv, "med_category", "med_dose",
+                                           "med_dose_unit")
+    print(drep)
     conv, rep = apply_med_converted(conv, "med_category", "dose_std", config=OUTLIERS)
     print(rep)
 
@@ -707,8 +692,6 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
     Absent drugs stay NULL. Coding them 0 makes the `<= 0.1` clause in the
     cardiovascular score fire, giving every unpressored patient a score of 3.
     """
-    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
-
     m = t["mac"][t["mac"]["med_category"].isin(SOFA_PRESSORS)].merge(
         mapping, on="hospitalization_id", how="inner")
     m = m[m["encounter_block"].isin(cohort["encounter_block"])]
@@ -718,10 +701,8 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
 
     m, _ = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
     m = _attach_current_weight(m, t, mapping, cohort)
-    conv, _ = convert_dose_units_by_med_category(
-        m, preferred_units={d: "mcg/kg/min" for d in SOFA_PRESSORS})
-    got = conv["med_dose_unit_converted"].astype("string").str.lower()
-    conv = conv[got.eq("mcg/kg/min")].rename(columns={"med_dose_converted": "dose_std"})
+    conv = m.copy()
+    conv["dose_std"], _ = convert_doses(conv, "med_category", "med_dose", "med_dose_unit")
     conv = conv[conv["dose_std"] > 0]
     conv = _to_windows(conv, cohort, "admin_dttm")
     if conv.empty:
