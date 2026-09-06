@@ -55,6 +55,8 @@ OXY = COV["time_varying"]["oxygenation"]
 FIO2_LOOKBACK_H = OXY["fio2_lookback_hours"]
 SPO2_CEILING = OXY["spo2_ceiling"]
 RA_FIO2 = OXY["fio2_scale"]["fraction_band"][0]
+SPAN_LEAD_H = OXY["waterfall_span"]["lead_hours"]
+SPAN_TRAIL_H = OXY["waterfall_span"]["trail_hours"]
 
 LAB_VARS = {
     k: v["source"]["category"]
@@ -105,13 +107,15 @@ def load_core() -> dict:
         print(f"  {name:.<52} {len(df):,} rows")
 
     screen = RespiratorySupport.from_file(
-        **_kw(columns=["hospitalization_id", "device_category"])).df
-    imv_ids = set(screen.loc[screen["device_category"] == "IMV", "hospitalization_id"])
-    print(f"  {'resp_support IMV screen':.<52} {len(imv_ids):,} hospitalizations")
-    return t, imv_ids
+        **_kw(columns=["hospitalization_id", "device_category", "recorded_dttm"])).df
+    imv = screen[screen["device_category"] == "IMV"]
+    raw_anchor = (imv.groupby("hospitalization_id")["recorded_dttm"].min()
+                     .rename("imv_dttm").reset_index())
+    print(f"  {'resp_support IMV screen':.<52} {len(raw_anchor):,} hospitalizations")
+    return t, raw_anchor
 
 
-def load_cohort_tables(hosp_ids: list[str]) -> dict:
+def load_cohort_tables(hosp_ids: list[str], span: pd.DataFrame | None = None) -> dict:
     """Everything else, filtered to the cohort's hospitalizations and categories.
 
     Pushed down to the read: an unfiltered site-wide load makes the respiratory
@@ -134,7 +138,15 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
     }
     rs = RespiratorySupport.from_file(**_kw(filters=hid))
     t["resp_raw"] = rs.df.copy()
-    print(f"  {'respiratory_support':.<52} {len(rs.df):,} rows  (waterfall next)")
+    n_raw = len(rs.df)
+    if span is not None:
+        d = rs.df.merge(span, on="hospitalization_id", how="inner")
+        keep = (d["recorded_dttm"] >= d["span_lo"]) & (d["recorded_dttm"] <= d["span_hi"])
+        rs.df = d[keep].drop(columns=["span_lo", "span_hi"])
+        print(f"  {'respiratory_support':.<52} {n_raw:,} rows -> "
+              f"{len(rs.df):,} in span ({100*len(rs.df)/max(n_raw,1):.1f}%)")
+    else:
+        print(f"  {'respiratory_support':.<52} {n_raw:,} rows  (untrimmed)")
     t["resp"] = _canonicalise_devices(rs.waterfall(verbose=False, return_dataframe=True))
     for name, df in t.items():
         if name != "resp_raw":
@@ -990,7 +1002,7 @@ def main() -> None:
           f"infusion hold {INF_HOLD_H}h\n")
 
     print("Loading core tables")
-    t, imv_ids = load_core()
+    t, raw_anchor = load_core()
 
     print("\nEncounter blocks")
     blocks, mapping = build_blocks(t)
@@ -999,6 +1011,7 @@ def main() -> None:
 
     # Restrict before the waterfall: it is the expensive step and only the
     # cohort's rows can affect the result.
+    imv_ids = set(raw_anchor["hospitalization_id"])
     imv_blocks = set(mapping.loc[mapping["hospitalization_id"].isin(imv_ids), "encounter_block"])
     blocks = blocks[blocks["encounter_block"].isin(imv_blocks)]
     note("blocks containing any IMV record", len(blocks))
@@ -1006,8 +1019,17 @@ def main() -> None:
     hosp_ids = sorted(mapping["hospitalization_id"].astype(str).unique())
     note("hospitalizations to load", len(hosp_ids))
 
+    # The waterfall is the whole cost of a run; trim it to the analysis span.
+    # Equivalence measured in validation/waterfall_span_equivalence.py.
+    blk_anchor = (raw_anchor.merge(mapping, on="hospitalization_id", how="inner")
+                            .groupby("encounter_block", as_index=False)["imv_dttm"].min())
+    span = mapping.merge(blk_anchor, on="encounter_block", how="inner")
+    span["span_lo"] = span["imv_dttm"] - pd.Timedelta(hours=SPAN_LEAD_H)
+    span["span_hi"] = span["imv_dttm"] + pd.Timedelta(hours=EXTENT_H + SPAN_TRAIL_H)
+    span = span[["hospitalization_id", "span_lo", "span_hi"]]
+
     print("\nLoading cohort tables")
-    t.update(load_cohort_tables(hosp_ids))
+    t.update(load_cohort_tables(hosp_ids, span=span))
     assert_categories_present(t)
 
     print("\nCohort")

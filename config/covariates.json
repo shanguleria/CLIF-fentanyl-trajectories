@@ -151,6 +151,13 @@
       "_cap_why": "Derived from a blood gas or an SpO2. SpO2 is charted at least hourly, so a window with no oxygenation at all is unusual and a long carry would be masking a real data gap rather than bridging a charting one.",
       "_ONE_COLUMN_NOT_TWO": "oxygenation is ONE covariate: measured P/F where an arterial gas exists, Severinghaus-derived P/F otherwise. Fallback is PER WINDOW, not per reading, so a window's value comes from exactly one source. CRRT-dose-lmtp carried pf_ratio and sf_ratio as separate covariates intending S/F to act as a fallback and NOTHING IMPLEMENTED THE FALLBACK: both entered as independent covariates, each median-imputed when absent, while 85% of blocks missing P/F had S/F observed. The model was filling a constant into a column whose information sat in the next one. Keep pf_ratio and sf_ratio as DIAGNOSTICS; they are not analysis covariates.",
       "fio2_lookback_hours": 4,
+      "waterfall_span": {
+        "lead_hours": 24,
+        "trail_hours": 24,
+        "_why": "respiratory_support is trimmed to [anchor - lead, anchor + extent + trail] BEFORE the waterfall. The waterfall is the entire cost of a Phase 0 run -- over two hours on 4.0M rows at the coordinating site, against a few minutes for everything else -- because it processes each hospitalization's whole stay when the analysis window is only [anchor, anchor + 72h].",
+        "_MEASURED_EQUIVALENCE": "validation/waterfall_span_equivalence.py, 400 hospitalizations, 2026-09-06. Trimming keeps 29.7% of rows and is 3.0x faster. Inside the analysis window: device_category is IDENTICAL (0 of 46,007 differ). fio2_set differs on 312 of 46,007 (0.678%) and EVERY ONE is a presence difference, never a value difference -- 220 recovered by trimming, 92 lost, 0 genuine disagreements. Extending the lead to 48h or 96h changes none of those three numbers, so 24h is sufficient and the 92 losses are structural to the waterfall's segment handling rather than lead-in truncation.",
+        "_why_it_RECOVERS_data": "The 220 recoveries are the trach-collar wipe (see fio2._waterfall_known_cost): clifpy's fill_block destroys fio2_set across the WHOLE encounter, so a shorter encounter loses less. Trimming therefore mitigates a known clifpy defect as a side effect. That is a reason to report the difference, not to rely on it."
+      },
       "fio2_scale": {
         "required_unit": "fraction",
         "fraction_band": [0.21, 1.0],
