@@ -66,6 +66,7 @@ LAB_VARS = {
 }
 ZERO_VARS = COV["missing_values"]["absence_means_zero"]["members"]
 NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
+SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 
 STROBE: list[tuple[str, int]] = []
 
@@ -113,7 +114,9 @@ def load_core() -> dict:
     raw_anchor = (imv.groupby("hospitalization_id")["recorded_dttm"].min()
                      .rename("imv_dttm").reset_index())
     print(f"  {'resp_support IMV screen':.<52} {len(raw_anchor):,} hospitalizations")
-    return t, raw_anchor
+    # The IMV series is kept whole: outcomes are ascertained after the trajectory
+    # window, so they cannot use the span-trimmed waterfall.
+    return t, raw_anchor, imv[["hospitalization_id", "recorded_dttm"]].copy()
 
 
 def load_cohort_tables(hosp_ids: list[str], span: pd.DataFrame | None = None) -> dict:
@@ -718,6 +721,25 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
     return wide[cols]
 
 
+def locf_sofa_inputs(df: pd.DataFrame) -> pd.DataFrame:
+    """Carry the SOFA component inputs forward before the score is computed.
+
+    A daily creatinine has to reach that day's six windows, exactly as bun does.
+    Scoring from raw per-window components left 4.5% of windows with all six.
+    """
+    out = df.sort_values(["encounter_block", "window_idx"], kind="stable").copy()
+    for v, cap in SOFA_INPUT_CAPS.items():
+        if v not in out.columns:
+            continue
+        limit = max(int(cap // WINDOW_H), 1)
+        before = out[v].isna()
+        out[v] = out.groupby("encounter_block")[v].ffill(limit=limit)
+        n = int((before & out[v].notna() & out["at_risk"]).sum())
+        if n:
+            print(f"    {v}: {n:,} at-risk windows filled ({cap}h cap)")
+    return out
+
+
 def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
     """Six SOFA components and their total. Vincent 1996; see design_notes.md §11."""
     g = lambda c: df[c] if c in df.columns else pd.Series(np.nan, index=df.index)
@@ -945,6 +967,10 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
         print("\n  oxygenation provenance (at-risk windows)")
         print(src.to_string(index=False))
 
+    for v in ZERO_VARS + NOT_VENT_VARS:
+        if v in df.columns:
+            df[v] = pd.to_numeric(df[v], errors="coerce").astype("float64")
+
     per_pattern = _missingness_patterns(df[at_risk], tv)
     return df, per_variable, per_pattern
 
@@ -984,8 +1010,15 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
         )
 
 
-def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame) -> pd.DataFrame:
-    """One row per block, origin = landmark T. Two event codings; see §10, §10a."""
+def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
+                        imv_records: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
+    """One row per block, origin = landmark T. See design_notes.md §10, §10a.
+
+    Successful extubation = extubation not followed by reintubation within
+    successful_extubation_hours. Ventilation status comes from the RAW IMV series,
+    not the window grid: the grid stops at T, so outcomes ascertained from it are
+    all censored by construction.
+    """
     T = CONFIG["cohort"]["landmark_hours"]
     succ_h = CONFIG["outcomes"]["successful_extubation_hours"]
     death_cats = set(CONFIG["outcomes"]["mortality_categories"])
@@ -996,24 +1029,37 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame) -> pd.DataFram
 
     tte = cohort[cohort["encounter_block"].isin(eligible)].copy()
     tte["landmark_eligible"] = True
-
-    post = long[(long["window_start_hr"] >= T) & long["at_risk"]]
-    vent = post[post["imv_status"] == 1]
-    last_vent = vent.groupby("encounter_block")["window_start_hr"].max()
-    tte["last_vent_hr"] = tte["encounter_block"].map(last_vent)
-
-    tte["died"] = tte["discharge_category"].isin(death_cats)
     tte["hours_to_discharge"] = (
         (tte["block_discharge_dttm"] - tte["anchor_dttm"]).dt.total_seconds() / 3600)
+    tte["died"] = tte["discharge_category"].isin(death_cats)
 
-    ext_hr = tte["last_vent_hr"] + WINDOW_H
-    off_long_enough = (tte["hours_to_discharge"] - ext_hr) >= succ_h
-    tte["extubation_event"] = np.select(
-        [tte["died"] & ~off_long_enough.fillna(False), off_long_enough.fillna(False)],
-        [2, 1], default=0)
+    imv = (imv_records.merge(mapping, on="hospitalization_id", how="inner")
+                      .merge(tte[["encounter_block", "anchor_dttm"]],
+                             on="encounter_block", how="inner"))
+    imv["hr"] = (imv["recorded_dttm"] - imv["anchor_dttm"]).dt.total_seconds() / 3600
+    imv = imv[imv["hr"] >= 0].sort_values(["encounter_block", "hr"], kind="stable")
+
+    # An extubation is an IMV record whose next IMV record is more than succ_h
+    # later, or which has none. The first such event at or after T is the outcome.
+    imv["next_hr"] = imv.groupby("encounter_block")["hr"].shift(-1)
+    gap = imv["next_hr"] - imv["hr"]
+    imv["is_extubation"] = imv["next_hr"].isna() | (gap > succ_h)
+    ext = imv[imv["is_extubation"] & (imv["hr"] >= T)]
+    first_ext = ext.groupby("encounter_block")["hr"].min().rename("ext_hr")
+    tte = tte.merge(first_ext, on="encounter_block", how="left")
+
+    note("blocks with an extubation at or after T", int(tte["ext_hr"].notna().sum()))
+
+    # Death inside the succ_h window after extubation is the competing event,
+    # not a success -- §10a, per the VFD convention.
+    off = tte["hours_to_discharge"] - tte["ext_hr"]
+    died_in_window = tte["died"] & (off < succ_h)
+    success = tte["ext_hr"].notna() & ~died_in_window
+
+    tte["extubation_event"] = np.select([success, tte["died"]], [1, 2], default=0)
     tte["extubation_time"] = np.where(
-        tte["extubation_event"] == 1, ext_hr - T,
-        tte["hours_to_discharge"] - T)
+        tte["extubation_event"] == 1, tte["ext_hr"] - T,
+        (tte["hours_to_discharge"] - T).clip(lower=0))
 
     tte["mortality_event"] = np.where(tte["died"], 1, 2)
     tte["mortality_time"] = (tte["hours_to_discharge"] - T).clip(lower=0)
@@ -1022,8 +1068,13 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame) -> pd.DataFram
     n_unres = int(tte["discharge_category"].isin(unresolved).sum())
     if n_unres:
         note("blocks with an unresolved discharge_category", n_unres)
-    for code, label in ((1, "successful extubation"), (2, "death")):
-        note(f"  extubation outcome = {label}", int((tte["extubation_event"] == code).sum()))
+    for code, label in ((1, "successful extubation"), (2, "death"), (0, "censored")):
+        note(f"  extubation outcome = {label}",
+             int((tte["extubation_event"] == code).sum()))
+    note("  30-day analysis: died", int((tte["mortality_event"] == 1).sum()))
+
+    # Tracheostomy is event code 3 and its rule is still undecided (§10a(c)).
+    tte["tracheostomy_pending"] = True
     return tte
 
 
@@ -1035,7 +1086,7 @@ def main() -> None:
           f"infusion hold {INF_HOLD_H}h\n")
 
     print("Loading core tables")
-    t, raw_anchor = load_core()
+    t, raw_anchor, imv_records = load_core()
 
     print("\nEncounter blocks")
     blocks, mapping = build_blocks(t)
@@ -1104,6 +1155,7 @@ def main() -> None:
     if len(press):
         sofa_in = sofa_in.merge(press, on=["encounter_block", "window_idx"], how="outer")
     long = long.merge(sofa_in, on=["encounter_block", "window_idx"], how="left")
+    long = locf_sofa_inputs(long)
     long = pd.concat([long.reset_index(drop=True),
                       score_sofa(long).reset_index(drop=True)], axis=1)
     comp = long.loc[long["at_risk"], "sofa_n_components"]
@@ -1120,7 +1172,7 @@ def main() -> None:
     assert_config_is_honoured(long)
 
     print("\nTime to event")
-    tte = build_time_to_event(cohort, long)
+    tte = build_time_to_event(cohort, long, imv_records, mapping)
 
     out = dirs["out_phi"]
     long.to_parquet(out / "trajectory_long.parquet", index=False)

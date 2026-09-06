@@ -149,6 +149,41 @@ def test_pattern_table_pools_small_cells():
     assert len(pooled) == 1, f"rare patterns must be pooled below {min_cell}"
 
 
+# --------------------------------------------------------- outcome ascertainment
+def test_extubation_is_a_gap_longer_than_the_success_window():
+    """The rule is 'not followed by reintubation within 72h', so an IMV record
+    whose next record is >72h later marks an extubation."""
+    succ_h = B.CONFIG["outcomes"]["successful_extubation_hours"]
+    hr = pd.Series([0.0, 4.0, 8.0, 200.0])
+    nxt = hr.shift(-1)
+    is_ext = nxt.isna() | ((nxt - hr) > succ_h)
+    assert is_ext.tolist() == [False, False, True, True], (
+        "only the record before the long gap, and the last record, are extubations"
+    )
+
+
+def test_a_brief_gap_is_reintubation_not_extubation():
+    succ_h = B.CONFIG["outcomes"]["successful_extubation_hours"]
+    hr = pd.Series([80.0, 80.0 + succ_h - 1])
+    nxt = hr.shift(-1)
+    is_ext = nxt.isna() | ((nxt - hr) > succ_h)
+    assert is_ext.tolist() == [False, True], (
+        "a reintubation inside the window means the first record is not an extubation"
+    )
+
+
+def test_outcome_cannot_be_read_from_the_window_grid():
+    """The grid ends at the landmark, so nothing in it is post-landmark. This is
+    the bug that made every block censored on the first real run."""
+    T = B.CONFIG["cohort"]["landmark_hours"]
+    last_window_start = (B.N_WINDOWS - 1) * B.WINDOW_H
+    assert last_window_start < T, (
+        f"the grid's last window starts at {last_window_start}h and the landmark is "
+        f"{T}h, so `window_start_hr >= T` selects nothing -- outcomes must come "
+        f"from the raw IMV series"
+    )
+
+
 # ------------------------------------------------------------- bolus units
 def test_bolus_bound_nulls_an_implausible_mcg_per_kg_dose():
     """445 UCMC rows are charted mcg/kg with a median of 54.5, which converts to

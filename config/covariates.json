@@ -425,6 +425,19 @@
       "members": ["oxygenation_source"]
     },
 
+    "sofa_inputs": {
+      "rule": "SOFA component inputs that are not themselves declared covariates. They carry the same LOCF caps as the labs and are filled BEFORE the score is computed.",
+      "_why": "MEASURED 2026-09-06: scoring SOFA from raw per-window components left only 13,792 of 305,606 at-risk windows (4.5%) with all six present, because creatinine, platelet_count, map and gcs_total were the only time-varying inputs receiving no LOCF at all. A SOFA of 3 summed from two components is not comparable to a 3 summed from six, so the score has to be built from filled components, not raw ones. sofa_n_components still records how many were available.",
+      "_not_a_missingness_class": "This block deliberately uses 'variables', not 'members'. A block in missing_values carrying a 'members' key IS a missingness class by convention, and tests/test_covariates.py enforces that every listed member is a declared time_varying covariate. These four are SOFA inputs, not covariates.",
+      "variables": {
+        "creatinine": 24,
+        "platelet_count": 24,
+        "map": 8,
+        "gcs_total": 12
+      },
+      "_caps_why": "creatinine and platelet_count are daily labs, matching the 24h lab rule. map is a continuously monitored vital, so an 8h carry is already generous. gcs_total is assessed per shift, so 12h."
+    },
+
     "reporting": {
       "_order_of_operations_MATTERS": "1. Complete the (patient x window) grid, so 'no row' and 'row with NA' become the same thing and every count uses the same denominator. 2. Apply absence_means_zero and absence_means_not_ventilated. 3. COUNT MISSINGNESS, at-risk windows only. 4. THEN LOCF. 5. Emit a parallel <var>_locf boolean per variable. Counting after the fill makes the extent of filling invisible.",
       "_at_risk_only": "The missingness denominator is AT-RISK windows only. A post-event window has no covariates because the patient's follow-up had ended, which is STRUCTURE, not data quality; mixing the two would make late windows look far worse than they are.",
