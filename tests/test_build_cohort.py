@@ -149,6 +149,22 @@ def test_pattern_table_pools_small_cells():
     assert len(pooled) == 1, f"rare patterns must be pooled below {min_cell}"
 
 
+# ------------------------------------------------------------- bolus units
+def test_bolus_bound_nulls_an_implausible_mcg_per_kg_dose():
+    """445 UCMC rows are charted mcg/kg with a median of 54.5, which converts to
+    ~3,800 mcg for a 70 kg adult. Rather than guess the label is wrong, convert
+    per the charted unit and let the bound decide."""
+    lo, hi = B.OUTLIERS["med_bolus_mcg"]["fentanyl"]
+    assert 54.5 * 70 > hi, "the implausible case must exceed the bound"
+    assert 0.5 * 70 < hi, "a genuine low mcg/kg dose must survive it"
+
+
+def test_bolus_bound_catches_the_observed_mcg_outlier():
+    hi = B.OUTLIERS["med_bolus_mcg"]["fentanyl"][1]
+    assert 22025.0 > hi, "the observed 22,025 mcg maximum must be nulled"
+    assert 50.0 < hi, "the median 50 mcg bolus must survive"
+
+
 # ------------------------------------------------------- clifpy waterfall casing
 def test_waterfall_lowercasing_is_restored_to_mcide_casing():
     """clifpy's waterfall returns device_category as 'imv', not 'IMV'. Comparing

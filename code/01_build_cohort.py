@@ -371,17 +371,36 @@ def bolus_doses(t: dict, mapping: pd.DataFrame, grid: pd.DataFrame,
     b = b.merge(cohort[["encounter_block", "anchor_dttm", "weight_kg"]],
                 on="encounter_block", how="inner")
 
-    unit = b["med_dose_unit"].astype("string").str.lower().str.strip()
+    unit = (b["med_dose_unit"].astype("string").str.lower().str.strip()
+            .replace({"mcg of opiate": "mcg", "": pd.NA}))
     dose = pd.to_numeric(b["med_dose"], errors="coerce")
+    w = pd.to_numeric(b["weight_kg"], errors="coerce")
     mcg = pd.Series(np.nan, index=b.index, dtype="float64")
     mcg[unit == "mcg"] = dose
     mcg[unit == "mg"] = dose * 1000.0
+    mcg[unit == "mcg/kg"] = dose * w
+    mcg[unit == "mg/kg"] = dose * 1000.0 * w
+
+    # Unconvertible rows are reported, not raised: at UCMC they are 7.6% of rows
+    # and carry no dose at all, so raising would block the run over empty records.
     unresolved = dose.notna() & mcg.isna()
     if unresolved.any():
-        raise SystemExit(
-            f"fentanyl bolus: unhandled units {sorted(unit[unresolved].dropna().unique())}"
-        )
+        counts = unit[unresolved].fillna("<no unit>").value_counts()
+        print(f"  bolus: {int(unresolved.sum()):,} of {len(b):,} rows carry a dose in an "
+              f"unhandled unit and are NULLED")
+        for u, n in counts.items():
+            print(f"    {u}: {n:,}")
     b["mcg"] = mcg
+
+    lo, hi = OUTLIERS["med_bolus_mcg"]["fentanyl"]
+    over = b["mcg"].notna() & ((b["mcg"] < lo) | (b["mcg"] > hi))
+    if over.any():
+        by_unit = unit[over].fillna("<no unit>").value_counts()
+        print(f"  bolus: {int(over.sum()):,} converted doses outside [{lo:g}, {hi:g}] mcg, "
+              f"nulled")
+        for u, n in by_unit.items():
+            print(f"    {u}: {n:,}")
+    b.loc[over, "mcg"] = np.nan
 
     b["window_idx"] = ((b["admin_dttm"] - b["anchor_dttm"]).dt.total_seconds()
                        // (WINDOW_H * 3600)).astype("Int64")

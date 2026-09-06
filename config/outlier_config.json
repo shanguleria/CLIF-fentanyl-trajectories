@@ -71,6 +71,12 @@
     "_ANGIOTENSIN_IS_OURS": "clifpy has NO angiotensin entry, so this pair is written here rather than inherited. ng/kg/min [0, 1000] is the same ceiling as mcg/kg/min [0, 1], expressed in the unit some sites actually chart. Without it, angiotensin passes through the raw layer unbounded and the unit guard is the only thing standing between a mis-unit dose and a coefficient of 10."
   },
 
+  "med_bolus_mcg": {
+    "_note": "Bounds for INTERMITTENT doses, after conversion to mcg. Separate from med_dose_raw, which is a rate table: a bolus is a quantity, not an intensity, and the two are not comparable.",
+    "fentanyl": [0.0, 1000.0],
+    "_fentanyl_why": "A procedural or bolus fentanyl dose reaches a few hundred mcg; 1000 is generous. Two measurements at UCMC over 406,287 fentanyl MAI rows (2026-09-05) make this bound load-bearing rather than decorative: (1) the mcg arm has a maximum of 22,025 against a median of 50; (2) 445 rows are charted mcg/kg with a median of 54.5, which for a 70 kg adult converts to about 3,800 mcg, roughly 76x a normal bolus, and whose value distribution is indistinguishable from the mcg arm. Rather than guess whether that label is wrong, the pipeline converts per the CHARTED unit and lets this bound decide: a genuine low mcg/kg dose survives, an implausible one does not. Rule-based, not assumption-based."
+  },
+
   "med_dose_converted": {
     "_note": "Per drug, in the NEE analysis unit: mcg/kg/min for all EXCEPT vasopressin, which is u/min. Applied AFTER clifpy's conversion and after the unit guard has confirmed the returned unit string.",
 
