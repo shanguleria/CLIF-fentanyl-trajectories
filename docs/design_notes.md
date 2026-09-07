@@ -601,7 +601,12 @@ windows in the landmark cohort carry `total_dose == 0` (50.8% across the whole
 cohort) (source: `phase1_zero_fraction.csv`). The non-zero part is unimodal and
 right-skewed with no second mode, deciles 12 → 200 mcg/hr with a median of 75
 (source: `phase1_dose_distribution.csv`). That is a zero-inflated continuous
-distribution, and §9's `crimCV` question is now live rather than hypothetical.
+distribution. §9 raised `crimCV`'s zero-inflated Poisson as the alternative;
+**SG confirmed 2026-09-07 that Phase 3 remains `gbmt` and Phase 4 remains
+`lcmm`**, so the roadmap is unchanged and `crimCV` is not pursued. Record the
+zero fraction in Methods regardless — a model fitted to a quantity that is zero
+in half of windows is fitting the zero process as much as the dose process, and a
+reviewer will ask.
 
 **Why so many zeros — investigated 2026-09-07, they are real.** A median of zero
 from hour 24 looks implausible for patients still ventilated at 72h, so the
@@ -899,7 +904,17 @@ must be described separately in Methods or a reader will conflate them.
 
 ### Still to specify
 
-**(a) Dose in the extubated gap — DECIDED: `0`.** (2026-09-05, SG.) A patient
+**(a) Dose in the extubated gap — DECIDED: `0`. CLOSED 2026-09-07.**
+*(SG: "Boluses of sedation while not ventilated should not count for this
+study.")* Implemented in `gate_dose_on_ventilation()` and no longer open. The
+estimand is sedation and analgesia **during mechanical ventilation**, and every
+affected window is bolus-only with no infusion running — post-extubation PRN
+analgesia, a different clinical process. Measured inside the landmark cohort at
+T = 72h: **317 windows (0.26%) across 144 episodes (2.1%)**, all bolus-only,
+moving any cohort mean by 0.22%. No sensitivity analysis on the ungated column is
+planned; `total_dose_ungated` is carried so the decision could be revisited
+without another Phase 0 run, not because a planned analysis needs it. Original
+statement follows. (2026-09-05, SG.) A patient
 extubated at 30h and reintubated at 40h gets `dose = 0` for the intervening
 windows: that is what actually happened. The `imv_status` column in Table 1
 identifies these windows. **Track and report the number and % of landmark-cohort
