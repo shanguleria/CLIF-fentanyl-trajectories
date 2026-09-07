@@ -88,6 +88,14 @@ OWNED = {
                     "phase0_diagnostics.csv"],
 }
 
+# Paths this script used to write and no longer does. Cleared so a relocation
+# cannot leave a stale twin the owned list no longer names.
+RETIRED_OUTPUTS = [
+    "output/final_no_phi/phase0_missingness.csv",
+    "output/final_no_phi/phase0_missingness_patterns.csv",
+    "output/final_no_phi/phase0_diagnostics.csv",
+]
+
 STROBE: list[tuple[str, int]] = []
 FLOW: list[dict] = []
 
@@ -1341,7 +1349,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
 
 def main() -> None:
     dirs = site_dirs(REPO)
-    n_cleared = clear_owned_outputs(dirs, OWNED)
+    n_cleared = clear_owned_outputs(dirs, OWNED, retired=RETIRED_OUTPUTS)
     if n_cleared:
         print(f"cleared {n_cleared} output(s) from a previous run")
     prov = provenance(CONFIG)

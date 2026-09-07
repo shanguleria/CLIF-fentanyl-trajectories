@@ -68,6 +68,22 @@ def test_nothing_under_output_is_committable():
         assert rc == 0, f"{path} is COMMITTABLE; nothing under output/ may be tracked"
 
 
+def test_clearing_removes_a_retired_path():
+    """Moving an output leaves a stale twin at the old location that the owned
+    list no longer names -- three survived a relocation before this existed."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "output" / "final_no_phi").mkdir(parents=True)
+        stale = root / "output" / "final_no_phi" / "old_report.csv"
+        stale.write_text("stale")
+        d = {"out_phi": root, "out_final": root / "output" / "final_no_phi",
+             "diagnostics": root, "logs": root}
+        n = clear_owned_outputs(d, {}, retired=["output/final_no_phi/old_report.csv"])
+        assert n == 1 and not stale.exists(), "a retired path must be cleared"
+
+
 def test_no_output_file_is_tracked_in_the_index():
     """.gitignore does not affect files already added, so an output committed by
     mistake stays committed. Six were, once."""

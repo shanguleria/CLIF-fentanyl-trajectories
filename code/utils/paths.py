@@ -69,7 +69,8 @@ def config_digests(repo: Path) -> dict[str, str]:
     return out
 
 
-def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]]) -> int:
+def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
+                        retired: list[str] | None = None) -> int:
     """Delete this script's own outputs before it starts.
 
     A crash then leaves nothing rather than a stale file that still looks valid.
@@ -83,6 +84,13 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]]) -> i
             if f.exists():
                 f.unlink()
                 n += 1
+    # Relocating an output leaves a stale twin at the old path, which the owned
+    # list no longer names. Retired paths are cleared explicitly.
+    for rel in retired or []:
+        f = dirs["out_final"].parent.parent / rel
+        if f.exists():
+            f.unlink()
+            n += 1
     return n
 
 
