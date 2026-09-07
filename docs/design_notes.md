@@ -685,6 +685,67 @@ extubations), so the curve should closely reproduce it. Phase 2 is therefore not
 panel to the analytic cohort. It serves as the cohort-selection tool for
 Phases 3–6. Rationale in §8.
 
+#### What Phase 2 produced at UCMC (2026-09-07)
+
+Run: `code/03_landmark_cohort.R`. **T = 72h is the primary analysis** (SG,
+2026-09-07), with 24 and 48h swept as the sensitivity §8 requires.
+
+**Landmark flow.** 14,897 analytic episodes → **6,728 alive and ventilated at
+T = 72h (45.2%)** → 6,728 analysed. Nothing is dropped after the landmark:
+failed extubations are retained per §10a (source: `phase2_landmark_flow.csv`).
+
+**Failed extubations inside [0, T], the §10 disclosure.** Two definitions bound
+the same quantity, because a single non-ventilated window may be a charting gap
+rather than an extubation (source: `phase2_failed_extubation.csv`):
+
+| Definition | n | % of landmark cohort | Cohort if excluded |
+|---|---:|---:|---:|
+| any non-ventilated window in [0,T) | 445 | 6.6% | 6,283 |
+| a run of ≥ 2 windows (≥ 8h, the episode gap rule) | 343 | 5.1% | 6,385 |
+
+Excluding them would cost about 5%. §10 says make the call with that number in
+hand; they are retained, because cohort membership is "ventilated at T", which
+needs no look-ahead.
+
+**T sensitivity** (source: `phase2_T_sensitivity.csv`):
+
+| T | n eligible | % of intubated | Windows | Failed extub. | Mean dose | Median dose | % windows zero |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 24h | 11,683 | 78.4% | 6 | 0.2% | 50.6 | **18.8** | 41.1% |
+| 48h | 8,504 | 57.1% | 12 | 2.0% | 47.8 | 10.0 | 47.6% |
+| **72h** | **6,728** | **45.2%** | **18** | **5.1%** | **45.5** | **0.0** | **51.7%** |
+
+Two things move together as T lengthens and both are worth stating in Methods:
+the cohort halves, and the outcome becomes more zero-inflated — **at T = 24h the
+median dose is 18.8 mcg/hr, at T = 72h it is exactly zero.** Baseline composition
+barely shifts (age 60/60/59, 40.8/40.4/40.0% female, SOFA 8 throughout), so the
+retained cohort is not a different kind of patient, only a smaller and
+longer-ventilated one.
+
+**Consistency with Phase 1.** §10 says Phase 2 is the Phase 1 ≥T balanced panel
+promoted to the analytic set rather than new analysis. The script asserts it:
+maximum absolute difference in mean dose and in n across all 18 windows is
+**0.0000 and 0** respectively, and a discrepancy raises rather than warns.
+
+**The panel is balanced, deliberately.** Every one of the 6,728 episodes
+contributes all 18 windows. Re-filtering on `imv_status == 1` inside the landmark
+window would unbalance it — and `gbmt` silently caps the polynomial degree at
+(shortest unit's windows − 1), so an unbalanced panel would quietly constrain the
+trajectory shape. A transiently extubated window carries dose 0 by §10a(a), which
+is the settled treatment and not missingness. `n_ventilated` and
+`mean_ventilated_only` ride alongside in the CSV so the difference stays visible.
+
+**Repeat-episode dependence in the landmark cohort** (§11's first two required
+diagnostics; the third needs Phase 3): 6,728 episodes from **6,357 patients**;
+**266 patients (4.2%) contribute more than one**, accounting for 637 episodes
+(9.5%), maximum 9. Milder than the full analytic cohort (6.8%), because
+contributing twice requires two separate 72h ventilation courses.
+
+**Handoff.** `output/intermediate_phi/landmark_cohort.parquet` — 121,104 rows
+(6,728 × 18), with `id_num` a dense integer rank of `encounter_block` because
+`gbmt` and `lcmm` want a numeric unit. Both id columns ride along so the
+blocks-per-patient choice stays reversible.
+
 ### Phase 3 — `gbmt`, single indicator
 `total_dose`, `scaling = 0`, sweep `ng = 1:6`, select by the full §7 conjunction.
 Expect difficulty if the zero fraction is high — measure it in Phase 1 first.

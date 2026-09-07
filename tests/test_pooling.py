@@ -20,6 +20,9 @@ REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "output" / "final_no_phi"
 CONT = OUT / "phase1_pooling_continuous.csv"
 CAT = OUT / "phase1_pooling_categorical.csv"
+# Phases 1 and 2 share one pooling contract, so both are held to it.
+ALL_CONT = [OUT / "phase1_pooling_continuous.csv", OUT / "phase2_pooling_continuous.csv"]
+ALL_CAT = [OUT / "phase1_pooling_categorical.csv", OUT / "phase2_pooling_categorical.csv"]
 TOL = 1e-5          # the exports are rounded to 6 decimals
 
 
@@ -31,23 +34,25 @@ def _skip_if_absent(f: Path) -> pd.DataFrame | None:
 
 
 def test_mean_is_recoverable_from_sum_and_n():
-    d = _skip_if_absent(CONT)
-    if d is None:
-        return
-    d = d[d.n > 0].dropna(subset=["mean", "sum"])
-    assert len(d), "no usable rows"
-    err = (d["sum"] / d["n"] - d["mean"]).abs().max()
-    assert err < TOL, f"sum/n disagrees with mean by {err}"
+    for f in ALL_CONT:
+        d = _skip_if_absent(f)
+        if d is None:
+            continue
+        d = d[d.n > 0].dropna(subset=["mean", "sum"])
+        assert len(d), f"{f.name}: no usable rows"
+        err = (d["sum"] / d["n"] - d["mean"]).abs().max()
+        assert err < TOL, f"{f.name}: sum/n disagrees with mean by {err}"
 
 
 def test_sd_is_recoverable_from_the_two_sums():
-    d = _skip_if_absent(CONT)
-    if d is None:
-        return
-    d = d[d.n > 1].dropna(subset=["sd", "sum", "sum_sq"])
-    var = (d["sum_sq"] - d["sum"] ** 2 / d["n"]) / (d["n"] - 1)
-    err = (var.clip(lower=0) ** 0.5 - d["sd"]).abs().max()
-    assert err < TOL, f"reconstructed sd disagrees by {err}"
+    for f in ALL_CONT:
+        d = _skip_if_absent(f)
+        if d is None:
+            continue
+        d = d[d.n > 1].dropna(subset=["sd", "sum", "sum_sq"])
+        var = (d["sum_sq"] - d["sum"] ** 2 / d["n"]) / (d["n"] - 1)
+        err = (var.clip(lower=0) ** 0.5 - d["sd"]).abs().max()
+        assert err < TOL, f"{f.name}: reconstructed sd disagrees by {err}"
 
 
 def test_two_strata_pool_back_to_the_overall_row():
@@ -79,18 +84,22 @@ def test_two_strata_pool_back_to_the_overall_row():
 def test_small_cells_are_suppressed_not_published():
     """A mean over n = 1 is that patient's value. Anything below the site's
     small_cell_min_den must carry no statistics at all."""
-    d = _skip_if_absent(CONT)
-    if d is None:
-        return
+    for f in ALL_CONT:
+        d = _skip_if_absent(f)
+        if d is not None:
+            _check_suppression(d, f.name)
+
+
+def _check_suppression(d, name):
     cfg = json.loads((REPO / "config" / "config_template.json").read_text())
     lim = cfg["reporting"]["small_cell_min_den"]
     tiny = d[(d.n > 0) & (d.n < lim)]
     assert (tiny["n_suppressed_small_cell"] == 1).all(), (
-        f"{int((tiny['n_suppressed_small_cell'] != 1).sum())} cells below n={lim} "
-        f"are not flagged"
+        f"{name}: {int((tiny['n_suppressed_small_cell'] != 1).sum())} cells below "
+        f"n={lim} are not flagged"
     )
     for col in ("mean", "sd", "sum", "sum_sq", "median", "min", "max"):
-        assert tiny[col].isna().all(), f"{col} is published for a cell below n={lim}"
+        assert tiny[col].isna().all(), f"{name}: {col} published below n={lim}"
 
 
 def test_categorical_counts_sum_to_their_denominator():

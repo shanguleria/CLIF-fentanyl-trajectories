@@ -26,6 +26,7 @@ for (p in pkgs) {
 }
 
 source(here("code", "utils", "paths.R"))
+source(here("code", "utils", "pooling.R"))
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -57,68 +58,6 @@ MIN_CELL <- config$reporting$small_cell_min_den
 # Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
 # phase1_pooling_categorical.csv. Map lives in covariates.json, not here.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
-
-collapse_levels <- function(v, map) {
-  # Look up through a NAMED VECTOR, not list subsetting. `unlist(map[v])` drops
-  # the NULLs for unmatched values, so the result is shorter than v and ifelse
-  # recycles it -- which silently misaligns every row rather than erroring.
-  named <- names(map)[!startsWith(names(map), "_")]
-  lut <- unlist(map[named])
-  out <- unname(lut[v])
-  out[is.na(out)] <- map[["_default"]]
-  out[v == "Missing"] <- "Missing"
-  stopifnot("collapse_levels changed the vector length" = length(out) == length(v))
-  as.character(out)
-}
-
-
-# ---- Federated pooling ------------------------------------------------------
-# A median cannot be pooled across sites; a mean can, exactly, from n and the two
-# sums. Carrying sum and sum_sq rather than only mean and sd means the pooled
-# figures are exact rather than an approximation that assumes equal variances:
-#   mean_pooled = sum(sum) / sum(n)
-#   var_pooled  = (sum(sum_sq) - sum(sum)^2 / sum(n)) / (sum(n) - 1)
-# Medians and IQRs are carried alongside because dose here is right-skewed and
-# the mean alone would misrepresent a site; pool the means, report the medians.
-# Cells below reporting.small_cell_min_den are suppressed: a mean over n = 1 is
-# that patient's value.
-
-pool_row <- function(scope, variable, unit, stratum, w, hr, v) {
-  v <- v[!is.na(v)]
-  n <- length(v)
-  small <- n > 0 && n < MIN_CELL
-  blank <- function(x) if (small || n == 0) NA_real_ else round(x, 6)
-  q <- if (n) unname(quantile(v, c(0.25, 0.5, 0.75))) else rep(NA_real_, 3)
-  data.frame(
-    scope = scope, variable = variable, unit = unit, stratum = stratum,
-    window_idx = w, window_start_hr = hr,
-    n = n, n_suppressed_small_cell = as.integer(small),
-    mean = blank(if (n) mean(v) else NA_real_),
-    sd   = blank(if (n > 1) stats::sd(v) else NA_real_),
-    sum  = blank(if (n) sum(v) else NA_real_),
-    sum_sq = blank(if (n) sum(v^2) else NA_real_),
-    min = blank(if (n) min(v) else NA_real_),
-    max = blank(if (n) max(v) else NA_real_),
-    median = blank(q[2]), q1 = blank(q[1]), q3 = blank(q[3]),
-    stringsAsFactors = FALSE)
-}
-
-pool_cat <- function(variable, v) {
-  do.call(rbind, lapply(c("overall", "eligible", "not_eligible"), function(st) {
-    x <- if (st == "overall") v else v[grp == st]
-    tb <- table(x)
-    do.call(rbind, lapply(names(tb), function(l) {
-      k <- as.integer(tb[[l]])
-      small <- k > 0 && k < MIN_CELL
-      data.frame(variable = variable, level = l, stratum = st,
-                 n = if (small) NA_integer_ else k,
-                 denominator = length(x),
-                 pct = if (small) NA_real_ else round(100 * k / length(x), 2),
-                 n_suppressed_small_cell = as.integer(small),
-                 stringsAsFactors = FALSE)
-    }))
-  }))
-}
 
 POOL <- list()
 POOL_CAT <- list()
@@ -279,10 +218,10 @@ for (drug in names(DRUGS)) {
     hr <- x$window_start_hr[1]
     POOL[[length(POOL) + 1]] <- pool_row(
       "by_window", sprintf("%s dose", drug), UNITS[[drug]], "all_ventilated",
-      w, hr, x[[col]])
+      w, hr, x[[col]], MIN_CELL)
     POOL[[length(POOL) + 1]] <- pool_row(
       "by_window", sprintf("%s dose", drug), UNITS[[drug]], "receivers_only",
-      w, hr, x[[col]][!is.na(x[[col]]) & x[[col]] > 0])
+      w, hr, x[[col]][!is.na(x[[col]]) & x[[col]] > 0], MIN_CELL)
   }
 }
 for (v in names(TV_POOL)) {
@@ -290,7 +229,7 @@ for (v in names(TV_POOL)) {
     x <- long[long$window_idx == w & long$ventilated, ]
     POOL[[length(POOL) + 1]] <- pool_row(
       "by_window", TV_POOL[[v]], NA_character_, "ventilated",
-      w, x$window_start_hr[1], x[[v]])
+      w, x$window_start_hr[1], x[[v]], MIN_CELL)
   }
 }
 
@@ -451,7 +390,7 @@ fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
 row_continuous <- function(label, v, unit = NA_character_) {
   for (st in c("overall", "eligible", "not_eligible")) {
     x <- if (st == "overall") v else v[grp == st]
-    POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x)
+    POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x, MIN_CELL)
   }
   p <- tryCatch(stats::wilcox.test(v[grp == "eligible"], v[grp == "not_eligible"])$p.value,
                 error = function(e) NA_real_)
@@ -464,10 +403,10 @@ row_continuous <- function(label, v, unit = NA_character_) {
 
 row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
   raw <- ifelse(is.na(v), "Missing", as.character(v))
-  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<- pool_cat(label, raw)
+  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<- pool_cat(label, raw, grp, MIN_CELL)
   v <- if (is.null(collapse)) raw else collapse_levels(raw, collapse)
   if (!identical(v, raw)) POOL_CAT[[length(POOL_CAT) + 1]] <<-
-    pool_cat(paste(label, "(collapsed)"), v)
+    pool_cat(paste(label, "(collapsed)"), v, grp, MIN_CELL)
   lv <- sort(unique(v))
   tab <- table(v, grp)
   keep <- rownames(tab)[rownames(tab) != "Missing"]

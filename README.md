@@ -183,6 +183,7 @@ What each phase writes to `output/final_no_phi/`:
 |---|---|
 | 0 | `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
 | 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_pooling_continuous.csv`, `phase1_pooling_categorical.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
+| 2 | `phase2_landmark_flow.{csv,txt}`, `phase2_T_sensitivity.csv`, `phase2_failed_extubation.csv`, `phase2_dose_curve.{csv,png}`, `phase2_dependence.csv`, `phase2_pooling_{continuous,categorical}.csv`, `phase2_provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `phase1_pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
