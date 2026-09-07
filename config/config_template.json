@@ -64,7 +64,7 @@
     },
 
     "model": {
-        "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level. See docs/design_notes.md sections 3-4.",
+        "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level. See docs/design_notes.md section 3.",
         "scaling": 0,
         "ng_range": [1, 6],
         "polynomial_degree": 2,
