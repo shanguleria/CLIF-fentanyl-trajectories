@@ -53,18 +53,15 @@ MIN_IMV_H = CONFIG["cohort"]["min_imv_hours"]
 
 EXPOSURE = COV["exposure"]
 INF_HOLD_H = EXPOSURE["infusion"]["hold_hours"]
-GRID_MIN = EXPOSURE["grid_resolution_minutes"]
 
 NEE = COV["time_varying"]["nee"]
 NEE_COEF = NEE["coefficients"]
 NEE_HOLD_H = NEE["hold_hours"]
-NEE_PREFERRED = {**{d: "mcg/kg/min" for d in NEE_COEF}, "vasopressin": "u/min"}
 
 OXY = COV["time_varying"]["oxygenation"]
 FIO2_LOOKBACK_H = OXY["fio2_lookback_hours"]
 SPO2_CEILING = OXY["spo2_ceiling"]
 RA_FIO2 = OXY["fio2_scale"]["fraction_band"][0]
-SPAN_TRIM_ENABLED = OXY["waterfall_span"].get("enabled", False)
 EPISODE_GAP_H = CONFIG["cohort"]["imv_episode_gap_hours"]
 
 LAB_VARS = {
@@ -76,8 +73,7 @@ ZERO_VARS = COV["missing_values"]["absence_means_zero"]["members"]
 NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
 SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 
-# Everything this script owns. Cleared before it runs so a crash cannot leave a
-# stale file, or worse a mismatched pair written by two different code versions.
+# Everything this script owns. Cleared before it runs so a crash cannot leave a stale file
 OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
@@ -246,6 +242,29 @@ def _canonicalise_devices(df: pd.DataFrame) -> pd.DataFrame:
             )
         out[col] = mapped
     return out
+
+
+def prepare_long_tables(t: dict, mapping: pd.DataFrame) -> dict:
+    """Attach encounter_block and apply outlier bounds once per table.
+
+    Every consumer previously did this itself: vitals was merged and bounded five
+    times over 10.5M rows, labs three times over 3.8M. apply_long is idempotent,
+    so the repeats were pure cost.
+    """
+    spec = {
+        "labs": ("labs", "lab_category", "lab_value_numeric"),
+        "vitals": ("vitals", "vital_category", "vital_value"),
+        "assessments": ("patient_assessments", "assessment_category",
+                        "numerical_value"),
+    }
+    for name, (table, cat, val) in spec.items():
+        d = t[name].merge(mapping, on="hospitalization_id", how="inner")
+        d, rep = apply_long(d, table, cat, val, config=OUTLIERS)
+        print(rep)
+        t[name] = d
+    for name in ("resp", "crrt"):
+        t[name] = t[name].merge(mapping, on="hospitalization_id", how="inner")
+    return t
 
 
 def assert_categories_present(t: dict) -> None:
@@ -509,8 +528,7 @@ def _to_mcg_kg_hr(m: pd.DataFrame) -> pd.Series:
     return out
 
 
-def bolus_doses(t: dict, mapping: pd.DataFrame, grid: pd.DataFrame,
-                cohort: pd.DataFrame) -> pd.DataFrame:
+def bolus_doses(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Window bolus total / weight / window_hours. Summed, never carried forward."""
     cats = CONFIG["medications"]["opioid_bolus_categories"]
     b = t["mai"][t["mai"]["med_category"].isin(cats)].merge(
@@ -605,11 +623,8 @@ def _to_windows(df: pd.DataFrame, cohort: pd.DataFrame, time_col: str) -> pd.Dat
     return d[(d["window_idx"] >= 0) & (d["window_idx"] < N_WINDOWS)]
 
 
-def lab_covariates(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
-    labs = t["labs"].merge(mapping, on="hospitalization_id", how="inner")
-    labs, rep = apply_long(labs, "labs", "lab_category", "lab_value_numeric", config=OUTLIERS)
-    print(rep)
-    labs = _to_windows(labs, cohort, "lab_result_dttm")
+def lab_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
+    labs = _to_windows(t["labs"], cohort, "lab_result_dttm")
 
     out = None
     for var, cat in LAB_VARS.items():
@@ -632,7 +647,7 @@ def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
 
     m, rep = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
     print(rep)
-    m = _attach_current_weight(m, t, mapping, cohort)
+    m = _attach_current_weight(m, t)
     conv = m.copy()
     conv["dose_std"], drep = convert_doses(conv, "med_category", "med_dose",
                                            "med_dose_unit")
@@ -673,11 +688,9 @@ def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
     return nee
 
 
-def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
-                          cohort: pd.DataFrame) -> pd.DataFrame:
+def oxygenation_covariate(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     """One column on the P/F scale, Severinghaus fallback. Config: time_varying.oxygenation."""
-    rs = t["resp"].merge(mapping, on="hospitalization_id", how="inner")
-    rs = rs[rs["encounter_block"].isin(cohort["encounter_block"])].copy()
+    rs = t["resp"][t["resp"]["encounter_block"].isin(cohort["encounter_block"])].copy()
     rs["fio2_set"], rep = normalize_fio2(rs["fio2_set"])
     print(rep)
     fio2 = (rs.loc[rs["fio2_set"].notna(),
@@ -701,15 +714,13 @@ def oxygenation_covariate(t: dict, mapping: pd.DataFrame,
         m["assumed"] = assumed
         return m[m["fio2_set"].notna() & (m["fio2_set"] > 0)]
 
-    labs = t["labs"].merge(mapping, on="hospitalization_id", how="inner")
-    labs, _ = apply_long(labs, "labs", "lab_category", "lab_value_numeric", config=OUTLIERS)
+    labs = t["labs"]
     pao2 = labs.loc[labs["lab_category"] == "po2_arterial",
                     ["encounter_block", "lab_result_dttm", "lab_value_numeric"]]
     pf = pair(pao2, "lab_result_dttm")
     pf["ratio"] = pf["lab_value_numeric"] / pf["fio2_set"]
 
-    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
-    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
+    vit = t["vitals"]
     # Keep the unfiltered series: the ceiling filter is what separates a plateau
     # window from one with no measurement at all, so the flags must see both.
     spo2_all = vit.loc[vit["vital_category"] == "spo2",
@@ -781,11 +792,9 @@ def _severinghaus(spo2: pd.Series) -> pd.Series:
 SOFA_PRESSORS = ["norepinephrine", "epinephrine", "dopamine", "dobutamine"]
 
 
-def _sofa_inputs(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+def _sofa_inputs(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     """Per-window SOFA components not already carried as covariates."""
-    labs = t["labs"].merge(mapping, on="hospitalization_id", how="inner")
-    labs, _ = apply_long(labs, "labs", "lab_category", "lab_value_numeric", config=OUTLIERS)
-    labs = _to_windows(labs, cohort, "lab_result_dttm")
+    labs = _to_windows(t["labs"], cohort, "lab_result_dttm")
     plt_ = (labs[labs["lab_category"] == "platelet_count"]
             .groupby(["encounter_block", "window_idx"], as_index=False)["lab_value_numeric"]
             .min().rename(columns={"lab_value_numeric": "platelet_count"}))
@@ -793,17 +802,12 @@ def _sofa_inputs(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Dat
              .groupby(["encounter_block", "window_idx"], as_index=False)["lab_value_numeric"]
              .max().rename(columns={"lab_value_numeric": "creatinine"}))
 
-    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
-    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
-    vit = _to_windows(vit, cohort, "recorded_dttm")
+    vit = _to_windows(t["vitals"], cohort, "recorded_dttm")
     mp = (vit[vit["vital_category"] == "map"]
           .groupby(["encounter_block", "window_idx"], as_index=False)["vital_value"]
           .min().rename(columns={"vital_value": "map"}))
 
-    asm = t["assessments"].merge(mapping, on="hospitalization_id", how="inner")
-    asm, _ = apply_long(asm, "patient_assessments", "assessment_category",
-                        "numerical_value", config=OUTLIERS)
-    asm = _to_windows(asm, cohort, "recorded_dttm")
+    asm = _to_windows(t["assessments"], cohort, "recorded_dttm")
     gcs = (asm[asm["assessment_category"] == "gcs_total"]
            .groupby(["encounter_block", "window_idx"], as_index=False)["numerical_value"]
            .min().rename(columns={"numerical_value": "gcs_total"}))
@@ -814,8 +818,7 @@ def _sofa_inputs(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Dat
     return out
 
 
-def _attach_current_weight(med: pd.DataFrame, t: dict, mapping: pd.DataFrame,
-                           cohort: pd.DataFrame) -> pd.DataFrame:
+def _attach_current_weight(med: pd.DataFrame, t: dict) -> pd.DataFrame:
     """Attach the most recent charted weight at each admin time.
 
     clifpy demands a weight whenever the PREFERRED unit is weight-based, and that
@@ -824,9 +827,7 @@ def _attach_current_weight(med: pd.DataFrame, t: dict, mapping: pd.DataFrame,
     vitals lookup. NEE follows CURRENT weight, unlike the dose denominator, which
     is fixed at the anchor -- see covariates.json weight._DO_NOT_UNIFY.
     """
-    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
-    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
-    w = (vit.loc[vit["vital_category"] == "weight_kg",
+    w = (t["vitals"].loc[t["vitals"]["vital_category"] == "weight_kg",
                  ["encounter_block", "recorded_dttm", "vital_value"]]
             .dropna().sort_values("recorded_dttm", kind="stable"))
 
@@ -863,7 +864,7 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
         return pd.DataFrame(columns=cols)
 
     m, _ = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
-    m = _attach_current_weight(m, t, mapping, cohort)
+    m = _attach_current_weight(m, t)
     conv = m.copy()
     conv["dose_std"], _ = convert_doses(conv, "med_category", "med_dose", "med_dose_unit")
     conv = conv[conv["dose_std"] > 0]
@@ -984,25 +985,6 @@ def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
     }])
 
 
-def locf_sofa_inputs(df: pd.DataFrame) -> pd.DataFrame:
-    """Carry the SOFA component inputs forward before the score is computed.
-
-    A daily creatinine has to reach that day's six windows, exactly as bun does.
-    Scoring from raw per-window components left 4.5% of windows with all six.
-    """
-    out = df.sort_values(["encounter_block", "window_idx"], kind="stable").copy()
-    for v, cap in SOFA_INPUT_CAPS.items():
-        if v not in out.columns:
-            continue
-        limit = max(int(cap // WINDOW_H), 1)
-        before = out[v].isna()
-        out[v] = out.groupby("encounter_block")[v].ffill(limit=limit)
-        n = int((before & out[v].notna() & out["at_risk"]).sum())
-        if n:
-            print(f"    {v}: {n:,} at-risk windows filled ({cap}h cap)")
-    return out
-
-
 def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
     """Six SOFA components and their total. Vincent 1996; see design_notes.md §11."""
     g = lambda c: df[c] if c in df.columns else pd.Series(np.nan, index=df.index)
@@ -1043,25 +1025,21 @@ def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def status_covariates(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
-    rs = _to_windows(t["resp"].merge(mapping, on="hospitalization_id", how="inner"),
-                     cohort, "recorded_dttm")
+def status_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
+    rs = _to_windows(t["resp"], cohort, "recorded_dttm")
     imv = (rs.assign(v=rs["device_category"].eq("IMV"))
              .groupby(["encounter_block", "window_idx"], as_index=False)["v"].max()
              .rename(columns={"v": "imv_status"}))
 
-    crrt = t["crrt"].merge(mapping, on="hospitalization_id", how="inner")
-    crrt = _to_windows(crrt, cohort, "recorded_dttm")
+    crrt = _to_windows(t["crrt"], cohort, "recorded_dttm")
     cr = (crrt.assign(v=1).groupby(["encounter_block", "window_idx"], as_index=False)["v"]
               .max().rename(columns={"v": "crrt_status"}))
     return imv.merge(cr, on=["encounter_block", "window_idx"], how="outer")
 
 
-def attach_weight(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+def attach_weight(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     """Dose denominator, fixed at the anchor. Backward match preferred; report the lag."""
-    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
-    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
-    w = vit.loc[vit["vital_category"] == "weight_kg",
+    w = t["vitals"].loc[t["vitals"]["vital_category"] == "weight_kg",
                 ["encounter_block", "recorded_dttm", "vital_value"]].dropna()
     w = w.sort_values("recorded_dttm", kind="stable")
     anchors = cohort[["encounter_block", "anchor_dttm"]].sort_values("anchor_dttm",
@@ -1089,10 +1067,8 @@ def attach_weight(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
                 "weight_lag_hours"]]
 
 
-def bmi_admission(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
-    vit = t["vitals"].merge(mapping, on="hospitalization_id", how="inner")
-    vit, _ = apply_long(vit, "vitals", "vital_category", "vital_value", config=OUTLIERS)
-    vit = vit.merge(cohort[["encounter_block", "block_admission_dttm"]],
+def bmi_admission(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
+    vit = t["vitals"].merge(cohort[["encounter_block", "block_admission_dttm"]],
                     on="encounter_block", how="inner")
     vit["lag_h"] = ((vit["recorded_dttm"] - vit["block_admission_dttm"])
                     .dt.total_seconds() / 3600)
@@ -1378,31 +1354,32 @@ def main() -> None:
     print("\nLoading cohort tables")
     t.update(load_cohort_tables(hosp_ids))
     assert_categories_present(t)
+    t = prepare_long_tables(t, mapping)
 
     print("\nCohort")
     anchor = imv_episodes(t["resp"], imv_records, mapping)
     cohort = build_cohort(blocks, anchor)
 
     print("\nWeight and BMI")
-    cohort = cohort.merge(attach_weight(t, mapping, cohort), on="encounter_block", how="left")
+    cohort = cohort.merge(attach_weight(t, cohort), on="encounter_block", how="left")
     cohort = cohort[cohort["weight_kg"].notna()]
     flow("ANALYTIC COHORT -- trajectory_long", len(cohort),
          "no weight charted anywhere in the block")
-    bmi = bmi_admission(t, mapping, cohort)
+    bmi = bmi_admission(t, cohort)
 
     print("\nWindows")
     windows = window_grid(cohort)
 
     print("\nExposure")
     grid = infusion_grid(t, mapping, cohort)
-    bolus = bolus_doses(t, mapping, grid, cohort)
+    bolus = bolus_doses(t, mapping, cohort)
     long = window_exposure(grid, bolus, windows)
 
     print("\nCovariates")
-    for part in (lab_covariates(t, mapping, cohort),
+    for part in (lab_covariates(t, cohort),
                  nee_covariate(t, mapping, cohort),
-                 oxygenation_covariate(t, mapping, cohort),
-                 status_covariates(t, mapping, cohort)):
+                 oxygenation_covariate(t, cohort),
+                 status_covariates(t, cohort)):
         if len(part):
             long = long.merge(part, on=["encounter_block", "window_idx"], how="left")
 
@@ -1416,7 +1393,7 @@ def main() -> None:
         on="encounter_block", how="left")
 
     print("\n  SOFA")
-    sofa_in = _sofa_inputs(t, mapping, cohort)
+    sofa_in = _sofa_inputs(t, cohort)
     press = _sofa_pressors(t, mapping, cohort)
     if len(press):
         sofa_in = sofa_in.merge(press, on=["encounter_block", "window_idx"], how="outer")

@@ -51,7 +51,7 @@ def test_every_module_constant_the_loaders_need_exists():
 
     for name in ("LAB_NEEDED", "VITAL_NEEDED", "ASSESS_NEEDED", "LAB_VARS",
                  "ZERO_VARS", "NOT_VENT_VARS", "SOFA_PRESSORS", "SOFA_INPUT_CAPS",
-                 "NEE_COEF", "NEE_PREFERRED", "OWNED", "EXPOSURE"):
+                 "NEE_COEF", "OWNED", "EXPOSURE", "RETIRED_OUTPUTS"):
         assert hasattr(B, name), f"module constant {name} is missing"
         assert len(getattr(B, name)), f"{name} is empty"
 
