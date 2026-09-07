@@ -52,6 +52,78 @@ UNITS <- c(fentanyl = COV$exposure$units,
                     sub("_dose$", "", SED_COLS)))
 SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
+MIN_CELL <- config$reporting$small_cell_min_den
+
+# Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
+# phase1_pooling_categorical.csv. Map lives in covariates.json, not here.
+RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
+
+collapse_levels <- function(v, map) {
+  # Look up through a NAMED VECTOR, not list subsetting. `unlist(map[v])` drops
+  # the NULLs for unmatched values, so the result is shorter than v and ifelse
+  # recycles it -- which silently misaligns every row rather than erroring.
+  named <- names(map)[!startsWith(names(map), "_")]
+  lut <- unlist(map[named])
+  out <- unname(lut[v])
+  out[is.na(out)] <- map[["_default"]]
+  out[v == "Missing"] <- "Missing"
+  stopifnot("collapse_levels changed the vector length" = length(out) == length(v))
+  as.character(out)
+}
+
+
+# ---- Federated pooling ------------------------------------------------------
+# A median cannot be pooled across sites; a mean can, exactly, from n and the two
+# sums. Carrying sum and sum_sq rather than only mean and sd means the pooled
+# figures are exact rather than an approximation that assumes equal variances:
+#   mean_pooled = sum(sum) / sum(n)
+#   var_pooled  = (sum(sum_sq) - sum(sum)^2 / sum(n)) / (sum(n) - 1)
+# Medians and IQRs are carried alongside because dose here is right-skewed and
+# the mean alone would misrepresent a site; pool the means, report the medians.
+# Cells below reporting.small_cell_min_den are suppressed: a mean over n = 1 is
+# that patient's value.
+
+pool_row <- function(scope, variable, unit, stratum, w, hr, v) {
+  v <- v[!is.na(v)]
+  n <- length(v)
+  small <- n > 0 && n < MIN_CELL
+  blank <- function(x) if (small || n == 0) NA_real_ else round(x, 6)
+  q <- if (n) unname(quantile(v, c(0.25, 0.5, 0.75))) else rep(NA_real_, 3)
+  data.frame(
+    scope = scope, variable = variable, unit = unit, stratum = stratum,
+    window_idx = w, window_start_hr = hr,
+    n = n, n_suppressed_small_cell = as.integer(small),
+    mean = blank(if (n) mean(v) else NA_real_),
+    sd   = blank(if (n > 1) stats::sd(v) else NA_real_),
+    sum  = blank(if (n) sum(v) else NA_real_),
+    sum_sq = blank(if (n) sum(v^2) else NA_real_),
+    min = blank(if (n) min(v) else NA_real_),
+    max = blank(if (n) max(v) else NA_real_),
+    median = blank(q[2]), q1 = blank(q[1]), q3 = blank(q[3]),
+    stringsAsFactors = FALSE)
+}
+
+pool_cat <- function(variable, v) {
+  do.call(rbind, lapply(c("overall", "eligible", "not_eligible"), function(st) {
+    x <- if (st == "overall") v else v[grp == st]
+    tb <- table(x)
+    do.call(rbind, lapply(names(tb), function(l) {
+      k <- as.integer(tb[[l]])
+      small <- k > 0 && k < MIN_CELL
+      data.frame(variable = variable, level = l, stratum = st,
+                 n = if (small) NA_integer_ else k,
+                 denominator = length(x),
+                 pct = if (small) NA_real_ else round(100 * k / length(x), 2),
+                 n_suppressed_small_cell = as.integer(small),
+                 stringsAsFactors = FALSE)
+    }))
+  }))
+}
+
+POOL <- list()
+POOL_CAT <- list()
+
+
 
 # ---- 3. Paths and provenance -------------------------------------------------
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
@@ -75,7 +147,9 @@ OWNED <- list(out_final = c(
   "phase1_baseline_characteristics.csv", "phase1_retention.csv",
   "phase1_dose_summary.csv", "phase1_dose_distribution.csv",
   "phase1_balanced_panels.csv", "phase1_zero_fraction.csv",
-  "phase1_imv_episodes.csv", "phase1_choosing_T.csv", "phase1_provenance.json",
+  "phase1_imv_episodes.csv", "phase1_choosing_T.csv",
+  "phase1_pooling_continuous.csv", "phase1_pooling_categorical.csv",
+  "phase1_provenance.json",
   "phase1_fentanyl_curves.png", "phase1_fentanyl_balanced_panels.png",
   "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png"))
 
@@ -191,6 +265,34 @@ dose_summary <- do.call(rbind, lapply(names(DRUGS), function(drug) {
                          x$window_start_hr[1]))
   }))
 }))
+
+# Per-window pooling rows. Doses under both denominators, and every continuous
+# time-varying covariate over the ventilated set, so a coordinating centre can
+# pool any of them without a second run.
+TV_POOL <- c(sofa_total = "SOFA", nee = "Norepinephrine equivalent (mcg/kg/min)",
+             oxygenation = "P/F ratio", lactate = "Lactate (mmol/L)")
+
+for (drug in names(DRUGS)) {
+  col <- DRUGS[[drug]]
+  for (w in sort(unique(long$window_idx))) {
+    x <- long[long$window_idx == w & long$ventilated, ]
+    hr <- x$window_start_hr[1]
+    POOL[[length(POOL) + 1]] <- pool_row(
+      "by_window", sprintf("%s dose", drug), UNITS[[drug]], "all_ventilated",
+      w, hr, x[[col]])
+    POOL[[length(POOL) + 1]] <- pool_row(
+      "by_window", sprintf("%s dose", drug), UNITS[[drug]], "receivers_only",
+      w, hr, x[[col]][!is.na(x[[col]]) & x[[col]] > 0])
+  }
+}
+for (v in names(TV_POOL)) {
+  for (w in sort(unique(long$window_idx))) {
+    x <- long[long$window_idx == w & long$ventilated, ]
+    POOL[[length(POOL) + 1]] <- pool_row(
+      "by_window", TV_POOL[[v]], NA_character_, "ventilated",
+      w, x$window_start_hr[1], x[[v]])
+  }
+}
 
 cat("\nFentanyl dose by window (all ventilated, zeros included)\n")
 print(dose_summary[dose_summary$drug == "fentanyl" &
@@ -342,7 +444,15 @@ fmt_iqr <- function(v) {
 fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
                                   100 * k / max(n, 1))
 
-row_continuous <- function(label, v) {
+# Table 1 rows are display strings. Each one also deposits raw n/mean/sd/sum/
+# sum_sq into POOL, because a median cannot be pooled across sites and a display
+# string cannot be pooled at all.
+
+row_continuous <- function(label, v, unit = NA_character_) {
+  for (st in c("overall", "eligible", "not_eligible")) {
+    x <- if (st == "overall") v else v[grp == st]
+    POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x)
+  }
   p <- tryCatch(stats::wilcox.test(v[grp == "eligible"], v[grp == "not_eligible"])$p.value,
                 error = function(e) NA_real_)
   data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
@@ -352,8 +462,12 @@ row_continuous <- function(label, v) {
              p_value = fmt_p(p), stringsAsFactors = FALSE)
 }
 
-row_categorical <- function(label, v) {
-  v <- ifelse(is.na(v), "Missing", as.character(v))
+row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
+  raw <- ifelse(is.na(v), "Missing", as.character(v))
+  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<- pool_cat(label, raw)
+  v <- if (is.null(collapse)) raw else collapse_levels(raw, collapse)
+  if (!identical(v, raw)) POOL_CAT[[length(POOL_CAT) + 1]] <<-
+    pool_cat(paste(label, "(collapsed)"), v)
   lv <- sort(unique(v))
   tab <- table(v, grp)
   keep <- rownames(tab)[rownames(tab) != "Missing"]
@@ -373,24 +487,24 @@ row_categorical <- function(label, v) {
 }
 
 baseline <- rbind(
-  row_continuous("Age, years", base$age),
+  row_continuous("Age, years", base$age, "years"),
   row_categorical("Sex", base$sex),
-  row_categorical("Race", base$race),
-  row_continuous("Charlson Comorbidity Index", base$cci),
-  row_continuous("BMI at admission, kg/m2", base$bmi_admission),
-  row_continuous("Weight, kg", base$weight_kg),
-  row_continuous("SOFA, first window", base$sofa_total),
-  row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee),
-  row_continuous("P/F ratio, first window", base$oxygenation),
-  row_continuous("Lactate, mmol/L", base$lactate),
+  row_categorical("Race", base$race, collapse = RACE_COLLAPSE),
+  row_continuous("Charlson Comorbidity Index", base$cci, "index"),
+  row_continuous("BMI at admission, kg/m2", base$bmi_admission, "kg/m2"),
+  row_continuous("Weight, kg", base$weight_kg, "kg"),
+  row_continuous("SOFA, first window", base$sofa_total, "points"),
+  row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee, "mcg/kg/min"),
+  row_continuous("P/F ratio, first window", base$oxygenation, "mmHg"),
+  row_continuous("Lactate, mmol/L", base$lactate, "mmol/L"),
   row_continuous(sprintf("Fentanyl dose, first window (%s)", UNITS[["fentanyl"]]),
-                 base$total_dose),
+                 base$total_dose, UNITS[["fentanyl"]]),
   do.call(rbind, lapply(SEDATIVES, function(d) row_continuous(
     sprintf("%s dose, first window (%s)",
             paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
-    base[[DRUGS[[d]]]]))),
-  row_continuous("First IMV episode, hours", base$first_imv_episode_hours),
-  row_continuous("IMV episodes per block", base$n_imv_episodes)
+    base[[DRUGS[[d]]]], UNITS[[d]]))),
+  row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours"),
+  row_continuous("IMV episodes per block", base$n_imv_episodes, "count")
 )
 names(baseline) <- c("Characteristic", COLS, "p-value")
 
@@ -491,7 +605,7 @@ allc <- dose_summary[dose_summary$drug == "fentanyl" &
                        dose_summary$denominator == "all_ventilated", ]
 allc$curve <- "All ventilated (changing denominator)"
 
-keep <- c("window_start_hr", "mean", "pct_receiving_any", "curve")
+keep <- c("window_start_hr", "mean", "median", "pct_receiving_any", "curve")
 pdf_ <- rbind(bp[, keep], allc[, keep])
 lv <- c(sort(unique(bp$curve)), "All ventilated (changing denominator)")
 pdf_$curve <- factor(pdf_$curve, levels = lv)
@@ -499,7 +613,9 @@ pal <- setNames(c("#a8c8ee", "#4a8bd8", "#14427e", "#eb6834")[seq_along(lv)], lv
 
 panel_df <- rbind(
   data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$mean,
-             quantity = sprintf("Mean fentanyl dose (%s)", FENT_U)),
+             quantity = sprintf("MEAN dose (%s)", FENT_U)),
+  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$median,
+             quantity = sprintf("MEDIAN dose (%s)", FENT_U)),
   data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$pct_receiving_any,
              quantity = "% receiving any fentanyl")
 )
@@ -513,12 +629,13 @@ p_panels <- house(
     guides(colour = guide_legend(nrow = 2)) +
     labs(title = "Real dose change, or a changing mix of patients?",
          subtitle = paste0(
-           "Panels freeze the denominator at a ventilation duration. Shown on the mean,\n",
-           "because the median is pinned at zero from h24 and stops discriminating."),
+           "Panels freeze the denominator at a ventilation duration.\n",
+           "Mean and median shown together: over half of ventilated windows are exactly zero, so\n",
+           "the median falls onto the floor at h24 and every panel collapses onto one line."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
 ggsave(file.path(dirs$out_final, "phase1_fentanyl_balanced_panels.png"), p_panels,
-       width = 7.5, height = 7.0, dpi = 200)
+       width = 7.5, height = 9.2, dpi = 200)
 
 # --- Primary figure: fentanyl distribution -----------------------------------
 # The zero spike is excluded because it is a different kind of observation from
@@ -560,21 +677,27 @@ prev_txt <- paste(sprintf("%s %.1f%%", SEDATIVES, prev), collapse = ", ")
 # Wrap by hand: ggplot does not wrap a subtitle, it clips it at the canvas edge.
 prev_txt <- paste(strwrap(prev_txt, width = 66), collapse = "\n")
 
+# Mean beside median for the same reason as the fentanyl panels: a median over a
+# mostly-zero column reports the floor, not the dose.
+sed_long <- rbind(
+  data.frame(sed[, c("window_start_hr", "series", "facet")],
+             value = sed$median, statistic = "median"),
+  data.frame(sed[, c("window_start_hr", "series", "facet")],
+             value = sed$mean, statistic = "mean")
+)
+sed_long$statistic <- factor(sed_long$statistic, levels = c("mean", "median"))
+
 p_sed <- house(
-  ggplot(sed, aes(window_start_hr, median, colour = series, fill = series)) +
-    geom_ribbon(aes(ymin = q1, ymax = q3), alpha = 0.13, colour = NA,
-                show.legend = FALSE) +
-    geom_line(linewidth = 0.9) + geom_point(size = 1.4) +
-    facet_wrap(~ facet, scales = "free_y", ncol = 1) +
+  ggplot(sed_long, aes(window_start_hr, value, colour = series)) +
+    geom_line(linewidth = 0.9) + geom_point(size = 1.2) +
+    facet_grid(facet ~ statistic, scales = "free_y", switch = "y") +
     scale_colour_manual(values = DOSE_COLS) +
-    scale_fill_manual(values = DOSE_COLS) +
-    guides(fill = "none", colour = guide_legend(override.aes = list(fill = NA))) +
     labs(title = "Companion sedatives",
          subtitle = sprintf(
            "Secondary to the fentanyl exposure. Infusions only.\nShare of ventilated windows with any drug:\n%s",
            prev_txt),
-         x = "Hours since first IMV episode", y = "Median dose (band = IQR)",
-         colour = NULL))
+         x = "Hours since first IMV episode", y = NULL, colour = NULL) +
+    theme(strip.placement = "outside", strip.text.y.left = element_text(angle = 90)))
 
 ggsave(file.path(dirs$out_final, "phase1_sedative_curves.png"), p_sed,
        width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
@@ -597,6 +720,11 @@ write_out(dose_distribution, "phase1_dose_distribution.csv")
 write_out(balanced_panels, "phase1_balanced_panels.csv")
 write_out(zero_fraction, "phase1_zero_fraction.csv")
 write_out(imv_episodes, "phase1_imv_episodes.csv")
+
+pooling_continuous <- do.call(rbind, POOL)
+pooling_categorical <- do.call(rbind, POOL_CAT)
+write_out(pooling_continuous, "phase1_pooling_continuous.csv")
+write_out(pooling_categorical, "phase1_pooling_categorical.csv")
 
 write_json(prov, file.path(dirs$out_final, "phase1_provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)

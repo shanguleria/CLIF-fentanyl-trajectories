@@ -68,6 +68,15 @@
       "role": "TABLE 1 REPORTING ONLY. Not a model covariate and not a membership predictor.",
       "_role_why": "SG, 2026-09-05: collected so baseline characteristics can be reported, whether or not it enters any model. Entering it as a covariate is a separate decision that has not been made; it is declared here with role stated so nobody adds it to a formula on the assumption it was already agreed.",
       "missing": "'Unknown' is a permissible CLIF category, not a missing value, and must be reported as its own row rather than folded into missing. A null race_category is separately missing; report the two counts distinctly.",
+      "reporting_collapse": {
+        "_why": "SG 2026-09-07: Table 1 reports Black / White / Other rather than all seven CLIF categories, which otherwise produces four cells under 3%. Declared here rather than hardcoded in the R so it is a protocol decision a site can see. The FULL seven-category distribution is still emitted at full granularity in phase1_pooling_categorical.csv, so nothing is lost -- only the display is collapsed.",
+        "_unknown_stays_separate": "Unknown is NOT folded into Other. It is a permissible CLIF category meaning the question was asked and not answered, not a small race group, and at UCMC it is 8.7% -- large enough that lumping it in would misstate what 'Other race' means. This preserves the rule already recorded above. Set _default_includes_unknown true to override.",
+        "Black or African American": "Black",
+        "White": "White",
+        "Unknown": "Unknown",
+        "_default": "Other",
+        "_default_includes_unknown": false
+      },
       "_adjacent_field": "patient.ethnicity_category is the companion field -- race and Hispanic ethnicity are separate questions under the OMB categories CLIF follows, and Table 1 conventionally reports both. DECIDED NOT TO COLLECT, SG 2026-09-05. This is a decision, not an oversight: do not add it back without asking."
     },
 

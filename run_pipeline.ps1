@@ -23,6 +23,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "outlier bounds failed their tests. Nothi
 if ($LASTEXITCODE -ne 0) { Write-Error "the waterfall cache failed its tests. Nothing was run." }
 & $py tests/test_doses.py
 if ($LASTEXITCODE -ne 0) { Write-Error "dose unit conversion failed its tests. Nothing was run." }
+& $py tests/test_pooling.py
+if ($LASTEXITCODE -ne 0) { Write-Error "the federated-pooling exports are not poolable" }
 & $py tests/test_paths.py
 if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Nothing was run." }
 & $py tests/test_build_cohort.py

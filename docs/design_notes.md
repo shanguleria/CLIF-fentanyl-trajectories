@@ -505,6 +505,50 @@ full-cohort-with-zeros denominator answer different questions, and the latter
 mostly measures extubation rate rather than dosing. Use the still-ventilated
 denominator, and say so.
 
+#### Federated pooling exports
+
+*(SG, 2026-09-07.)* Phase 1 emits two files whose only purpose is to be pooled
+across sites, because **a median cannot be pooled and a display string cannot be
+pooled at all**:
+
+| File | Grain |
+|---|---|
+| `phase1_pooling_continuous.csv` | one row per variable × stratum, and per variable × window × denominator |
+| `phase1_pooling_categorical.csv` | one row per variable × level × stratum |
+
+Each continuous row carries `n`, `mean`, `sd`, **`sum`, `sum_sq`**, `min`, `max`
+and the median/IQR alongside. Carrying the two sums rather than only mean and SD
+is what makes the pooled figures **exact** rather than an approximation that
+assumes equal variances:
+
+```
+mean_pooled = Σ(sum) / Σ(n)
+var_pooled  = (Σ(sum_sq) − Σ(sum)² / Σ(n)) / (Σ(n) − 1)
+```
+
+Verified on real numbers rather than asserted: pooling the landmark-eligible and
+not-eligible strata as if they were two sites reproduces the overall row to
+within the 6-decimal rounding, for every baseline variable
+(`tests/test_pooling.py`).
+
+**Means are supplied, not preferred.** Dose here is heavily right-skewed and
+about half of ventilated windows are exactly zero, so a mean misrepresents a
+site's typical patient in the other direction from the median. Pool the means
+because they can be pooled; report the medians because they describe. Both are
+in the file.
+
+**Cells below `reporting.small_cell_min_den` (10) are suppressed** — every
+statistic blanked and `n_suppressed_small_cell` set — because a mean over n = 1
+is that patient's value. No cell at UCMC currently trips it.
+
+**Race is collapsed to Black / White / Other for Table 1 display only** (SG). The
+map is in `covariates.json` `time_invariant.race.reporting_collapse`, not in the
+R. `Unknown` stays its own row: it means the question was asked and not answered,
+not a small race group, and at 8.7% folding it into "Other" would misstate what
+that category contains. The **full seven-category distribution is still exported
+at full granularity** in the categorical pooling file, so collapsing loses
+nothing.
+
 #### What Phase 1 measured at UCMC (2026-09-07)
 
 Run: `code/02_descriptive_trajectory.R`. Every figure below is reproducible from
@@ -1566,7 +1610,7 @@ Two mechanisms:
   bound changes: fentanyl **11,000 mcg/hr** and NEE **17.45 mcg/kg/min-equiv** —
   the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
   independent check that both ported tables match theirs.
-- **`tests/test_covariates.py`** — 19 static checks, all verified to fire by
+- **`tests/test_covariates.py`** — 20 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the
   per-variable declarations; LOCF-eligible variables have caps and ineligible ones

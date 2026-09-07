@@ -182,7 +182,13 @@ What each phase writes to `output/final_no_phi/`:
 | Phase | Files |
 |---|---|
 | 0 | `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
-| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
+| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_pooling_continuous.csv`, `phase1_pooling_categorical.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
+
+The two `phase1_pooling_*.csv` files exist for **federated pooling**: they carry
+`n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
+so a coordinating centre can compute an exact pooled mean and SD without a
+median, which cannot be pooled. Cells below `reporting.small_cell_min_den` are
+suppressed. See design notes §10 Phase 1.
 
 `phase0_manifest.json` is written **last** and is what marks the Phase 0 outputs
 complete and current. Every R phase calls `require_manifest()` first, which

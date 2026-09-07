@@ -39,6 +39,11 @@ if ! "$PY" tests/test_doses.py; then
   echo "ERROR: dose unit conversion failed its tests. Nothing was run." >&2
   exit 1
 fi
+if ! "$PY" tests/test_pooling.py; then
+  echo "ERROR: the federated-pooling exports are not poolable. Nothing was run." >&2
+  exit 1
+fi
+
 if ! "$PY" tests/test_paths.py; then
   echo "ERROR: output locations failed their tests. Nothing was run." >&2
   exit 1

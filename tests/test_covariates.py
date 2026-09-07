@@ -307,6 +307,28 @@ def test_window_width_agrees_with_the_site_config_template():
         )
 
 
+def test_the_race_collapse_map_covers_every_permissible_value():
+    """Race is collapsed for Table 1 display. A permissible CLIF value with no
+    entry falls to _default silently, which is fine -- but a map that names a
+    value NOT in the permissible list is a typo that will never fire, and the
+    collapsed table would then show a category nobody ever lands in."""
+    race = COV["time_invariant"]["race"]
+    perm = set(race["permissible_values"])
+    cmap = race["reporting_collapse"]
+    named = {k for k in cmap if not k.startswith("_")}
+    assert named <= perm, (
+        f"reporting_collapse names values that are not permissible CLIF race "
+        f"categories: {sorted(named - perm)}"
+    )
+    assert cmap.get("_default"), "no _default target for the uncollapsed values"
+    # Unknown must not silently become Other: it means 'asked, not answered'.
+    if not cmap.get("_default_includes_unknown", False):
+        assert cmap.get("Unknown") == "Unknown", (
+            "Unknown is not folded into _default unless "
+            "_default_includes_unknown is set true"
+        )
+
+
 def test_every_declared_sedative_is_wired_end_to_end():
     """A sedative is declared in four places and must be live in all four.
 
