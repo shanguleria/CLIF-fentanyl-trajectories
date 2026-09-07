@@ -45,6 +45,7 @@
         "min_age": 18,
         "window_hours": 4,
         "granular_extent_hours": 72,
+        "_comment_extended_grid": "DECLARED BUT NOT CONSUMED. No code reads the two extended_* keys; see covariates.json windows.extended._STATUS for why the 12h/168h view is deferred and what building it would take. Left here so the agreed parameters survive, NOT because a run honours them.",
         "extended_window_hours": 12,
         "extended_extent_hours": 168,
         "landmark_hours": 72,

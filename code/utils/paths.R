@@ -18,9 +18,10 @@ PHI_LABEL <- paste(
 site_dirs <- function() {
   root <- here::here()
   d <- list(
-    out_phi   = file.path(root, "output", "intermediate_phi"),
-    out_final = file.path(root, "output", "final_no_phi"),
-    logs      = file.path(root, "logs")
+    out_phi     = file.path(root, "output", "intermediate_phi"),
+    out_final   = file.path(root, "output", "final_no_phi"),
+    diagnostics = file.path(root, "output", "final_no_phi", "diagnostics"),
+    logs        = file.path(root, "logs")
   )
   for (p in d) dir.create(p, recursive = TRUE, showWarnings = FALSE)
 
@@ -31,6 +32,27 @@ site_dirs <- function() {
 
   d
 }
+
+# Delete this script's own outputs before it starts, so a crash leaves nothing
+# rather than a stale file that still looks valid. Mirrors clear_owned_outputs()
+# in paths.py; the two must agree.
+clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
+  n <- 0L
+  for (key in names(owned)) {
+    for (name in owned[[key]]) {
+      f <- file.path(dirs[[key]], name)
+      if (file.exists(f)) { unlink(f); n <- n + 1L }
+    }
+  }
+  # A relocated output leaves a stale twin the owned list no longer names.
+  root <- here::here()
+  for (rel in retired) {
+    f <- file.path(root, rel)
+    if (file.exists(f)) { unlink(f); n <- n + 1L }
+  }
+  n
+}
+
 
 # The block stamped onto every shareable output.
 provenance <- function(config) {
@@ -66,8 +88,9 @@ require_manifest <- function(dirs, root) {
   now <- vapply(c("config.json", "covariates.json", "outlier_config.json"),
                 function(n) {
                   p <- file.path(root, "config", n)
-                  if (file.exists(p)) substr(digest::digest(p, algo = "sha256",
-                                                            file = TRUE), 1, 16)
+                  # tools::sha256sum is base R; it matches Python's
+                  # hashlib.sha256 of the same bytes, verified 2026-09-07.
+                  if (file.exists(p)) substr(tools::sha256sum(p), 1, 16)
                   else NA_character_
                 }, character(1))
   was <- unlist(m$config_digests)

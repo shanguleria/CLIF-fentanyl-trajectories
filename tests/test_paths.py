@@ -8,6 +8,7 @@ Run standalone:  .venv/bin/python tests/test_paths.py
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,43 @@ def test_site_dirs_returns_only_the_sanctioned_locations():
     )
     assert d["out_phi"] == REPO / "output" / "intermediate_phi"
     assert d["out_final"] == REPO / "output" / "final_no_phi"
+
+
+def test_paths_r_and_paths_py_expose_the_same_surface():
+    """paths.R's own header says the two must agree, and nothing checked it.
+
+    They did not: R's site_dirs() returned three keys to Python's four, and R had
+    no clear_owned_outputs() at all. This matters because Phase 0 (Python) writes
+    what Phases 1-6 (R) read -- a function that exists on one side only is a
+    guarantee that silently does not apply to half the pipeline.
+    """
+    r = (REPO / "code" / "utils" / "paths.R").read_text()
+    r_fns = set(re.findall(r"^(\w+)\s*<-\s*function", r, re.M))
+    py = (REPO / "code" / "utils" / "paths.py").read_text()
+    py_fns = set(re.findall(r"^def (\w+)", py, re.M))
+    # config_digests and write_manifest are Python-only by design: only Phase 0
+    # writes the manifest. Everything else must exist on both sides.
+    py_only_by_design = {"config_digests", "write_manifest"}
+    missing_in_r = py_fns - r_fns - py_only_by_design
+    assert not missing_in_r, (
+        f"paths.py has {sorted(missing_in_r)} and paths.R does not; either port "
+        f"them or record them as Python-only in this test"
+    )
+    missing_in_py = r_fns - py_fns
+    assert not missing_in_py, f"paths.R has {sorted(missing_in_py)} and paths.py does not"
+
+
+def test_the_two_site_dirs_return_the_same_key_set():
+    """A directory the Python half creates and the R half cannot name is a place
+    Phase 0 writes and Phase 1 cannot read."""
+    r = (REPO / "code" / "utils" / "paths.R").read_text()
+    body = r[r.index("site_dirs <- function"):]
+    body = body[:body.index("\n}")]
+    r_keys = set(re.findall(r"^\s{4}(\w+)\s*=\s*file\.path", body, re.M))
+    assert r_keys == set(site_dirs(REPO)), (
+        f"paths.R site_dirs returns {sorted(r_keys)}; paths.py returns "
+        f"{sorted(site_dirs(REPO))}"
+    )
 
 
 def test_no_source_file_writes_to_a_retired_directory():

@@ -456,9 +456,9 @@ def window_grid(cohort: pd.DataFrame) -> pd.DataFrame:
     g["window_start_hr"] = g["window_idx"] * WINDOW_H
     g["win_start"] = g["anchor_dttm"] + pd.to_timedelta(g["window_start_hr"], unit="h")
     g["win_end"] = g["win_start"] + pd.Timedelta(hours=WINDOW_H)
-    g["at_risk"] = g["win_start"] < g["followup_end_dttm"]
+    g["alive_admitted"] = g["win_start"] < g["followup_end_dttm"]
     note("patient-window rows", len(g))
-    note("at-risk rows", int(g["at_risk"].sum()))
+    note("alive-admitted rows", int(g["alive_admitted"].sum()))
     return g
 
 
@@ -472,9 +472,13 @@ def _hourly_scaffold(cohort: pd.DataFrame) -> pd.DataFrame:
     return s[s["cell_dttm"] < s["followup_end_dttm"]].copy()
 
 
-def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
-    """Hourly grid of fentanyl infusion rate, mcg/kg/hr. Config: exposure.infusion."""
-    cats = CONFIG["medications"]["opioid_infusion_categories"]
+def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
+                  cats: list[str], rate_fn) -> pd.DataFrame:
+    """Hourly grid of infusion rate for `cats`. Config: exposure.infusion.
+
+    rate_fn maps the charted (dose, unit, weight) to the target rate; fentanyl
+    uses _to_mcg_kg_hr, the sedatives go through the dose_units table.
+    """
     m = t["mac"][t["mac"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
     m = m[m["encounter_block"].isin(cohort["encounter_block"])]
@@ -484,7 +488,7 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
 
     m = m.merge(cohort[["encounter_block", "anchor_dttm", "weight_kg"]],
                 on="encounter_block", how="left")
-    m["rate"] = _to_mcg_kg_hr(m)
+    m["rate"] = rate_fn(m)
     # A charted stop is a rate of zero, not a missing value.
     stopped = m.get("mar_action_category", pd.Series(index=m.index, dtype=object))
     m.loc[stopped.astype("string").str.lower() == "stop", "rate"] = 0.0
@@ -525,6 +529,60 @@ def _to_mcg_kg_hr(m: pd.DataFrame) -> pd.Series:
             f"Add them to _to_mcg_kg_hr rather than dropping -- a dropped unit removes "
             f"exposure for whichever patients were charted that way."
         )
+    return out
+
+
+def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
+    """Force dose to 0 in alive-admitted windows the patient was not ventilated in.
+
+    design_notes.md §10a(a). Applied after status_covariates because it needs
+    imv_status. total_dose_ungated preserves the pre-gate value, so reversing the
+    decision is a column swap rather than another run.
+    """
+    off = long["alive_admitted"] & (long["imv_status"].fillna(0) == 0)
+    long["total_dose_ungated"] = long["total_dose"]
+    hit = off & (long["total_dose"] > 0)
+    note("windows zeroed by the extubated-gap rule (§10a(a))", int(hit.sum()))
+    if hit.any():
+        print(f"    across {long.loc[hit, 'encounter_block'].nunique():,} blocks; "
+              f"median {long.loc[hit, 'total_dose'].median():.2f} mcg/kg/hr, "
+              f"{int((long.loc[hit, 'inf_dose'] == 0).sum()):,} bolus-only")
+    for c in ("inf_dose", "bolus_dose", "n_bolus", "total_dose"):
+        long.loc[off, c] = 0.0
+    return long
+
+
+def _to_target_rate(m: pd.DataFrame) -> pd.Series:
+    """Convert a sedative infusion to its own target unit. Config: dose_units."""
+    rate, rep = convert_doses(m, "med_category", "med_dose", "med_dose_unit")
+    print(f"  {rep}")
+    return rate
+
+
+def sedative_exposure(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
+                      windows: pd.DataFrame) -> pd.DataFrame:
+    """propofol_dose and midazolam_dose per window. Config: exposure.sedatives."""
+    spec = COV["exposure"]["sedatives"]
+    out = windows[["encounter_block", "window_idx"]].copy()
+    for cat in CONFIG["medications"]["other_sedative_categories"]:
+        col = f"{cat}_dose"
+        if col not in spec["columns"]:
+            raise SystemExit(
+                f"{cat} is in config.json other_sedative_categories but "
+                f"{col} is not declared in covariates.json exposure.sedatives.columns"
+            )
+        print(f"  {cat} -> {col} ({spec['units'][col]})")
+        grid = infusion_grid(t, mapping, cohort, [cat], _to_target_rate)
+        grid["window_idx"] = grid["hr"] // WINDOW_H
+        w = (grid.groupby(["encounter_block", "window_idx"], as_index=False)["rate"]
+                 .mean().rename(columns={"rate": col}))
+        out = out.merge(w, on=["encounter_block", "window_idx"], how="left")
+        out[col] = out[col].fillna(0.0)          # absence_means_zero
+        vent = out[col] > 0
+        note(f"windows with any {cat}", int(vent.sum()))
+        if vent.any():
+            print(f"    median {out.loc[vent, col].median():.2f}  "
+                  f"max {out[col].max():.2f} {spec['units'][col]}")
     return out
 
 
@@ -594,21 +652,21 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
     # max(mcg/hr) / min(weight). A window's bolus SUM has no principled ceiling,
     # since several bounded boluses can stack, so that arm is reported not asserted.
     ceiling = fentanyl_sanity_ceiling(OUTLIERS)
-    over_inf = out.loc[out["at_risk"], "inf_dose"] > ceiling
+    over_inf = out.loc[out["alive_admitted"], "inf_dose"] > ceiling
     if over_inf.any():
         raise SystemExit(
             f"{int(over_inf.sum()):,} windows have an INFUSION rate above the derived "
             f"ceiling of {ceiling:g} mcg/kg/hr, which is proof the bounds did not run."
         )
-    over_total = out.loc[out["at_risk"], "total_dose"] > ceiling
+    over_total = out.loc[out["alive_admitted"], "total_dose"] > ceiling
     if over_total.any():
-        top = out.loc[out["at_risk"] & (out["total_dose"] > ceiling), "total_dose"]
+        top = out.loc[out["alive_admitted"] & (out["total_dose"] > ceiling), "total_dose"]
         note(f"windows whose total_dose exceeds {ceiling:g} mcg/kg/hr (bolus stacking)",
              int(over_total.sum()))
         print(f"    max {top.max():.1f} mcg/kg/hr; these are extreme but not "
               f"proof of a bounds failure")
-    note("at-risk windows with any fentanyl", int((out.loc[out['at_risk'], 'total_dose'] > 0).sum()))
-    note("at-risk windows with a bolus", int((out.loc[out['at_risk'], 'n_bolus'] > 0).sum()))
+    note("alive-admitted windows with any fentanyl", int((out.loc[out['alive_admitted'], 'total_dose'] > 0).sum()))
+    note("alive-admitted windows with a bolus", int((out.loc[out['alive_admitted'], 'n_bolus'] > 0).sum()))
     return out
 
 
@@ -618,8 +676,20 @@ def _window_of(dttm: pd.Series, anchor: pd.Series) -> pd.Series:
 
 
 def _to_windows(df: pd.DataFrame, cohort: pd.DataFrame, time_col: str) -> pd.DataFrame:
-    d = df.merge(cohort[["encounter_block", "anchor_dttm"]], on="encounter_block", how="inner")
+    """Map records to windows. Bounded by the window grid AND by follow-up.
+
+    A record charted at or after block_discharge_dttm belongs to no window: a
+    post-event window is structurally empty, not missing (covariates.json
+    windows._anchor_note). Without the follow-up bound, charting lag put 428
+    IMV records and 44 CRRT records into windows the patient had already been
+    discharged from, so `imv_status == 1` could be true where alive_admitted
+    was false. Same bound the hourly scaffold already applies.
+    """
+    d = df.merge(cohort[["encounter_block", "anchor_dttm", "followup_end_dttm"]],
+                 on="encounter_block", how="inner")
     d["window_idx"] = _window_of(d[time_col], d["anchor_dttm"])
+    d = d[d[time_col] < d["followup_end_dttm"]]
+
     return d[(d["window_idx"] >= 0) & (d["window_idx"] < N_WINDOWS)]
 
 
@@ -896,14 +966,14 @@ _SEVERINGHAUS_AT_CEILING = _severinghaus_at(SPO2_CEILING - 0.01)
 
 
 def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
-    """Why an at-risk window carries no oxygenation, before any carry-forward.
+    """Why an alive-admitted window carries no oxygenation, before any carry-forward.
 
     Three mutually exclusive causes: nothing was measured; SpO2 was measured but
     sat on the plateau where the Severinghaus transform is undefined; or a usable
     measurement existed but no FiO2 could be paired to it within the lookback.
     """
-    a = long[long["at_risk"]].copy()
-    n_at_risk = len(a)
+    a = long[long["alive_admitted"]].copy()
+    n_alive_admitted = len(a)
     pre_na = a["oxygenation"].isna()
     if "oxygenation_locf" in a.columns:
         pre_na = pre_na | a["oxygenation_locf"].fillna(False)
@@ -928,12 +998,12 @@ def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
         k = int(mask.sum())
         rows.append({"variable": f"oxygenation absent: {label}",
                      "kind": "absence_reason", "class": why, "locf_cap_hours": "",
-                     "n_at_risk": n_at_risk, "n_observed": 0, "n_zero_by_rule": 0,
+                     "n_alive_admitted": n_alive_admitted, "n_observed": 0, "n_zero_by_rule": 0,
                      "n_missing_pre_locf": k,
-                     "pct_missing_pre_locf": round(100.0 * k / n_at_risk, 2),
+                     "pct_missing_pre_locf": round(100.0 * k / n_alive_admitted, 2),
                      "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
                      "n_missing_final": k,
-                     "pct_missing_final": round(100.0 * k / n_at_risk, 2)})
+                     "pct_missing_final": round(100.0 * k / n_alive_admitted, 2)})
     if "_plateau_fio2" in a.columns:
         f = a.loc[plateau, "_plateau_fio2"].dropna()
         n_pl = int(plateau.sum())
@@ -951,8 +1021,8 @@ def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
                 print(f"        bound {lbl:>9}: {k:>7,}  ({100*k/len(f):5.1f}%)")
 
     total = int(pre_na.sum())
-    print(f"    oxygenation absent before LOCF: {total:,} of {n_at_risk:,} "
-          f"({100*total/n_at_risk:.1f}%)")
+    print(f"    oxygenation absent before LOCF: {total:,} of {n_alive_admitted:,} "
+          f"({100*total/n_alive_admitted:.1f}%)")
     for r in rows:
         print(f"      {r['variable'][20:]:<52} {r['n_missing_pre_locf']:>8,}"
               f" {r['pct_missing_pre_locf']:>6.2f}%")
@@ -961,7 +1031,7 @@ def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
 
 def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
     """Per-component coverage and the sofa_total row of the missingness report."""
-    a = long[long["at_risk"]]
+    a = long[long["alive_admitted"]]
     n = len(a)
     print(f"    {'component':<14}{'scored':>10}{'pct':>8}")
     for c in SOFA_PARTS:
@@ -976,7 +1046,7 @@ def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame([{
         "variable": "sofa_total", "kind": "derived",
         "class": "scored after all inputs are filled", "locf_cap_hours": "",
-        "n_at_risk": n, "n_observed": n - miss, "n_zero_by_rule": 0,
+        "n_alive_admitted": n, "n_observed": n - miss, "n_zero_by_rule": 0,
         "n_missing_pre_locf": miss,
         "pct_missing_pre_locf": round(100.0 * miss / n, 2) if n else float("nan"),
         "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
@@ -1121,26 +1191,26 @@ def time_invariant(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
 def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Zero the absence-means-something variables, count, then LOCF. Order matters.
 
-    Returns (long, per_variable, per_pattern). Counts are over at-risk rows only.
+    Returns (long, per_variable, per_pattern). Counts are over alive-admitted rows only.
     """
     df = long.copy()
-    at_risk = df["at_risk"]
-    n_at_risk = int(at_risk.sum())
+    alive_admitted = df["alive_admitted"]
+    n_alive_admitted = int(alive_admitted.sum())
 
     tv = [k for k in COV["time_varying"] if not k.startswith("_") and k in df.columns]
     ti = [k for k in COV["time_invariant"] if not k.startswith("_") and k in df.columns]
     exposure = [c for c in EXPOSURE["columns"] if c in df.columns]
 
-    observed = {v: int(df.loc[at_risk, v].notna().sum()) for v in tv}
+    observed = {v: int(df.loc[alive_admitted, v].notna().sum()) for v in tv}
 
     zeroed = {}
     for v in ZERO_VARS + NOT_VENT_VARS:
         if v in df.columns:
-            blank = at_risk & df[v].isna()
+            blank = alive_admitted & df[v].isna()
             zeroed[v] = int(blank.sum())
             df.loc[blank, v] = 0.0
 
-    pre = {v: int(df.loc[at_risk, v].isna().sum()) for v in tv}
+    pre = {v: int(df.loc[alive_admitted, v].isna().sum()) for v in tv}
 
     locf_caps = {
         k: (v["locf"] or {}).get("cap_hours")
@@ -1159,12 +1229,12 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
         before = df[v].isna()
         df[v] = df.groupby("encounter_block")[v].ffill(limit=limit)
         df[f"{v}_locf"] = before & df[v].notna()
-        filled[v] = int((df[f"{v}_locf"] & at_risk).sum())
+        filled[v] = int((df[f"{v}_locf"] & alive_admitted).sum())
 
-    post = {v: int(df.loc[at_risk, v].isna().sum()) for v in tv}
+    post = {v: int(df.loc[alive_admitted, v].isna().sum()) for v in tv}
 
     def pct(n: int) -> float:
-        return round(100.0 * n / n_at_risk, 2) if n_at_risk else float("nan")
+        return round(100.0 * n / n_alive_admitted, 2) if n_alive_admitted else float("nan")
 
     rows = []
     for v in tv:
@@ -1174,7 +1244,7 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
             "kind": "time_varying",
             "class": COV["time_varying"][v]["missing_class"],
             "locf_cap_hours": cap if cap is not None else "",
-            "n_at_risk": n_at_risk,
+            "n_alive_admitted": n_alive_admitted,
             "n_observed": observed[v],
             "n_zero_by_rule": zeroed.get(v, 0),
             "n_missing_pre_locf": pre[v],
@@ -1185,14 +1255,14 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
             "pct_missing_final": pct(post[v]),
         })
     for v in exposure + ti:
-        n_miss = int(df.loc[at_risk, v].isna().sum()) if v in exposure \
+        n_miss = int(df.loc[alive_admitted, v].isna().sum()) if v in exposure \
             else int(df[v].isna().sum())
-        denom = n_at_risk if v in exposure else len(df)
+        denom = n_alive_admitted if v in exposure else len(df)
         rows.append({
             "variable": v,
             "kind": "exposure" if v in exposure else "time_invariant",
             "class": "", "locf_cap_hours": "",
-            "n_at_risk": denom,
+            "n_alive_admitted": denom,
             "n_observed": denom - n_miss,
             "n_zero_by_rule": 0,
             "n_missing_pre_locf": n_miss,
@@ -1204,18 +1274,18 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
     per_variable = pd.DataFrame(rows)
 
     if "oxygenation_source" in df.columns:
-        src = (df.loc[at_risk, "oxygenation_source"].fillna("none")
+        src = (df.loc[alive_admitted, "oxygenation_source"].fillna("none")
                  .value_counts().rename_axis("oxygenation_source")
                  .reset_index(name="n"))
-        src["pct"] = (100.0 * src["n"] / n_at_risk).round(2)
-        print("\n  oxygenation provenance (at-risk windows)")
+        src["pct"] = (100.0 * src["n"] / n_alive_admitted).round(2)
+        print("\n  oxygenation provenance (alive-admitted windows)")
         print(src.to_string(index=False))
 
     for v in ZERO_VARS + NOT_VENT_VARS:
         if v in df.columns:
             df[v] = pd.to_numeric(df[v], errors="coerce").astype("float64")
 
-    per_pattern = _missingness_patterns(df[at_risk], tv)
+    per_pattern = _missingness_patterns(df[alive_admitted], tv)
     return df, per_variable, per_pattern
 
 
@@ -1267,7 +1337,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     succ_h = CONFIG["outcomes"]["successful_extubation_hours"]
     death_cats = set(CONFIG["outcomes"]["mortality_categories"])
 
-    at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["at_risk"]]
+    at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
     eligible = set(at_T.loc[at_T["imv_status"] == 1, "encounter_block"])
     flow(f"LANDMARK COHORT -- time_to_event (ventilated at T={T}h)", len(eligible),
          f"extubated, died or discharged before T={T}h")
@@ -1371,9 +1441,15 @@ def main() -> None:
     windows = window_grid(cohort)
 
     print("\nExposure")
-    grid = infusion_grid(t, mapping, cohort)
+    grid = infusion_grid(t, mapping, cohort,
+                         CONFIG["medications"]["opioid_infusion_categories"],
+                         _to_mcg_kg_hr)
     bolus = bolus_doses(t, mapping, cohort)
     long = window_exposure(grid, bolus, windows)
+
+    print("\n  Sedatives (descriptive companions, infusions only)")
+    long = long.merge(sedative_exposure(t, mapping, cohort, windows),
+                      on=["encounter_block", "window_idx"], how="left")
 
     print("\nCovariates")
     for part in (lab_covariates(t, cohort),
@@ -1382,6 +1458,8 @@ def main() -> None:
                  status_covariates(t, cohort)):
         if len(part):
             long = long.merge(part, on=["encounter_block", "window_idx"], how="left")
+
+    long = gate_dose_on_ventilation(long)
 
     hi = hi[hi["encounter_block"].isin(cohort["encounter_block"])]
     ti = time_invariant(t, mapping, cohort).merge(bmi, on="encounter_block", how="left")
@@ -1414,7 +1492,7 @@ def main() -> None:
     long = long.drop(columns=[c for c in long.columns if c.startswith("_n_")])
     cols = ["variable", "kind", "locf_cap_hours", "n_observed", "n_zero_by_rule",
             "pct_missing_pre_locf", "pct_filled_by_locf", "pct_missing_final"]
-    print("\n  missingness, at-risk rows only")
+    print("\n  missingness, alive-admitted rows only")
     print(per_variable[cols].to_string(index=False))
 
     assert_config_is_honoured(long)

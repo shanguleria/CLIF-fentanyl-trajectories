@@ -5,6 +5,7 @@ that is wrong by 60 or by 1000 produces numbers that still look like doses.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "code"))
-from utils.doses import DoseUnitError, TARGET_OF, convert  # noqa: E402
+from utils.doses import DoseUnitError, TARGET_OF, convert, target_unit  # noqa: E402
 
 W = 70.0
 
@@ -96,6 +97,40 @@ def test_a_missing_weight_nulls_the_row_and_is_counted():
 def test_a_non_weight_unit_converts_without_a_weight():
     val, rep = one("norepinephrine", 0.1, "mcg/kg/min", weight=float("nan"))
     assert val == 0.1 and rep.n_no_weight == 0
+
+
+def test_every_sedative_charted_unit_at_ucmc_resolves():
+    """The two sedative columns are only as good as their unit table. Every unit
+    outlier_config.json bounds for propofol or midazolam must convert, or the
+    build raises mid-run on real data instead of here."""
+    bounds = json.loads((REPO / "config" / "outlier_config.json").read_text())
+    for drug in ("propofol", "midazolam"):
+        for unit in bounds["med_dose_raw"][drug]:
+            val, _ = one(drug, 1.0, unit, weight=70.0)
+            assert val is not None and not pd.isna(val), (
+                f"{drug} charted in {unit} does not convert; add it to "
+                f"covariates.json dose_units"
+            )
+
+
+def test_the_sedative_target_units_are_the_ones_the_protocol_declares():
+    """dose_units decides what the converter produces; exposure.sedatives.units
+    is what the protocol and the docs promise. A divergence is silent."""
+    cov = json.loads((REPO / "config" / "covariates.json").read_text())
+    declared = cov["exposure"]["sedatives"]["units"]
+    for col, unit in declared.items():
+        drug = col.removesuffix("_dose")
+        assert target_unit(drug) == unit, (
+            f"{drug}: dose_units target is {target_unit(drug)!r} but "
+            f"exposure.sedatives.units says {unit!r}"
+        )
+
+
+def test_midazolam_mcg_kg_min_converts_to_mg_hr_correctly():
+    """0.06 = 60 min/hr / 1000 mcg/mg, times weight. Written out because a
+    factor is the one thing in that table nothing else checks."""
+    val, _ = one("midazolam", 1.0, "mcg/kg/min", weight=70.0)
+    assert abs(val - 4.2) < 1e-9, val
 
 
 if __name__ == "__main__":

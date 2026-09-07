@@ -54,7 +54,8 @@ combined-exposure indicator — is a perfectly appropriate GBTM application, and
 zeros are harmless there once `scaling = 0` removes all division.
 
 What fails is specifically a **near-all-zero second indicator under within-unit
-normalisation** (Model B run at the package default `scaling = 2`). See §4/E2.
+normalisation** (Model B run at the package default `scaling = 2`) — see §3 for
+the mechanism.
 
 ---
 
@@ -82,77 +83,28 @@ it by construction.
 strictly positive values, and the data has structural zeros whenever the drip is
 off.
 
+**The failure mode to know about, if anyone is ever tempted to change the
+setting.** A patient who never received a bolus has a within-patient SD of
+exactly zero for that indicator, and `scaling = 2` divides by it. `gbmt` raises
+no error and issues no warning — it returns a confidently wrong partition. That
+is a property of the formula, not a finding about any particular dataset, and it
+is why `scaling = 0` is mandatory rather than preferred.
+
 ---
 
-## 4. Evidence
+## 4. Evidence — removed 2026-09-07 (SG)
 
-All three experiments are reproducible via `code/03_scaling_experiments.R`
-(output: `output/intermediate/scaling_experiments.csv`). ARI = adjusted Rand
-index against the known simulated truth; 1.0 = perfect recovery, 0 = chance.
+This section held four synthetic-data experiments (E1–E4) demonstrating what each
+`scaling` value erases, and the scripts that produced them
+(validation/scaling_experiments.R, validation/composition_bias_demo.R) have
+been deleted along with it. Two further scripts it cited were never in this repo
+at all.
 
-### E1 — what each scaling value erases
-
-12 synthetic patients: 4 flat-high, 4 flat-low, 4 rising.
-
-| Setting | ARI vs truth |
-|---|---:|
-| `scaling = 0` | **1.000** |
-| `scaling = 1` | 0.542 |
-| `scaling = 2` | 0.505 |
-
-(source: `code/03_scaling_experiments.R` §E1; `scaling_experiments.csv`
-rows `E1_what_scaling_erases`)
-
-Only `scaling = 0` recovers the truth. Under `scaling = 2` the flat-high and
-flat-low patients merge, exactly as the algebra predicts.
-
-### E2 — a near-all-zero second indicator
-
-12 patients, second indicator (`push`) nonzero for only 2 of them.
-
-| Setting | ARI vs truth |
-|---|---:|
-| `scaling = 0` | **1.000** |
-| `scaling = 2` | **−0.053** |
-
-(source: `code/03_scaling_experiments.R` §E2; `scaling_experiments.csv`
-rows `E2_zero_inflated_indicator`)
-
-A negative ARI is *worse than chance*. The mechanism: a patient who never
-received a bolus has a within-patient SD of exactly 0 for that column, and
-`scaling = 2` divides by it. **The run produced no error and no warning** — it
-returned a confidently wrong partition. This is the single most dangerous
-finding in this document.
-
-### E3 — is `scaling = 0` sensitive to the units of each indicator?
-
-Theory says no: a Gaussian mixture with a freely estimated full covariance per
-group absorbs any linear rescaling of a variable. But `gbmt` initialises EM from
-a Ward hierarchical clustering, which **is** scale-sensitive, so the two runs can
-converge to different local optima.
-
-Tested by multiplying `push` by 10 and re-fitting, over 6 seeds, on deliberately
-poorly separated data:
-
-| Seed | ARI(base, push × 10) |
-|---|---:|
-| 1, 2, 4, 5 | 1.000 |
-| 3 | 0.485 |
-| 6 | 0.606 |
-
-Mean 0.849; the partition changed in **2 of 6 runs**.
-(source: `code/03_scaling_experiments.R` §E3; `scaling_experiments.csv`
-rows `E3_unit_sensitivity_scaling0`)
-
-**Implication:** `scaling = 0` is scale-invariant in principle but not reliably
-in practice on realistic (overlapping) data. Mitigations for Model B:
-
-1. Set `nstart = 50` or higher so EM restarts randomly rather than relying on
-   the Ward solution.
-2. Put both indicators on similar numeric ranges before fitting, even though
-   theory says it should not matter.
-3. Report assignment stability across restarts and across a units change, using
-   the ARI helper in `code/02_indicator_sensitivity.R`.
+The decisions those experiments supported are unchanged and are stated as
+mechanisms rather than as measurements: `scaling = 0` and the divide-by-zero-SD
+failure in §3, `nstart >= 50` and the polynomial-degree cap in §7, the
+balanced-panel rationale in §10 Phase 1. The section number is left in place so
+every later cross-reference (§5–§12) keeps its number.
 
 ---
 
@@ -180,7 +132,7 @@ cells. Same structure as `nee` (§11), which keeps the two exposures consistent.
 | Stops | `mar_action_category == "stop"` is a rate of **0**, not a missing value |
 | Fill | forward-fill at most `hold_hours` |
 | Remainder | **0** — `absence_means_zero`, per the table above |
-| Bounds | never past the block's first/last charted medication record, or the at-risk span |
+| Bounds | never past the block's first/last charted medication record, or the `alive_admitted` span |
 | Extubated windows | `imv_status == 0` forces dose to 0, applied **after** the grid (§10a(a)) |
 
 **This resolves the open "are stops charted explicitly?" question by making the
@@ -264,10 +216,9 @@ Fixed in advance, applied as a conjunction — never minimum BIC alone.
 | Interpretability | distinct, clinically meaningful shapes |
 | Stability | same solution across random restarts |
 
-BIC magnitudes are **not comparable across `scaling` settings** — the same
-`ng = 3` model on identical data ranged from **+18,491** (`scaling = 0`) to
-**−3,950** (`scaling = 3`). *(source: session run over `agrisus2`, `scaling` 0–4,
-`d = 2`, `ng = 3`; not yet scripted — see §9)*
+BIC magnitudes are **not comparable across `scaling` settings**, because each
+setting changes the values the likelihood is computed on. Comparing them is a
+category error, not a close call.
 
 Nor across different indicator sets, different rows, or different time windows.
 
@@ -335,13 +286,8 @@ flow. See §11.
 | Alternative | Why it fails | Source |
 |---|---|---|
 | Carry `dose = 0` forward after extubation | Outcome becomes embedded in the exposure; also often factually wrong, since many patients receive fentanyl post-extubation for pain | §2, §8 above |
-| Keep short trajectories, unbalanced panel | `gbmt` **silently caps** the polynomial degree at (shortest unit's windows − 1). Requesting `d = 4` with one 4-window patient yields effective `d = 3`, by warning only | `code/03_scaling_experiments.R` §E4 |
+| Keep short trajectories, unbalanced panel | `gbmt` **silently caps** the polynomial degree at (shortest unit's windows − 1), by warning only, so one briefly ventilated patient constrains the trajectory shape available to the entire cohort | `gbmt` source, degree check |
 
-E4 result: requested `d = 2` → effective `d = 2`; requested `d = 4` → effective
-`d = 3`, warning `'d' was set to the maximum feasible value: 3`. One briefly
-ventilated patient therefore constrains the trajectory shape available to the
-entire cohort. (source: `output/intermediate/scaling_experiments.csv`, rows
-`E4_unbalanced_panel_degree_cap`)
 
 ### Justification language (Methods-ready draft)
 
@@ -489,11 +435,22 @@ table is the block-level shape only.
 | Time-varying severity | `sofa_total`, `nee`, `oxygenation`, `oxygenation_source` |
 | Time-varying labs | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total` |
 | **Status flags** | `imv_status` — required to identify extubated windows and count failed extubations. `crrt_status` |
-| Provenance | `<var>_locf` per LOCF-eligible variable; `at_risk` per window |
+| Provenance | `<var>_locf` per LOCF-eligible variable; `alive_admitted` per window |
 
-`at_risk` is not optional bookkeeping: it is the denominator for every
+`alive_admitted` is not optional bookkeeping: it is the denominator for every
 missingness count, and a post-event window is structurally empty rather than
 missing (§11).
+
+**⚠ "At risk" means two different things in this document, so the column does
+not use the phrase.** `alive_admitted` (renamed from `at_risk` on 2026-09-07) is
+TRUE while the patient is alive, admitted, and inside the extent — it says
+nothing about ventilation. Phase 1's number-at-risk row means **still
+ventilated**, which is `imv_status == 1` and a very different denominator: at
+window 17 (68–72h) `alive_admitted` counts 12,884 episodes and still-ventilated
+counts 6,778. Reading the column as the Phase 1 denominator would nearly double
+it at 72h and move the dose curve by roughly the +50% that §10 works out below.
+A record charted at or after discharge reaches no window at all, so
+`imv_status == 1` cannot be true where `alive_admitted` is false.
 
 **Table 1b — hospital intervals.** One row per ADT interval: `encounter_block`,
 `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`.
@@ -518,30 +475,93 @@ Carry both pairs (or a tidy long form), plus the landmark eligibility flag.
 **No landmark, no exposure window, no outcome model.** All intubated encounter
 blocks, contributing for as long as the patient remains ventilated.
 
-| View | Window | Extent | Points |
-|---|---|---|---|
-| Granular | **4h** | 72h | 18 |
-| Extended | 12h | 7 days | 14 |
+| View | Window | Extent | Points | Status |
+|---|---|---|---|---|
+| Granular | **4h** | 72h | 18 | built |
+| Extended | 12h | 7 days | 14 | **deferred, not built** — SG 2026-09-07; see `covariates.json` `windows.extended._STATUS` |
+
+The extended view is descriptive only and gates nothing: T is chosen from the
+retention table below, and §8's "Choosing T" tabulation tops out at 72h while
+arguing for the *shortest* viable T. Building it means re-running the hourly
+waterfall over a longer horizon, not re-aggregating the finished table.
 
 Median/IQR (lead with these — dose is right-skewed), mean/SD alongside, and a
-**number-at-risk row** (at-risk = still intubated). Stopping fentanyl is not
+**number-at-risk row** (at risk = still intubated, i.e. `imv_status == 1` — NOT
+the `alive_admitted` column; see §10 Phase 0 above). Stopping fentanyl is not
 exclusionary: `dose = 0` is a real observation for a ventilated patient.
 
-**Overlay balanced-panel curves** at ≥24h, ≥48h, ≥72h. The all-at-risk curve
+**Overlay balanced-panel curves** at ≥24h, ≥48h, ≥72h. The all-ventilated curve
 answers a different question at every timepoint because its denominator keeps
 changing; a balanced panel freezes the denominator so movement reflects real
-within-patient change. Crossing = composition; parallel = real change. Worked
-example and figure: `code/04_composition_bias_demo.R` →
-`output/intermediate/composition_bias_demo.png`.
+within-patient change. Crossing = composition; parallel = real change.
 
 **Also plot three curves, not one:** (1) % receiving any fentanyl, (2) median
-across all at-risk, (3) median among those receiving any. Weaning-to-zero among
+across all still ventilated, (3) median among those receiving any. Weaning-to-zero among
 the still-ventilated and dropout of low-dose patients push the overall median in
 opposite directions; a single curve hides both.
 
-**Denominator must be stated in Methods.** Same simulated data, same constant
-patient doses: at-risk denominator **+50%**, full-cohort-with-zeros denominator
-**−95%**. The latter mostly measures extubation rate, not dosing. Use at-risk.
+**Denominator must be stated in Methods.** A still-ventilated denominator and a
+full-cohort-with-zeros denominator answer different questions, and the latter
+mostly measures extubation rate rather than dosing. Use the still-ventilated
+denominator, and say so.
+
+#### What Phase 1 measured at UCMC (2026-09-07)
+
+Run: `code/02_descriptive_trajectory.R`. Every figure below is reproducible from
+`output/final_no_phi/phase1_*.csv`.
+
+**Retention, and the landmark choice.** 14,897 ventilation episodes at hour 0;
+still ventilated 96.0% at 12h, 78.4% at 24h, 57.1% at 48h, **45.2% (6,728) at
+72h** (source: `phase1_choosing_T.csv`). The 72h row equals the landmark cohort
+exactly, by construction — both are "ventilated in window 17".
+
+**The three curves move in opposite directions, which is the finding.** The
+median across all ventilated falls 0.234 → 0.000 mcg/kg/hr and is pinned at zero
+from hour 24, while the median among receivers *rises* 0.674 → 0.913 and the
+proportion receiving any falls 63.5% → 35.8% (source: `phase1_dose_summary.csv`).
+Read as one curve this looks like steady weaning to nothing. What is actually
+happening is that fentanyl exposure **narrows to fewer episodes rather than
+falling within them** — those still on it at 72h are on slightly more than at
+intubation. This is precisely the artefact the three-curve rule exists to catch.
+
+**The decline is real, not compositional.** The ≥24 / ≥48 / ≥72h balanced panels
+run essentially parallel to the all-ventilated curve on the proportion scale,
+sitting a mean **+0.75 percentage points** above it (range −0.9 to +1.8 across
+the three panels) (source: `phase1_balanced_panels.csv` against
+`phase1_dose_summary.csv`). The narrowing of exposure is within-patient
+de-escalation, not a changing mix of patients.
+
+**The median is the wrong summary here, and the balanced-panel comparison on the
+median is uninformative after hour 24** — with over half of windows at exactly
+zero the median sits on the floor and every panel collapses onto the same line.
+The proportion carries the comparison instead. Recorded because it also bears on
+Phase 3: a model fitted to a quantity that is zero in the majority of windows is
+fitting the zero process as much as the dose process.
+
+**Zero fraction — the `gbmt`-versus-`crimCV` number.** **51.7%** of ventilated
+windows in the landmark cohort carry `total_dose == 0` (50.8% across the whole
+cohort) (source: `phase1_zero_fraction.csv`). The non-zero part is unimodal and
+right-skewed, mode near 0.15 mcg/kg/hr, deciles 0.15 → 2.37, no second mode
+(source: `phase1_dose_distribution.csv`). That is a zero-inflated continuous
+distribution, and §9's `crimCV` question is now live rather than hypothetical.
+
+**Companion sedatives.** Propofol is used at a similar rate to fentanyl (73.8%
+of ventilated episodes at hour 0, falling to 29.1% at 72h) and midazolam
+infusions are rare at UCMC — **98.1%** of ventilated windows are zero (source:
+`phase1_dose_summary.csv`, `phase1_zero_fraction.csv`). Midazolam is therefore
+not a candidate second indicator here on prevalence grounds alone, independently
+of the units problem.
+
+**Ventilation episodes and the repeat-patient dependence.** 14,897 episodes from
+13,627 patients; **932 patients (6.8%) contribute more than one**, max 16 blocks
+(source: `phase1_imv_episodes.csv` and the run log). First-episode duration is
+median 27.7h (IQR 13.8–66.1, p95 216.9, max 1,369h). `n_imv_episodes` per block
+is median 1 (p95 6, **max 146**) — the tail is long-stay patients repeatedly
+coming on and off the ventilator across a single admission, and it is worth
+confirming that the 8h `imv_episode_gap_hours` rule is not fragmenting one
+course into many. These are the first two of the three dependence diagnostics
+§11 requires; the third (classes containing two episodes from the same patient)
+cannot be produced until Phase 3 assigns classes.
 
 ### Phase 2 — dose trajectory in the landmarked window
 Trajectories over [0, T] among patients alive and ventilated at T, with T chosen
@@ -571,9 +591,9 @@ heterogeneity `gbmt` can only handle by adding groups. Compare partitions by ARI
 | Setting | Value | Why |
 |---|---|---|
 | `x.names` | `c("inf_dose", "bolus_dose")` | both in mcg/kg/hr |
-| `scaling` | **`0` — mandatory** | §4/E2: `scaling = 2` gave ARI **−0.053**, worse than chance, with no error |
-| `nstart` | **≥ 50** | §4/E3: partition changed in 2 of 6 runs from Ward-init local optima |
-| `d` | 2 (3 if windows allow) | balanced panel, so no degree cap (§8/E4) |
+| `scaling` | **`0` — mandatory** | any `scaling >= 1` normalises within unit, erasing absolute dose level; `scaling = 2` additionally divides by a within-patient SD that is exactly zero for a near-all-zero indicator, with no error raised (§3) |
+| `nstart` | **≥ 50** | `gbmt` initialises EM from a Ward hierarchical clustering, which is scale-sensitive, so random restarts are needed rather than one deterministic start |
+| `d` | 2 (3 if windows allow) | balanced panel, so the degree cap below does not bind |
 
 **What the model now estimates.** Σ_j becomes 2×2 per class, and its off-diagonal
 is the within-class infusion–bolus covariance — arguably *the* parameter of
@@ -1032,7 +1052,7 @@ the window. This is a deliberate divergence, not an inheritance.
 earlier window, **subject to a per-variable cap**. Members: `sofa_total`,
 `oxygenation`, and the six labs.
 
-**2. `absence_means_zero`** — set to `0` for every at-risk window with no record;
+**2. `absence_means_zero`** — set to `0` for every `alive_admitted` window with no record;
 **not LOCF-eligible**; the count set to zero is reported. Members: `nee`,
 `crrt_status`.
 
@@ -1076,7 +1096,7 @@ information the bedside actually had.
 | Cap | Variables | Reasoning |
 |---|---|---|
 | **24h** (6 windows) | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr` | Minimum daily labs in the ICU; the clinician acts on the last available value. |
-| **72h** (18 windows) | `bilirubin_total` | *(SG, 2026-09-06.)* The one lab that departs from the uniform rule. It is the slowest-moving of the six — bilirubin changes over days — and is not drawn daily in most ICU patients. **Measured:** at 24h it was present in only **14.1%** of at-risk windows, which capped 6-component SOFA at roughly that figure regardless of every other component. The kinetics support the longer carry; 24h was set by charting cadence, the wrong constraint for this analyte. |
+| **72h** (18 windows) | `bilirubin_total` | *(SG, 2026-09-06.)* The one lab that departs from the uniform rule. It is the slowest-moving of the six — bilirubin changes over days — and is not drawn daily in most ICU patients. **Measured:** at 24h it was present in only **14.1%** of `alive_admitted` windows, which capped 6-component SOFA at roughly that figure regardless of every other component. The kinetics support the longer carry; 24h was set by charting cadence, the wrong constraint for this analyte. |
 | **8h** (2 windows) | `oxygenation` | **Not a lab.** SpO₂ is charted at least hourly, so an 8h gap in oxygenation is a data fault rather than a draw-cadence artefact. The daily-labs argument does not extend to it. |
 
 **The cap still binds.** It bounds any carry at 6 windows and rules out the
@@ -1097,7 +1117,7 @@ the gap, and a gap judged too long to bridge was too long throughout it. *(porte
 from `CRRT-dose-lmtp/code/02_build_lmtp_df.py:559-621`)*
 
 **Never extrapolate** past the patient's last observation of that variable, or
-past the end of their at-risk period. Extrapolating past the last charted value is
+past the end of their `alive_admitted` period. Extrapolating past the last charted value is
 silent and biases in the same direction a real effect would.
 
 **First window** with no earlier observation stays NA. Imputation belongs with the
@@ -1189,7 +1209,7 @@ mmHg; SpO₂ = 100 returns NaN.
 **FiO₂ must be a fraction, and that is enforced rather than assumed** *(SG,
 2026-09-05)*. `code/utils/fio2.py`, tested in `tests/test_fio2.py` (10 checks,
 wired into both runners). Getting it wrong is silent: clifpy's SOFA gates on
-`fio2_set BETWEEN 0.21 AND 1` (`sofa.py:273`), so at a percent-scale site every
+`fio2_set BETWEEN 0.21 AND 1` (clifpy `utils/sofa.py:273`), so at a percent-scale site every
 FiO₂ — and every P/F with it — is nulled with no error raised.
 
 The rule that makes this safe:
@@ -1211,7 +1231,7 @@ heuristic should resolve. Measured behaviour on the three cases:
 | 50/50 fraction and percent | — | **raises**, naming both shares |
 
 **Plateau windows are left NA** *(SG, 2026-09-06 — option A)*. Measured before
-deciding: **78,187 at-risk windows (31.1%)**, FiO₂ pairable for **92.8%**, implied
+deciding: **78,187 `alive_admitted` windows (31.1%)**, FiO₂ pairable for **92.8%**, implied
 floor `Severinghaus(96.99)/FiO₂` with **median 226, 81.4% below 300, 21.4% below
 200**. Three consequences belong in the limitations:
 
@@ -1322,11 +1342,11 @@ would silently make NEE use the fixed weight too.
 1. Complete the (patient × window) grid, so "no row" and "row with NA" become the
    same thing and every count uses the same denominator.
 2. Apply `absence_means_zero` and `absence_means_not_ventilated`.
-3. **Count missingness — at-risk windows only.**
+3. **Count missingness — `alive_admitted` windows only.**
 4. **Then** LOCF.
 5. Emit a parallel `<var>_locf` boolean per variable.
 
-Counting *after* the fill makes the extent of filling invisible. The at-risk
+Counting *after* the fill makes the extent of filling invisible. The `alive_admitted`
 restriction matters too: a post-event window has no covariates because follow-up
 had ended, which is **structure, not data quality** — mixing the two would make
 late windows look far worse than they are.
@@ -1336,7 +1356,7 @@ which variables go missing *together*, and that is what determines whether an
 imputation model is well posed. Suppress pattern cells below 11, rolling the
 remainder into one "other" row that states how many it absorbed.
 
-Phase 0 emits `output/final_no_phi/phase0_missingness.csv` with **both sides of
+Phase 0 emits `output/final_no_phi/diagnostics/phase0_missingness.csv` with **both sides of
 the fill**, since they answer different questions — how much was carried, and
 what is still absent in the analysis data:
 
@@ -1348,7 +1368,7 @@ what is still absent in the analysis data:
 | `n_filled_by_locf`, `pct_filled_by_locf` | how much the cap actually carried |
 | `n_missing_final`, `pct_missing_final` | what remains for the model to handle |
 
-`n_observed + n_filled_by_locf + n_missing_final == n_at_risk` for every
+`n_observed + n_filled_by_locf + n_missing_final == n_alive_admitted` for every
 LOCF-eligible variable, which is asserted in `tests/test_build_cohort.py`.
 Separating `n_zero_by_rule` is what stops an absent vasopressor record reading as
 a data gap — the mislabelling that made the reference repo report `nee` as 17%
@@ -1494,7 +1514,7 @@ Two mechanisms:
   bound changes: fentanyl **25.0 mcg/kg/hr** and NEE **17.45 mcg/kg/min-equiv** —
   the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
   independent check that both ported tables match theirs.
-- **`tests/test_covariates.py`** — 16 static checks, all verified to fire by
+- **`tests/test_covariates.py`** — 17 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the
   per-variable declarations; LOCF-eligible variables have caps and ineligible ones
@@ -1528,13 +1548,8 @@ Two mechanisms:
 |---|---|
 | `scaling` formulas, within-unit normalisation | `references/gbmt_R.pdf`, `gbmt` Details |
 | BIC formula `-2*logLik + npar*log(ss)`, lower is better | `gbmt:::icCalc` |
-| E4 polynomial-degree cap on unbalanced panels | `code/03_scaling_experiments.R` §E4 |
 | Landmark / immortal time bias | Anderson, Cain & Gelber (1983) *JCO*; Dafni (2011) *Circ Cardiovasc Qual Outcomes* |
 | `Jointlcmm` competing-risks support | `args(lcmm::Jointlcmm)`; `Jointlcmm.Rd` |
-| E1 / E2 / E3 ARI values | `code/03_scaling_experiments.R` → `output/intermediate/scaling_experiments.csv` |
-| ARI method and implementation | `code/02_indicator_sensitivity.R` |
-| Indicator-set sensitivity (ARI 0.16–0.41 on `agrisus2`) | `output/intermediate/indicator_sensitivity_ari.csv` |
-| BIC by `ng`, scree plot | `code/01_gbmt_example.R` → `output/intermediate/gbmt_ic_comparison.csv` |
 | `gbmt` has no covariate argument | `gbmt()` signature |
 | APPA ≥ 0.7, OCC > 5 thresholds | Nagin (2005), *Group-based modeling of development* |
 | Class enumeration criteria performance | Nylund, Asparouhov & Muthén (2007) |

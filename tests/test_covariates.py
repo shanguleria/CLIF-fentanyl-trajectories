@@ -307,6 +307,46 @@ def test_window_width_agrees_with_the_site_config_template():
         )
 
 
+def test_the_extended_grid_is_labelled_while_nothing_consumes_it():
+    """The declared-but-never-consumed failure mode, caught by construction.
+
+    windows.extended and the two config extended_* keys are read by no code, and
+    the mirror test above only proves the two DECLARATIONS agree with each other
+    -- not that either reaches an operation. While that is true the block must
+    carry a _STATUS saying so, or a reader takes it for a live setting.
+    """
+    src = []
+    for d in ("code", "validation"):
+        for pat in ("*.py", "*.R"):
+            src += list((REPO / d).rglob(pat))
+    src = [f for f in src if "__pycache__" not in str(f)]
+    consumers = [
+        f.relative_to(REPO)
+        for f in src
+        for key in ("extended_window_hours", "extended_extent_hours")
+        if key in f.read_text()
+    ]
+    ext = COV["windows"]["extended"]
+    if consumers:
+        assert "_STATUS" not in ext, (
+            f"windows.extended is consumed by {consumers}, so remove its _STATUS "
+            f"rather than leaving the config claiming it is not built"
+        )
+    else:
+        assert ext.get("_STATUS"), (
+            "nothing reads the extended grid keys, so windows.extended must carry "
+            "a _STATUS saying it is declared and not produced"
+        )
+        for f in (REPO / "config" / "config.json",
+                  REPO / "config" / "config_template.json"):
+            if not f.exists():
+                continue
+            cohort = json.loads(f.read_text())["cohort"]
+            assert cohort.get("_comment_extended_grid"), (
+                f"{f.name} declares extended_* with no note that nothing reads them"
+            )
+
+
 def test_every_declared_variable_is_documented():
     """A variable with no label and no source or algorithm cannot be implemented
     from this file, which is the only thing this file is for."""

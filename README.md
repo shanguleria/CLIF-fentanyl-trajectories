@@ -143,11 +143,12 @@ is handed to the library with no translation layer.
 | `cohort.window_hours` | aggregation window (default 4) |
 | `cohort.landmark_hours` | landmark `T` (default 72) |
 | `cohort.balanced_panel_hours` | thresholds for the Phase 1 overlays |
+| `cohort.extended_*` | **declared, not consumed.** The 12h/7d descriptive view is deferred; see `covariates.json` `windows.extended._STATUS` |
 | `outcomes.mortality_source` | `discharge_category` (`death_dttm` is unstable) |
 | `outcomes.mortality_categories` | values counted as death; sensitivity set drops `Hospice` |
 | `outcomes.unresolved_discharge_categories` | censored, **not** counted alive |
 | `model.scaling` | `gbmt` normalization — **0**, see design notes §3 |
-| `model.nstart` | EM random restarts — ≥50, see design notes §4/E3 |
+| `model.nstart` | EM random restarts — ≥50, see design notes §7 |
 
 **`clif_version` is always the CLIF *specification* version.** A conversion
 release such as the MIMIC CLIF conversion 1.1.0 belongs in `dataset_version` —
@@ -162,15 +163,27 @@ meaningful. Do not edit them to make a run work. `site_name`, `data_directory`,
 
 | Path | Contents | Shareable? |
 |---|---|---|
-| `data/intermediate_phi/` | analytic tables, one row per patient-window | **No — PHI** |
-| `output/intermediate_phi/` | model objects, class assignments | **No — PHI** |
+| `output/intermediate_phi/` | analytic tables (one row per block-window), model objects, class assignments | **No — PHI** |
 | `output/final_no_phi/` | aggregate tables and figures — the coordinating-center upload set, PHI-checked at assembly | **Yes** |
 
-`data/`, `output/intermediate_phi/`, and `logs/` are gitignored. Both PHI
-directories get a `README.md` warning label written at runtime by
-`site_dirs()`. Shareable outputs carry a provenance block from `provenance()`:
-`site_name`, `clif_version`, `dataset_version`, `code_version` (git describe),
-`generated`.
+**Nothing under `output/` is tracked** — every site generates its own, PHI
+artifacts never leave the site, and the PHI-free set reaches the coordinating
+centre by upload rather than by git. `logs/` is gitignored too. The PHI directory
+gets a `README.md` warning label written at runtime by `site_dirs()`.
+
+What each phase writes to `output/final_no_phi/`:
+
+| Phase | Files |
+|---|---|
+| 0 | `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
+| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_{dose_curves,balanced_panels,dose_distribution}.png`, `phase1_provenance.json` |
+
+`phase0_manifest.json` is written **last** and is what marks the Phase 0 outputs
+complete and current. Every R phase calls `require_manifest()` first, which
+refuses to read tables produced by a different code version or a drifted config.
+
+Shareable outputs carry a provenance block from `provenance()`: `site_name`,
+`clif_version`, `dataset_version`, `code_version` (git describe), `generated`.
 
 ## Prerequisites
 
@@ -254,11 +267,12 @@ CLIF-fentanyl-trajectories/
 │   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
 │   ├── test_outliers.py          # bounds are applied, and gaps are reported
 │   ├── test_build_cohort.py      # Phase 0 logic on synthetic frames
-│   ├── test_paths.py             # the PHI boundary is a directory rule
+│   ├── test_paths.py             # the PHI boundary, and paths.R == paths.py
+│   ├── test_waterfall_cache.py   # the cache key covers every input
 │   └── test_doses.py             # every charted dose unit converts correctly
-├── validation/                   # methodological evidence, synthetic data
-│   ├── scaling_experiments.R
-│   └── composition_bias_demo.R
+├── validation/                   # one-off measurements, synthetic or aggregate
+│   ├── repeat_encounter_cost.R
+│   └── waterfall_span_equivalence.py
 ├── docs/
 │   └── design_notes.md           # protocol, decisions, evidence
 ├── output/
@@ -286,8 +300,9 @@ CLIF-fentanyl-trajectories/
   mortality, and should be named that way. `Still Admitted` / `Missing` /
   `Other` are censored, never counted as alive-and-discharged.
 - **Scaling**: `gbmt` normalizes **within unit**; any `scaling ≥ 1` erases
-  absolute dose level. This pipeline uses `scaling = 0`. Evidence:
-  `validation/scaling_experiments.R`.
+  absolute dose level, and `scaling = 2` additionally divides by a within-patient
+  SD that is exactly zero for a near-all-zero indicator, without raising. This
+  pipeline uses `scaling = 0`; the mechanism is in design notes §3.
 
 Shareable outputs carry a provenance block from `provenance()`: `site_name`,
 `clif_version`, `dataset_version`, `code_version` (`git describe --always

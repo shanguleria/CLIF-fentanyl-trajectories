@@ -29,7 +29,7 @@ def _long(n_blocks=2, n_win=None):
     for b in range(n_blocks):
         for w in range(n_win):
             rows.append({"encounter_block": f"b{b}", "window_idx": w,
-                         "window_start_hr": w * B.WINDOW_H, "at_risk": True})
+                         "window_start_hr": w * B.WINDOW_H, "alive_admitted": True})
     return pd.DataFrame(rows)
 
 
@@ -142,12 +142,12 @@ def test_missingness_is_counted_before_the_fill():
     )
 
 
-def test_missingness_denominator_is_at_risk_rows_only():
+def test_missingness_denominator_is_alive_admitted_rows_only():
     df = _long(n_blocks=1)
-    df.loc[df["window_idx"] >= 10, "at_risk"] = False
+    df.loc[df["window_idx"] >= 10, "alive_admitted"] = False
     df["lactate"] = np.nan
     _, rep, _ = B.apply_missingness(df)
-    assert rep[rep["variable"] == "lactate"].iloc[0]["n_at_risk"] == 10
+    assert rep[rep["variable"] == "lactate"].iloc[0]["n_alive_admitted"] == 10
 
 
 def test_report_separates_pre_locf_from_final_missingness():
@@ -161,7 +161,7 @@ def test_report_separates_pre_locf_from_final_missingness():
     assert r["n_missing_pre_locf"] == B.N_WINDOWS - 1
     assert r["n_filled_by_locf"] == 6
     assert r["n_missing_final"] == B.N_WINDOWS - 7
-    assert r["n_observed"] + r["n_filled_by_locf"] + r["n_missing_final"] == r["n_at_risk"]
+    assert r["n_observed"] + r["n_filled_by_locf"] + r["n_missing_final"] == r["n_alive_admitted"]
 
 
 def test_report_shows_zero_by_rule_separately_from_missing():
@@ -176,13 +176,13 @@ def test_report_shows_zero_by_rule_separately_from_missing():
     assert r["pct_missing_final"] == 0.0
 
 
-def test_report_percentages_use_the_at_risk_denominator():
+def test_report_percentages_use_the_alive_admitted_denominator():
     df = _long(n_blocks=1)
-    df.loc[df["window_idx"] >= 10, "at_risk"] = False
+    df.loc[df["window_idx"] >= 10, "alive_admitted"] = False
     df["bun"] = np.nan
     _, rep, _ = B.apply_missingness(df)
     r = rep[rep["variable"] == "bun"].iloc[0]
-    assert r["n_at_risk"] == 10 and r["pct_missing_final"] == 100.0
+    assert r["n_alive_admitted"] == 10 and r["pct_missing_final"] == 100.0
 
 
 def test_pattern_table_pools_small_cells():
@@ -199,7 +199,7 @@ def test_pattern_table_pools_small_cells():
 
 # ------------------------------------------------- oxygenation absence reasons
 def _oxy(n_pao2, n_spo2, n_usable, oxy=np.nan):
-    return pd.DataFrame([{"at_risk": True, "oxygenation": oxy,
+    return pd.DataFrame([{"alive_admitted": True, "oxygenation": oxy,
                           "_n_pao2": n_pao2, "_n_spo2": n_spo2,
                           "_n_spo2_usable": n_usable}])
 
@@ -565,6 +565,62 @@ def test_severinghaus_matches_the_reference_value():
 
 def test_severinghaus_is_undefined_on_the_plateau():
     assert pd.isna(B._severinghaus(pd.Series([100.0])).iloc[0])
+
+
+def test_a_record_charted_after_discharge_reaches_no_window():
+    """A post-event window is structurally empty, not missing. Charting lag put
+    428 IMV records into windows past discharge before this bound existed, which
+    made `imv_status == 1` possible where alive_admitted was false -- an invariant
+    every downstream consumer would otherwise have to re-derive for itself."""
+    anchor = pd.Timestamp("2026-01-01 00:00", tz="UTC")
+    cohort = pd.DataFrame([{"encounter_block": 1, "anchor_dttm": anchor,
+                            "followup_end_dttm": anchor + pd.Timedelta(hours=10)}])
+    rec = pd.DataFrame([
+        {"encounter_block": 1, "recorded_dttm": anchor + pd.Timedelta(hours=1)},
+        {"encounter_block": 1, "recorded_dttm": anchor + pd.Timedelta(hours=9.9)},
+        {"encounter_block": 1, "recorded_dttm": anchor + pd.Timedelta(hours=10)},
+        {"encounter_block": 1, "recorded_dttm": anchor + pd.Timedelta(hours=20)},
+    ])
+    out = B._to_windows(rec, cohort, "recorded_dttm")
+    assert len(out) == 2, f"expected the two in-follow-up records, got {len(out)}"
+    assert out["recorded_dttm"].max() < cohort["followup_end_dttm"].iloc[0]
+
+
+def test_the_extubated_gap_rule_zeroes_dose_and_keeps_the_pre_gate_value():
+    """design_notes.md §10a(a) was DECLARED in covariates.json and never applied
+    until 2026-09-07. The gate must fire, must fire only on alive-admitted
+    not-ventilated windows, and must leave total_dose_ungated recoverable --
+    that column is what makes the decision reversible without another run."""
+    df = pd.DataFrame([
+        # ventilated, on a drip -> untouched
+        {"encounter_block": 1, "alive_admitted": True,  "imv_status": 1.0,
+         "inf_dose": 2.0, "bolus_dose": 0.0, "n_bolus": 0.0, "total_dose": 2.0},
+        # extubated but still admitted, bolus given -> zeroed
+        {"encounter_block": 1, "alive_admitted": True,  "imv_status": 0.0,
+         "inf_dose": 0.0, "bolus_dose": 1.5, "n_bolus": 1.0, "total_dose": 1.5},
+        # after discharge -> not alive_admitted, gate must not claim it
+        {"encounter_block": 1, "alive_admitted": False, "imv_status": float("nan"),
+         "inf_dose": 0.0, "bolus_dose": 0.0, "n_bolus": 0.0, "total_dose": 0.0},
+    ])
+    out = B.gate_dose_on_ventilation(df.copy())
+    assert out.loc[0, "total_dose"] == 2.0, "a ventilated window must be untouched"
+    assert out.loc[1, "total_dose"] == 0.0 and out.loc[1, "bolus_dose"] == 0.0
+    assert out.loc[1, "total_dose_ungated"] == 1.5, (
+        "the pre-gate value must survive, or reversing §10a(a) costs a re-run"
+    )
+    assert (out["total_dose_ungated"] == df["total_dose"]).all()
+
+
+def test_the_gate_does_not_reach_windows_with_no_ventilation_record():
+    """imv_status is NaN outside the at-risk period and 0 where the waterfall
+    knows the patient was off the vent. Only alive_admitted rows may be gated,
+    so a NaN outside follow-up cannot silently zero a real dose."""
+    df = pd.DataFrame([
+        {"encounter_block": 1, "alive_admitted": False, "imv_status": float("nan"),
+         "inf_dose": 3.0, "bolus_dose": 0.0, "n_bolus": 0.0, "total_dose": 3.0},
+    ])
+    out = B.gate_dose_on_ventilation(df.copy())
+    assert out.loc[0, "total_dose"] == 3.0
 
 
 if __name__ == "__main__":

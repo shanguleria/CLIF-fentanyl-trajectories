@@ -58,7 +58,8 @@
 
     "fentanyl":       {"mcg/kg/hr": [0.0, 10.0], "mcg/hr": [0.0, 500.0], "mg/hr": [0.0, 1.0]},
     "propofol":       {"mcg/kg/min": [0.0, 200.0], "mg/hr": [0.0, 400.0], "mg/kg/hr": [0.0, 10.0]},
-    "midazolam":      {"mcg/kg/min": [0.0, 10.0], "mg/hr": [0.0, 20.0]},
+    "midazolam":      {"mcg/kg/min": [0.0, 10.0], "mg/hr": [0.0, 20.0], "mg/kg/hr": [0.0, 1.0]},
+    "_midazolam_mg_kg_hr_why": "Added 2026-09-07, found by the NO BOUND report on the first run that built midazolam_dose: UCMC charts 802 midazolam rows in mg/kg/hr and the config bounded only the other two units, so those rows passed unbounded. The ceiling is DERIVED, not invented -- it is the already-agreed mg/hr ceiling of 20 at the minimum plausible adult weight of 20 kg. LATENT, NOT LIVE: the arm measured n=792, median 0.07, p95 0.20, max 0.20 mg/kg/hr, so nothing is currently removed by it. It is coverage against a future site or a mis-charted row, not a filter on today's data.",
     "norepinephrine": {"mcg/kg/min": [0.0, 3.0], "mcg/min": [0.0, 200.0], "mg/min": [0.0, 0.2], "mg/hr": [0.0, 10.0]},
     "epinephrine":    {"mcg/kg/min": [0.0, 2.0], "mcg/min": [0.0, 100.0], "mg/hr": [0.0, 5.0]},
     "phenylephrine":  {"mcg/kg/min": [0.0, 10.0], "mcg/min": [0.0, 500.0], "mg/hr": [0.0, 20.0]},
