@@ -65,10 +65,15 @@ OWNED <- list(out_final = c(
   "phase1_dose_summary.csv", "phase1_dose_distribution.csv",
   "phase1_balanced_panels.csv", "phase1_zero_fraction.csv",
   "phase1_imv_episodes.csv", "phase1_choosing_T.csv", "phase1_provenance.json",
-  "phase1_dose_curves.png", "phase1_pct_receiving.png",
-  "phase1_dose_distribution.png",
-  "phase1_balanced_panels.png"))
-n_cleared <- clear_owned_outputs(dirs, OWNED)
+  "phase1_fentanyl_curves.png", "phase1_fentanyl_balanced_panels.png",
+  "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png"))
+
+# Figures renamed 2026-09-07 when fentanyl became the primary view. A rename
+# leaves a stale twin the owned list no longer names.
+RETIRED <- file.path("output", "final_no_phi",
+                     c("phase1_dose_curves.png", "phase1_pct_receiving.png",
+                       "phase1_dose_distribution.png", "phase1_balanced_panels.png"))
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
@@ -364,7 +369,8 @@ baseline <- rbind(
   row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee),
   row_continuous("P/F ratio, first window", base$oxygenation),
   row_continuous("Lactate, mmol/L", base$lactate),
-  row_continuous("Fentanyl dose, first window (mcg/kg/hr)", base$total_dose),
+  row_continuous(sprintf("Fentanyl dose, first window (%s)", UNITS[["fentanyl"]]),
+                 base$total_dose),
   row_continuous(sprintf("Propofol dose, first window (%s)", UNITS[["propofol"]]),
                  base$propofol_dose),
   row_continuous(sprintf("Midazolam dose, first window (%s)", UNITS[["midazolam"]]),
@@ -404,70 +410,66 @@ house <- function(p) {
           strip.text = element_text(colour = ink, face = "bold"))
 }
 
-# Section 10 asks for three curves, not one. They are two different quantities --
-# a dose and a proportion -- so they get two figures rather than a secondary axis:
-# the facets use free_y, and sec_axis applies ONE transform to every panel, which
-# silently draws the proportion against the wrong scale in all but one of them.
-curves <- dose_summary
-curves$series <- ifelse(curves$denominator == "all_ventilated",
-                        "All ventilated, zeros included",
-                        "Receivers only")
-curves$facet <- sprintf("%s (%s)", curves$drug, curves$unit)
+# FENTANYL IS THE STUDY. It gets the primary figures; propofol and midazolam are
+# companions and share one secondary figure.
+FENT_U <- UNITS[["fentanyl"]]
 DOSE_COLS <- c("All ventilated, zeros included" = "#14427e",
                "Receivers only" = "#4a8bd8")
 
-p_curves <- house(
-  ggplot(curves, aes(window_start_hr, median, colour = series, fill = series)) +
-    geom_ribbon(aes(ymin = q1, ymax = q3), alpha = 0.13, colour = NA,
-                show.legend = FALSE) +
-    geom_line(linewidth = 0.9) +
-    geom_point(size = 1.4) +
-    facet_wrap(~ facet, scales = "free_y", ncol = 1) +
-    scale_colour_manual(values = DOSE_COLS) +
-    scale_fill_manual(values = DOSE_COLS) +
-    # fill is only there to tint the ribbons; a second legend for it would
-    # duplicate the colour legend and force it off the canvas.
-    guides(fill = "none", colour = guide_legend(override.aes = list(fill = NA))) +
-    labs(title = "Dose over the first 72h of ventilation",
+curves <- dose_summary
+curves$series <- ifelse(curves$denominator == "all_ventilated",
+                        "All ventilated, zeros included", "Receivers only")
+
+# --- Primary figure: fentanyl, all three curves of section 10 -----------------
+# Two stacked FACETS rather than a secondary axis: a dose and a proportion are
+# different quantities, and sec_axis applies ONE transform to every facet, which
+# draws the proportion against the wrong scale wherever the scales are free.
+f <- curves[curves$drug == "fentanyl", ]
+f_pct <- f[f$denominator == "all_ventilated", ]
+
+SERIES <- c("Median dose, all ventilated (zeros included)" = "#14427e",
+            "Median dose, receivers only"                  = "#4a8bd8",
+            "% receiving any fentanyl"                     = "#eb6834")
+
+fent_df <- rbind(
+  data.frame(window_start_hr = f$window_start_hr,
+             value = f$median, lo = f$q1, hi = f$q3,
+             series = ifelse(f$denominator == "all_ventilated",
+                             names(SERIES)[1], names(SERIES)[2]),
+             quantity = sprintf("Dose (%s), median and IQR", FENT_U)),
+  data.frame(window_start_hr = f_pct$window_start_hr,
+             value = f_pct$pct_receiving_any, lo = NA_real_, hi = NA_real_,
+             series = names(SERIES)[3],
+             quantity = "% of ventilated episodes receiving any")
+)
+fent_df$series <- factor(fent_df$series, levels = names(SERIES))
+fent_df$quantity <- factor(fent_df$quantity, levels = unique(fent_df$quantity))
+
+p_fent <- house(
+  ggplot(fent_df, aes(window_start_hr, value, colour = series, fill = series)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.13, colour = NA,
+                na.rm = TRUE, show.legend = FALSE) +
+    geom_line(linewidth = 1.0) + geom_point(size = 1.6) +
+    facet_wrap(~ quantity, scales = "free_y", ncol = 1) +
+    scale_colour_manual(values = SERIES) +
+    scale_fill_manual(values = SERIES) +
+    guides(fill = "none",
+           colour = guide_legend(nrow = 2, override.aes = list(fill = NA))) +
+    labs(title = "Fentanyl dose over the first 72h of ventilation",
          subtitle = paste0(
            "Denominator is episodes STILL VENTILATED in each window.\n",
-           "Bands are IQR. Where the two medians diverge, the cohort is not weaning -- it is shrinking."),
-         x = "Hours since first IMV episode", y = "Median dose (band = IQR)",
-         colour = NULL))
+           "The two medians diverge: exposure narrows to fewer episodes rather than falling within them."),
+         x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$out_final, "phase1_dose_curves.png"), p_curves,
-       width = 7.5, height = 8.4, dpi = 200)
+ggsave(file.path(dirs$out_final, "phase1_fentanyl_curves.png"), p_fent,
+       width = 7.5, height = 7.6, dpi = 200)
 
-# The third curve. A proportion shares one 0-100 scale across drugs, so all three
-# belong on a single panel where they can actually be compared.
-pct <- dose_summary[dose_summary$denominator == "all_ventilated", ]
-pct$drug <- factor(pct$drug, levels = names(DRUGS))
-
-p_pct <- house(
-  ggplot(pct, aes(window_start_hr, pct_receiving_any, colour = drug)) +
-    geom_line(linewidth = 0.9) + geom_point(size = 1.4) +
-    scale_colour_manual(values = c(fentanyl = "#14427e", propofol = "#4a8bd8",
-                                   midazolam = "#eb6834")) +
-    scale_y_continuous(limits = c(0, 100)) +
-    labs(title = "Proportion of ventilated episodes receiving any drug",
-         subtitle = paste0(
-           "The curve a median cannot show: exposure narrows to fewer\n",
-           "episodes rather than falling within them."),
-         x = "Hours since first IMV episode", y = "% of ventilated episodes",
-         colour = NULL))
-
-ggsave(file.path(dirs$out_final, "phase1_pct_receiving.png"), p_pct,
-       width = 7.5, height = 4.8, dpi = 200)
-
-# Balanced panels: nested duration thresholds are ORDINAL, so a sequential
-# single-hue ramp; the all-ventilated curve is a different kind of thing.
-#
-# TWO quantities, because one of them cannot answer the question here. Over half
-# of ventilated windows are exactly zero, so the median is pinned at the floor
-# from h24 and every panel collapses onto the same line -- the comparison stops
-# discriminating precisely where the cohort starts shrinking fastest. A
-# proportion has no floor, so % receiving carries the composition question the
-# rest of the way.
+# --- Primary figure: fentanyl balanced panels --------------------------------
+# On the MEAN, not the median. Over half of ventilated windows are exactly zero,
+# so the median sits on the floor from h24 and every panel collapses onto the
+# same line -- it stops discriminating exactly where the cohort starts shrinking
+# fastest. The mean uses the zeros without being pinned by them, and a
+# proportion has no floor at all.
 bp <- balanced_panels
 bp$curve <- sprintf("Ventilated >=%dh (n=%s)", bp$panel_hours,
                     trimws(format(bp$panel_n, big.mark = ",")))
@@ -475,18 +477,16 @@ allc <- dose_summary[dose_summary$drug == "fentanyl" &
                        dose_summary$denominator == "all_ventilated", ]
 allc$curve <- "All ventilated (changing denominator)"
 
-keep <- c("window_start_hr", "median", "pct_receiving_any", "curve")
-plot_df <- rbind(bp[, keep], allc[, keep])
+keep <- c("window_start_hr", "mean", "pct_receiving_any", "curve")
+pdf_ <- rbind(bp[, keep], allc[, keep])
 lv <- c(sort(unique(bp$curve)), "All ventilated (changing denominator)")
-plot_df$curve <- factor(plot_df$curve, levels = lv)
+pdf_$curve <- factor(pdf_$curve, levels = lv)
 pal <- setNames(c("#a8c8ee", "#4a8bd8", "#14427e", "#eb6834")[seq_along(lv)], lv)
 
 panel_df <- rbind(
-  data.frame(plot_df[, c("window_start_hr", "curve")],
-             value = plot_df$median,
-             quantity = sprintf("Median fentanyl dose (%s)", UNITS[["fentanyl"]])),
-  data.frame(plot_df[, c("window_start_hr", "curve")],
-             value = plot_df$pct_receiving_any,
+  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$mean,
+             quantity = sprintf("Mean fentanyl dose (%s)", FENT_U)),
+  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$pct_receiving_any,
              quantity = "% receiving any fentanyl")
 )
 panel_df$quantity <- factor(panel_df$quantity, levels = unique(panel_df$quantity))
@@ -499,17 +499,18 @@ p_panels <- house(
     guides(colour = guide_legend(nrow = 2)) +
     labs(title = "Real dose change, or a changing mix of patients?",
          subtitle = paste0(
-           "Panels freeze the denominator at a ventilation duration.\n",
-           "Crossing means composition change; parallel means genuine within-patient change."),
+           "Panels freeze the denominator at a ventilation duration. Shown on the mean,\n",
+           "because the median is pinned at zero from h24 and stops discriminating."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$out_final, "phase1_balanced_panels.png"), p_panels,
+ggsave(file.path(dirs$out_final, "phase1_fentanyl_balanced_panels.png"), p_panels,
        width = 7.5, height = 7.0, dpi = 200)
 
-# Distribution: the zero spike is excluded because it is a different kind of
-# observation from the continuous part, and it is what decides crimCV. The tail
-# is clipped at p99.5 -- otherwise a handful of extreme windows stretch the axis
-# and the shape that matters occupies a tenth of the panel.
+# --- Primary figure: fentanyl distribution -----------------------------------
+# The zero spike is excluded because it is a different kind of observation from
+# the continuous part, and it is what decides crimCV. Tail clipped at p99.5 --
+# otherwise a handful of extreme windows stretch the axis and the shape that
+# matters occupies a tenth of the panel.
 fent <- long$total_dose[long$ventilated & !is.na(long$total_dose)]
 nz <- fent[fent > 0]
 zero_pct <- 100 * mean(fent == 0)
@@ -518,16 +519,40 @@ n_clipped <- sum(nz > clip)
 
 p_dist <- house(
   ggplot(data.frame(dose = nz[nz <= clip]), aes(dose)) +
-    geom_histogram(bins = 60, fill = "#4a8bd8", colour = NA) +
+    geom_histogram(bins = 60, fill = "#14427e", colour = NA) +
     labs(title = "Fentanyl dose distribution across ventilated windows",
          subtitle = sprintf(
-           "Non-zero windows only; %.1f%% of ventilated windows are exactly zero.\nTail clipped at p99.5 = %.1f %s (%s windows above it).",
-           zero_pct, clip, UNITS[["fentanyl"]],
-           trimws(format(n_clipped, big.mark = ","))),
-         x = sprintf("Dose (%s)", UNITS[["fentanyl"]]), y = "Windows"))
+           "Non-zero windows only; %.1f%% of ventilated windows are exactly zero.\nTail clipped at p99.5 = %.0f %s (%s windows above it).",
+           zero_pct, clip, FENT_U, trimws(format(n_clipped, big.mark = ","))),
+         x = sprintf("Dose (%s)", FENT_U), y = "Windows"))
 
-ggsave(file.path(dirs$out_final, "phase1_dose_distribution.png"), p_dist,
+ggsave(file.path(dirs$out_final, "phase1_fentanyl_distribution.png"), p_dist,
        width = 7.5, height = 4.8, dpi = 200)
+
+# --- Secondary figure: the companion sedatives -------------------------------
+# Separate units per drug, so free_y and a label carrying the unit.
+sed <- curves[curves$drug != "fentanyl", ]
+sed$facet <- sprintf("%s (%s)", sed$drug, sed$unit)
+
+p_sed <- house(
+  ggplot(sed, aes(window_start_hr, median, colour = series, fill = series)) +
+    geom_ribbon(aes(ymin = q1, ymax = q3), alpha = 0.13, colour = NA,
+                show.legend = FALSE) +
+    geom_line(linewidth = 0.9) + geom_point(size = 1.4) +
+    facet_wrap(~ facet, scales = "free_y", ncol = 1) +
+    scale_colour_manual(values = DOSE_COLS) +
+    scale_fill_manual(values = DOSE_COLS) +
+    guides(fill = "none", colour = guide_legend(override.aes = list(fill = NA))) +
+    labs(title = "Companion sedatives",
+         subtitle = sprintf(
+           "Secondary to the fentanyl exposure. Infusions only -- boluses are not collected for these two.\nMidazolam infusions are rare here: %.1f%% of ventilated windows are zero.",
+           zero_fraction$pct_zero[zero_fraction$drug == "midazolam" &
+                                    zero_fraction$population == "whole_cohort"]),
+         x = "Hours since first IMV episode", y = "Median dose (band = IQR)",
+         colour = NULL))
+
+ggsave(file.path(dirs$out_final, "phase1_sedative_curves.png"), p_sed,
+       width = 7.5, height = 6.4, dpi = 200)
 
 
 # ---- 14. Write ---------------------------------------------------------------

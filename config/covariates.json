@@ -299,7 +299,10 @@
   "exposure": {
     "_role": "The primary exposure. Not a covariate, but it shares the window machinery, so its rules live here with them.",
     "columns": ["inf_dose", "bolus_dose", "total_dose"],
-    "units": "mcg/kg/hr",
+    "units": "mcg/hr",
+    "_units_DECISION": "CHANGED FROM mcg/kg/hr, SG 2026-09-07. Fentanyl is ordered and titrated in mcg/hr; a weight-normalised opioid rate is not a quantity any clinician reads. MEASURED at UCMC the same day: 655,783 of 659,338 continuous fentanyl rows (99.5%) are ALREADY charted in mcg/hr, and 374,938 of 406,287 bolus rows (92.3%) in plain mcg. The former unit therefore divided the site's native value by weight for 99.5% of the exposure, manufacturing a weight dependence the source data did not have. Weight now touches fentanyl only for the 3,555 mcg/kg/hr infusion rows and the 445 mcg/kg bolus rows.",
+    "_units_MODELLING_CONSEQUENCE": "gbmt runs at scaling = 0, so ABSOLUTE level defines the classes. In mcg/hr two patients on the same ordered rate are the same trajectory regardless of size, which is what the order sheet says; in mcg/kg/hr they were different. This is a real change to what a class means and belongs in Methods.",
+    "_units_SIDE_EFFECT": "The weight-lag question (11% of blocks take weight from after the anchor, max 804h) is now near-moot for the EXPOSURE, though weight still governs nee, bmi and the weight-based minority of rows.",
     "_three_columns_why": "Kept separate so the Model A / Model B choice (design_notes.md section 1) is deferred to analysis time rather than baked into the pipeline.",
 
     "grid_resolution_minutes": 60,
@@ -314,7 +317,8 @@
       "algorithm": "Bin to hours. Take the LAST charted rate per (block, hour), stable-sorted on (time, value). Complete the grid across the block's alive_admitted span. Treat mar_action_category == 'stop' as a rate of 0, NOT a missing value. Forward-fill at most hold_hours. Everything still empty is 0.",
       "missing_class": "absence_means_zero",
       "_absence_why": "Identical to nee, and to design_notes.md section 5: 'drip off is a real zero, not missing.' The LOCF bridges a CHARTING GAP inside a running infusion; it does not carry a rate across a stopped one.",
-      "_HOLD_CAP_IS_LOAD_BEARING": "Without it, LOCF on an infusion rate runs to the end of follow-up. A patient whose drip stopped at hour 10 with no stop row charted would show a non-zero rate at hour 72, and because this is the EXPOSURE rather than a covariate, that error is the outcome of the study rather than noise around it. hold_hours = 4 is inherited from nee, where the coordinating site's median inter-record interval was 57 min (p90 68). VERIFY THE FENTANYL CHARTING INTERVAL AT UCMC; this is the single parameter most worth measuring before the first real run.",
+      "_HOLD_CAP_IS_LOAD_BEARING": "Without it, LOCF on an infusion rate runs to the end of follow-up. A patient whose drip stopped at hour 10 with no stop row charted would show a non-zero rate at hour 72, and because this is the EXPOSURE rather than a covariate, that error is the outcome of the study rather than noise around it. hold_hours = 4 is inherited from nee, where the coordinating site's median inter-record interval was 57 min (p90 68).",
+      "_HOLD_CAP_VERIFIED_AT_UCMC": "MEASURED 2026-09-07, closing the standing instruction to verify the fentanyl charting interval before trusting this parameter. Over 647,457 inter-record gaps within a hospitalization: median 1.00h, p75 1.00, p90 1.67, p95 2.58, p98 4.92, p99 8.04. Only 2.6% of gaps exceed the 4h cap and 1.0% exceed 8h, so the cap bridges routine charting without inventing exposure. Audited in the other direction too: of blocks ventilated in window 6 with a raw fentanyl record in h24-28, only 2.5% read zero in the grid, and every such record is a stop action carrying dose 0 or null. The grid is faithful; the zeros in the descriptive output are real.",
       "_never_extrapolate": "Bounded by the block's first and last charted medication record, and by the alive_admitted span. Never filled past either.",
       "_extubated_windows": "imv_status == 0 forces dose to 0 for that window, per design_notes.md section 10a(a), decided 2026-09-05. That gate is applied AFTER the grid, so an extubated gap reads as the true zero it was.",
       "_extubated_windows_IMPLEMENTED": "2026-09-07, in gate_dose_on_ventilation(). It had been DECLARED HERE AND NEVER APPLIED since 2026-09-05 -- found during the Phase 1 planning pass, alongside the same failure in windows.extended and exposure.sedatives. MEASURED blast radius before implementing: 4,377 alive-admitted-but-not-ventilated windows carried a non-zero fentanyl dose (1.7% of alive-admitted windows, 1,793 of 14,897 blocks; median 0.17, max 7.07 mcg/kg/hr), of which only 317 windows across 144 blocks fall inside the landmark cohort that Phases 2-6 model.",
@@ -327,10 +331,10 @@
       "_category_CONFIRMED": "SG 2026-09-05: medication_admin_intermittent carries med_category == 'fentanyl' explicitly at UCMC. Same assertion requirement as the infusion arm. NOTE that other_sedative_categories (propofol, midazolam) were NOT confirmed in the same breath and remain assumed.",
       "summary": "sum",
       "_NEVER_LOCF": "A bolus is an EVENT, not a state. It never enters the hourly grid and is never forward-filled. Carrying it forward replicates one dose into every later window: design_notes.md section 5 works the example, where one 50 mcg bolus becomes several hundred mcg. The grid and the sum come out of the same pipeline, so the rule must be applied per column, not globally.",
-      "conversion": "Window bolus total / weight / window_hours, so it lands on the same mcg/kg/hr scale as the infusion and the two are additive."
+      "conversion": "Window bolus total mcg / window_hours, so it lands on the same mcg/hr scale as the infusion and the two are additive. No weight division."
     },
 
-    "total": "inf_dose + bolus_dose, both already in mcg/kg/hr.",
+    "total": "inf_dose + bolus_dose, both already in mcg/hr.",
 
     "sedatives": {
       "_role": "DESCRIPTIVE COMPANIONS to the fentanyl exposure, not indicators. Added SG 2026-09-07 after the Phase 1 planning pass found that design_notes.md section 10 promised propofol_dose and midazolam_dose in Table 1 while Phase 0 only loaded the categories and checked they were present -- no column was ever computed. Declared, checked, never consumed.",

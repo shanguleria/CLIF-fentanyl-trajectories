@@ -28,7 +28,8 @@ from clifpy.utils.comorbidity import calculate_cci  # noqa: E402
 from utils.doses import convert as convert_doses  # noqa: E402
 from utils.fio2 import normalize_fio2  # noqa: E402
 from utils.outliers import (  # noqa: E402
-    apply_long, apply_med_converted, apply_med_raw, fentanyl_sanity_ceiling,
+    apply_long, apply_med_converted, apply_med_raw, fentanyl_charted_max_mcg_hr,
+    fentanyl_sanity_ceiling,
     load_config as load_outliers, nee_sanity_ceiling,
 )
 from utils.waterfall_cache import (  # noqa: E402
@@ -477,7 +478,7 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     """Hourly grid of infusion rate for `cats`. Config: exposure.infusion.
 
     rate_fn maps the charted (dose, unit, weight) to the target rate; fentanyl
-    uses _to_mcg_kg_hr, the sedatives go through the dose_units table.
+    uses _to_mcg_hr, the sedatives go through the dose_units table.
     """
     m = t["mac"][t["mac"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
@@ -510,23 +511,28 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     return grid[["encounter_block", "hr", "rate"]]
 
 
-def _to_mcg_kg_hr(m: pd.DataFrame) -> pd.Series:
-    """Convert charted infusion dose to mcg/kg/hr using the charted unit."""
+def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
+    """Convert charted fentanyl infusion dose to mcg/hr using the charted unit.
+
+    mcg/hr is how fentanyl is ordered, and it is what 99.5% of UCMC rows are
+    already charted in, so the dominant path is an identity and weight never
+    touches it. Weight is needed only for the weight-based minority.
+    """
     unit = m["med_dose_unit"].astype("string").str.lower().str.strip()
     dose = pd.to_numeric(m["med_dose"], errors="coerce")
     w = pd.to_numeric(m["weight_kg"], errors="coerce")
     out = pd.Series(np.nan, index=m.index, dtype="float64")
-    out[unit == "mcg/kg/hr"] = dose
-    out[unit == "mcg/hr"] = dose / w
-    out[unit == "mg/hr"] = dose * 1000.0 / w
-    out[unit == "mcg/kg/min"] = dose * 60.0
-    out[unit == "mcg/min"] = dose * 60.0 / w
+    out[unit == "mcg/hr"] = dose
+    out[unit == "mcg/kg/hr"] = dose * w
+    out[unit == "mg/hr"] = dose * 1000.0
+    out[unit == "mcg/kg/min"] = dose * 60.0 * w
+    out[unit == "mcg/min"] = dose * 60.0
     unresolved = dose.notna() & out.isna()
     if unresolved.any():
         bad = sorted(unit[unresolved].dropna().unique())
         raise SystemExit(
             f"fentanyl infusion: {int(unresolved.sum()):,} rows in unhandled units {bad}. "
-            f"Add them to _to_mcg_kg_hr rather than dropping -- a dropped unit removes "
+            f"Add them to _to_mcg_hr rather than dropping -- a dropped unit removes "
             f"exposure for whichever patients were charted that way."
         )
     return out
@@ -545,7 +551,7 @@ def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
     note("windows zeroed by the extubated-gap rule (§10a(a))", int(hit.sum()))
     if hit.any():
         print(f"    across {long.loc[hit, 'encounter_block'].nunique():,} blocks; "
-              f"median {long.loc[hit, 'total_dose'].median():.2f} mcg/kg/hr, "
+              f"median {long.loc[hit, 'total_dose'].median():.2f} mcg/hr, "
               f"{int((long.loc[hit, 'inf_dose'] == 0).sum()):,} bolus-only")
     for c in ("inf_dose", "bolus_dose", "n_bolus", "total_dose"):
         long.loc[off, c] = 0.0
@@ -630,8 +636,9 @@ def bolus_doses(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Data
     b = b[(b["window_idx"] >= 0) & (b["window_idx"] < N_WINDOWS) & b["mcg"].notna()]
     agg = b.groupby(["encounter_block", "window_idx"], as_index=False).agg(
         bolus_mcg=("mcg", "sum"), n_bolus=("mcg", "size"))
-    agg = agg.merge(cohort[["encounter_block", "weight_kg"]], on="encounter_block", how="left")
-    agg["bolus_dose"] = agg["bolus_mcg"] / agg["weight_kg"] / WINDOW_H
+    # mcg delivered in the window, spread over its hours -> mcg/hr, the same scale
+    # as the infusion arm, so the two are additive.
+    agg["bolus_dose"] = agg["bolus_mcg"] / WINDOW_H
     return agg[["encounter_block", "window_idx", "bolus_dose", "n_bolus"]]
 
 
@@ -656,14 +663,25 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
     if over_inf.any():
         raise SystemExit(
             f"{int(over_inf.sum()):,} windows have an INFUSION rate above the derived "
-            f"ceiling of {ceiling:g} mcg/kg/hr, which is proof the bounds did not run."
+            f"ceiling of {ceiling:g} mcg/hr, which is proof the bounds did not run."
         )
+    # Between the charted mcg/hr bound and the derived ceiling sits a real region:
+    # a weight-based arm at its own bound, times a large weight. Bound-consistent,
+    # clinically extreme, and reported rather than silently accepted.
+    charted_max = fentanyl_charted_max_mcg_hr(OUTLIERS)
+    high = out.loc[out["alive_admitted"], "inf_dose"] > charted_max
+    if high.any():
+        note(f"windows whose INFUSION rate exceeds the charted mcg/hr bound "
+             f"({charted_max:g})", int(high.sum()))
+        print(f"    max {out.loc[out['alive_admitted'], 'inf_dose'].max():.0f} mcg/hr; "
+              f"these come from the weight-based arm and are bound-consistent, "
+              f"not proof of a fault")
     over_total = out.loc[out["alive_admitted"], "total_dose"] > ceiling
     if over_total.any():
         top = out.loc[out["alive_admitted"] & (out["total_dose"] > ceiling), "total_dose"]
-        note(f"windows whose total_dose exceeds {ceiling:g} mcg/kg/hr (bolus stacking)",
+        note(f"windows whose total_dose exceeds {ceiling:g} mcg/hr (bolus stacking)",
              int(over_total.sum()))
-        print(f"    max {top.max():.1f} mcg/kg/hr; these are extreme but not "
+        print(f"    max {top.max():.1f} mcg/hr; these are extreme but not "
               f"proof of a bounds failure")
     note("alive-admitted windows with any fentanyl", int((out.loc[out['alive_admitted'], 'total_dose'] > 0).sum()))
     note("alive-admitted windows with a bolus", int((out.loc[out['alive_admitted'], 'n_bolus'] > 0).sum()))
@@ -1443,7 +1461,7 @@ def main() -> None:
     print("\nExposure")
     grid = infusion_grid(t, mapping, cohort,
                          CONFIG["medications"]["opioid_infusion_categories"],
-                         _to_mcg_kg_hr)
+                         _to_mcg_hr)
     bolus = bolus_doses(t, mapping, cohort)
     long = window_exposure(grid, bolus, windows)
 

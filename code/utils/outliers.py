@@ -169,11 +169,31 @@ def apply_med_converted(
 
 
 def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
-    """Ceiling past which a total_dose proves the bounds did not run. Derived, not fixed."""
+    """Ceiling past which a dose proves the raw bounds did not run. Derived, not fixed.
+
+    The analysis unit is mcg/hr, and three charted units feed it. A bound only
+    constrains the arm it is written in, so the ceiling is the LARGEST value any
+    arm can still produce after conversion -- weight-based arms at the maximum
+    plausible weight. Taking the mcg/hr bound alone understates it, and the
+    assertion then fires on data the bounds did accept.
+    """
     cfg = config or load_config()
-    max_mcg_hr = cfg["med_dose_raw"]["fentanyl"]["mcg/hr"][1]
-    min_weight = cfg["analysis_unit_bounds"]["vitals"]["weight_kg"][0]
-    return max_mcg_hr / min_weight
+    raw = cfg["med_dose_raw"]["fentanyl"]
+    w_max = cfg["analysis_unit_bounds"]["vitals"]["weight_kg"][1]
+    per_arm = {
+        "mcg/hr": lambda hi: hi,
+        "mcg/kg/hr": lambda hi: hi * w_max,
+        "mg/hr": lambda hi: hi * 1000.0,
+        "mcg/kg/min": lambda hi: hi * 60.0 * w_max,
+        "mcg/min": lambda hi: hi * 60.0,
+    }
+    return max(per_arm[u](hi) for u, (_, hi) in raw.items() if u in per_arm)
+
+
+def fentanyl_charted_max_mcg_hr(config: dict | None = None) -> float:
+    """The mcg/hr bound itself: high but bound-consistent above this, not a fault."""
+    cfg = config or load_config()
+    return cfg["med_dose_raw"]["fentanyl"]["mcg/hr"][1]
 
 
 def nee_sanity_ceiling(coefficients: dict, config: dict | None = None) -> float:

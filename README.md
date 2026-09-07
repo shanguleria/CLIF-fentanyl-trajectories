@@ -34,7 +34,7 @@ values below were verified against `clifpy`'s bundled schemas.
 |---|---|---|
 | `medication_admin_continuous` | `hospitalization_id`, `admin_dttm`, `med_category`, `med_dose`, `med_dose_unit`, `med_route_category`, `mar_action_category` | infusion rates; LOCF between charted changes |
 | `medication_admin_intermittent` | `hospitalization_id`, `admin_dttm`, `med_category`, `med_dose`, `med_dose_unit`, `mar_action_category` | boluses; **summed within window, never carried forward** |
-| `vitals` | `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value` | weight, for mcg/kg/hr normalization |
+| `vitals` | `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value` | weight, for `nee` and BMI normalization |
 
 Propofol and midazolam are extracted into their own columns from the same
 medication tables, for later use.
@@ -176,7 +176,7 @@ What each phase writes to `output/final_no_phi/`:
 | Phase | Files |
 |---|---|
 | 0 | `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
-| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_{dose_curves,balanced_panels,dose_distribution}.png`, `phase1_provenance.json` |
+| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
 
 `phase0_manifest.json` is written **last** and is what marks the Phase 0 outputs
 complete and current. Every R phase calls `require_manifest()` first, which
@@ -288,8 +288,10 @@ CLIF-fentanyl-trajectories/
 ## Definitions and provenance
 
 - **Dose**: within-window total fentanyl (infusion + bolus), expressed
-  **mcg/kg/hr**. Infusion uses LOCF then a time-weighted mean; boluses are summed
-  and never carried forward.
+  **mcg/hr** — the unit fentanyl is ordered in, and the unit 99.5% of UCMC rows
+  are already charted in, so weight does not enter the dominant path. Infusion
+  uses LOCF then a time-weighted mean; boluses are summed over the window and
+  divided by its hours, never carried forward. (Was mcg/kg/hr until 2026-09-07.)
 - **Successful extubation**: extubation not followed by reintubation within 72h.
   Competes with **death** and **tracheostomy**. A failed extubation is not an
   event. Late extubations that cannot be confirmed are censored.

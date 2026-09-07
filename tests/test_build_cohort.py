@@ -533,24 +533,35 @@ def test_consumption_assertion_passes_when_every_declared_column_exists():
 
 # ------------------------------------------------------- units and transforms
 def test_infusion_unit_conversion_covers_the_charted_units():
+    """The analysis unit is mcg/hr (SG 2026-09-07). Every arm hand-computed,
+    because a factor wrong by 60 or 1000 still produces a plausible dose."""
     m = pd.DataFrame({
-        "med_dose": [2.0, 100.0, 0.1, 0.05, 2.0],
-        "med_dose_unit": ["mcg/kg/hr", "mcg/hr", "mg/hr", "mcg/kg/min", "mcg/min"],
+        "med_dose": [100.0, 2.0, 0.1, 0.05, 2.0],
+        "med_dose_unit": ["mcg/hr", "mcg/kg/hr", "mg/hr", "mcg/kg/min", "mcg/min"],
         "weight_kg": [50.0] * 5,
     })
-    out = B._to_mcg_kg_hr(m)
-    assert out.iloc[0] == 2.0
-    assert out.iloc[1] == 2.0            # 100 mcg/hr / 50 kg
-    assert out.iloc[2] == 2.0            # 0.1 mg/hr -> 100 mcg/hr / 50 kg
-    assert abs(out.iloc[3] - 3.0) < 1e-9  # 0.05 mcg/kg/min * 60
-    assert abs(out.iloc[4] - 2.4) < 1e-9  # 2 mcg/min * 60 / 50
+    out = B._to_mcg_hr(m)
+    assert out.iloc[0] == 100.0           # already the analysis unit: identity
+    assert out.iloc[1] == 100.0           # 2 mcg/kg/hr * 50 kg
+    assert out.iloc[2] == 100.0           # 0.1 mg/hr -> 100 mcg/hr, no weight
+    assert abs(out.iloc[3] - 150.0) < 1e-9  # 0.05 mcg/kg/min * 60 * 50 kg
+    assert abs(out.iloc[4] - 120.0) < 1e-9  # 2 mcg/min * 60
+
+
+def test_the_dominant_charted_unit_needs_no_weight():
+    """99.5% of UCMC fentanyl infusion rows are charted mcg/hr. That arm must
+    survive a missing weight -- under the former mcg/kg/hr unit it did not, and
+    a null weight silently removed the exposure."""
+    m = pd.DataFrame({"med_dose": [75.0], "med_dose_unit": ["mcg/hr"],
+                      "weight_kg": [float("nan")]})
+    assert B._to_mcg_hr(m).iloc[0] == 75.0
 
 
 def test_an_unhandled_infusion_unit_raises_rather_than_dropping():
     m = pd.DataFrame({"med_dose": [1.0], "med_dose_unit": ["mcg/kg/day"],
                       "weight_kg": [70.0]})
     try:
-        B._to_mcg_kg_hr(m)
+        B._to_mcg_hr(m)
     except SystemExit as e:
         assert "mcg/kg/day" in str(e)
     else:

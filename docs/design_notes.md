@@ -14,7 +14,7 @@ or public data — no patient data was used to produce any figure in this file.
 | | **Model A — exposure** | **Model B — management strategy** |
 |---|---|---|
 | Question | What are the trajectories of total opioid exposure? | Is the patient managed by escalating a drip, or by intermittent boluses? |
-| Indicators | **1**: total fentanyl mcg/kg/hr per 4h window | **2**: infusion rate + bolus-equivalent rate |
+| Indicators | **1**: total fentanyl mcg/hr per 4h window | **2**: infusion rate + bolus-equivalent rate |
 | `scaling` | `0` | `0` (required — see §4) |
 | Status | **Primary.** Do this first. | **Secondary.** Do after A is settled. |
 
@@ -25,7 +25,7 @@ and should not be the headline result.
 ### Model A indicator
 
 Combining infusion and push into one quantity resolves a units mismatch:
-infusion rate is an *intensity* (mcg/kg/hr), cumulative bolus is a *quantity*
+infusion rate is an *intensity* (mcg/hr), cumulative bolus is a *quantity*
 (mcg/kg). Converting the window's bolus total to an equivalent rate makes them
 commensurable and additive:
 
@@ -40,7 +40,7 @@ units, and it keeps the model at a single indicator.
 
 ### Model B indicators
 
-Keep the two streams separate, both expressed as mcg/kg/hr over the window:
+Keep the two streams separate, both expressed as mcg/hr over the window:
 
 - `inf_rate`  — time-weighted mean infusion rate
 - `push_rate` — window bolus total / weight / 4
@@ -74,7 +74,7 @@ their *own* mean and SD across the observation period, not against the cohort.
 | **4** log ratio to mean | `log(y / mean_i)` | level (centers at 0) | **yes** |
 
 **The consequence that matters clinically:** with any `scaling >= 1`, absolute
-dose cannot define a group. A patient flat at 200 mcg/kg/hr and one flat at 50
+dose cannot define a group. A patient flat at 200 mcg/hr and one flat at 50
 become the *same trajectory* after within-patient normalisation. If
 "persistently high-dose" is a phenotype we want to find, `scaling >= 1` destroys
 it by construction.
@@ -118,7 +118,7 @@ every later cross-reference (§5–§12) keeps its number.
 | **Infusion rate** | **LOCF**, then **time-weighted mean** within the window | a rate persists until changed; a plain mean of records is wrong whenever rate changes are unevenly spaced |
 | **Bolus doses** | **SUM within window. Never LOCF.** | a bolus is an event, not a state — carrying it forward replicates one dose across every later window and massively overcounts |
 | Empty windows | true `0` for both streams | drip off is a real zero, not missing |
-| Weight | denominator of the dose (mcg/kg/hr), **fixed at the anchor** | a normaliser, not a covariate. Two different weight rules are required — see §11 *Weight* |
+| Weight | no longer the fentanyl denominator (§5); still fixes `nee` and BMI | a normaliser, not a covariate. Two different weight rules are required — see §11 *Weight* |
 
 ### The hourly grid — RESOLVED 2026-09-05 (SG)
 
@@ -173,7 +173,7 @@ indicator that defines the groups, or it is not in the model.
 | Role | Variables | Where |
 |---|---|---|
 | Trajectory indicator | fentanyl dose (± propofol, midazolam — see §9) | `x.names` |
-| Normaliser | weight, fixed at the anchor | data prep — mcg/kg/hr (§11) |
+| Normaliser | none for fentanyl as of 2026-09-07; weight still normalises `nee` | data prep — mcg/hr (§11) |
 | Membership predictor | age, sex, CCI, BMI at admission; plus **window-0** SOFA, NEE, oxygenation | stage 2: `multinom(group ~ ...)` |
 | Distal outcome | successful extubation, 30-day mortality, VFD-28 | stage 2 — competing risks, see Phase 6 |
 | Group descriptor | bolus counts, % windows with a bolus, % windows on CRRT | descriptive table only — characterises groups without letting them drive the grouping |
@@ -427,7 +427,7 @@ table is the block-level shape only.
 | Block | Columns |
 |---|---|
 | Keys | `patient_id` (chr), `encounter_block`, `id_num` (int), `window_idx`, `window_start_hr` |
-| Fentanyl dose — **three columns, kept separate** | `inf_dose`, `bolus_dose`, `total_dose` (within-window, mcg/kg/hr; rules in §5) |
+| Fentanyl dose — **three columns, kept separate** | `inf_dose`, `bolus_dose`, `total_dose` (within-window, mcg/hr; rules in §5) |
 | Other sedatives | `propofol_dose`, `midazolam_dose` — added now; cheap here, expensive to backfill |
 | Normaliser | `weight_kg` (fixed at the anchor), `weight_lag_hours` |
 | Time-invariant | `age`, `sex`, `race`, `cci`, `bmi_admission`, `bmi_lag_hours` |
@@ -516,34 +516,64 @@ still ventilated 96.0% at 12h, 78.4% at 24h, 57.1% at 48h, **45.2% (6,728) at
 exactly, by construction — both are "ventilated in window 17".
 
 **The three curves move in opposite directions, which is the finding.** The
-median across all ventilated falls 0.234 → 0.000 mcg/kg/hr and is pinned at zero
-from hour 24, while the median among receivers *rises* 0.674 → 0.913 and the
-proportion receiving any falls 63.5% → 35.8% (source: `phase1_dose_summary.csv`).
-Read as one curve this looks like steady weaning to nothing. What is actually
-happening is that fentanyl exposure **narrows to fewer episodes rather than
-falling within them** — those still on it at 72h are on slightly more than at
-intubation. This is precisely the artefact the three-curve rule exists to catch.
+median across all ventilated falls 19 → 0 mcg/hr and is pinned at zero from hour
+24, while the median among receivers *rises* 50 → 75 mcg/hr (IQR 25–100 → 25–150)
+and the proportion receiving any falls 63.5% → 35.8% (source:
+`phase1_dose_summary.csv`). Read as one curve this looks like steady weaning to
+nothing. What is actually happening is that fentanyl exposure **narrows to fewer
+episodes rather than falling within them** — those still on it at 72h are on
+slightly more than at intubation. This is precisely the artefact the three-curve
+rule exists to catch.
+
+**The mean is the summary that survives, and it shows a genuine de-escalation.**
+Mean dose across all ventilated falls 47.1 → 32.8 mcg/hr over 72h; within the
+frozen ≥72h panel it falls 49.1 → 32.8 (source: `phase1_dose_summary.csv`,
+`phase1_balanced_panels.csv`). The median cannot show this because over half of
+ventilated windows are exactly zero, so from hour 24 it sits on the floor and
+every balanced panel collapses onto the same line — the comparison stops
+discriminating precisely where the cohort starts shrinking fastest. **Phase 1's
+figures therefore report the balanced panels on the mean and the proportion, not
+the median.** This bears directly on Phase 3: a model fitted to a quantity that
+is zero in the majority of windows is fitting the zero process as much as the
+dose process.
 
 **The decline is real, not compositional.** The ≥24 / ≥48 / ≥72h balanced panels
-run essentially parallel to the all-ventilated curve on the proportion scale,
-sitting a mean **+0.75 percentage points** above it (range −0.9 to +1.8 across
-the three panels) (source: `phase1_balanced_panels.csv` against
-`phase1_dose_summary.csv`). The narrowing of exposure is within-patient
-de-escalation, not a changing mix of patients.
-
-**The median is the wrong summary here, and the balanced-panel comparison on the
-median is uninformative after hour 24** — with over half of windows at exactly
-zero the median sits on the floor and every panel collapses onto the same line.
-The proportion carries the comparison instead. Recorded because it also bears on
-Phase 3: a model fitted to a quantity that is zero in the majority of windows is
-fitting the zero process as much as the dose process.
+run parallel to the all-ventilated curve and slightly above it — a mean **+2.66
+mcg/hr** on the dose scale (range 0.00 to +5.58) and **+0.72 percentage points**
+on the proportion scale (range −0.9 to +1.8) (source: `phase1_balanced_panels.csv`
+against `phase1_dose_summary.csv`). Composition contributes a little; the
+narrowing of exposure is overwhelmingly within-patient de-escalation.
 
 **Zero fraction — the `gbmt`-versus-`crimCV` number.** **51.7%** of ventilated
 windows in the landmark cohort carry `total_dose == 0` (50.8% across the whole
 cohort) (source: `phase1_zero_fraction.csv`). The non-zero part is unimodal and
-right-skewed, mode near 0.15 mcg/kg/hr, deciles 0.15 → 2.37, no second mode
+right-skewed with no second mode, deciles 12 → 200 mcg/hr with a median of 75
 (source: `phase1_dose_distribution.csv`). That is a zero-inflated continuous
 distribution, and §9's `crimCV` question is now live rather than hypothetical.
+
+**Why so many zeros — investigated 2026-09-07, they are real.** A median of zero
+from hour 24 looks implausible for patients still ventilated at 72h, so the
+grid was audited against the raw records rather than assumed correct:
+
+- **Charting cadence is not the cause.** Fentanyl `medication_admin_continuous`
+  records are charted hourly at UCMC — inter-record gap median 1.00h, p95 2.58h,
+  and only **2.6%** of gaps exceed the 4h `hold_hours` cap. The LOCF cap is not
+  manufacturing zeros. This closes the standing "VERIFY THE FENTANYL CHARTING
+  INTERVAL" item in `covariates.json`, which had been the single most
+  load-bearing unmeasured parameter.
+- **The grid is faithful to the records.** Of blocks ventilated in window 6 with
+  a raw fentanyl record inside h24–28, only **2.5%** are zero in the grid, and
+  every one of those records is a `stop` action carrying a dose of 0 or null.
+  Where an infusion was running, the grid shows it.
+- **13.9% of the ≥72h panel never receive fentanyl at all** across the whole 72h,
+  and at hour 24 about half of the panel is genuinely off it.
+- **The likely reason is that this cohort is not fentanyl-only.** UCMC charts
+  **dexmedetomidine at nearly the volume of fentanyl** (469,385 continuous rows
+  against 659,338), plus hydromorphone, ketamine, remifentanil and morphine
+  infusions. "Zero fentanyl" frequently means "on another agent", not "no
+  analgesia or sedation". **None of those agents is currently collected**, and
+  that is a limitation to state explicitly — the study describes *fentanyl*
+  trajectories, not analgosedation intensity.
 
 **Companion sedatives.** Propofol is used at a similar rate to fentanyl (73.8%
 of ventilated episodes at hour 0, falling to 29.1% at 72h) and midazolam
@@ -590,7 +620,7 @@ heterogeneity `gbmt` can only handle by adding groups. Compare partitions by ARI
 
 | Setting | Value | Why |
 |---|---|---|
-| `x.names` | `c("inf_dose", "bolus_dose")` | both in mcg/kg/hr |
+| `x.names` | `c("inf_dose", "bolus_dose")` | both in mcg/hr |
 | `scaling` | **`0` — mandatory** | any `scaling >= 1` normalises within unit, erasing absolute dose level; `scaling = 2` additionally divides by a within-patient SD that is exactly zero for a near-all-zero indicator, with no error raised (§3) |
 | `nstart` | **≥ 50** | `gbmt` initialises EM from a Ward hierarchical clustering, which is scale-sensitive, so random restarts are needed rather than one deterministic start |
 | `d` | 2 (3 if windows allow) | balanced panel, so the degree cap below does not bind |
@@ -751,7 +781,7 @@ removes the patient from observation. Name it accordingly in the manuscript.
 - ~~Grid/landmark mismatch~~ — Phase 1 descriptive at 4h/72h and 12h/7d;
   Phase 2 exposure [0, T=72h] at 4h (18 windows).
 - ~~7-day grid as exposure~~ — descriptive only.
-- ~~"Cumulative dose" ambiguity~~ — **within-window total**, expressed mcg/kg/hr.
+- ~~"Cumulative dose" ambiguity~~ — **within-window total**, expressed mcg/hr.
 - ~~Window width~~ — **4h**.
 - ~~Other sedatives~~ — propofol and midazolam columns added to Table 1 now.
 
@@ -1324,7 +1354,7 @@ Weight is a **normaliser, not a covariate**, and it needs two rules that must no
 be unified:
 
 - **Dose denominator — fixed at the anchor (intubation).** If the denominator
-  moves, a change in mcg/kg/hr can be a change in *weight* rather than a change in
+  moves, a weight-normalised dose can change because the *weight* changed rather than
   *dosing*, and the trajectory shape becomes partly an artefact of fluid balance.
   Match backward first (a weight recorded after intubation already reflects
   resuscitation), forward only for the residue, and **report the lag** —
@@ -1511,7 +1541,7 @@ Two mechanisms:
   *after*. Angiotensin is bounded there rather than inherited — clifpy has no
   angiotensin entry, which made its bounds a partial net. Two derived sanity
   ceilings are computed rather than written down, so they cannot drift when a
-  bound changes: fentanyl **25.0 mcg/kg/hr** and NEE **17.45 mcg/kg/min-equiv** —
+  bound changes: fentanyl **11,000 mcg/hr** and NEE **17.45 mcg/kg/min-equiv** —
   the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
   independent check that both ported tables match theirs.
 - **`tests/test_covariates.py`** — 17 static checks, all verified to fire by

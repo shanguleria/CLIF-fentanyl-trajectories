@@ -9,6 +9,7 @@ Run standalone:  .venv/bin/python tests/test_outliers.py
 """
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "code"))
 from utils.outliers import (  # noqa: E402
+    fentanyl_charted_max_mcg_hr,
     OutlierConfigError, apply_long, apply_med_converted, apply_med_raw, apply_wide,
     fentanyl_sanity_ceiling, load_config, nee_sanity_ceiling,
 )
@@ -111,11 +113,34 @@ def test_angiotensin_is_bounded_here_since_clifpy_lacks_it():
 
 
 # ---------------------------------------------------------------- derived ceilings
-def test_fentanyl_sanity_ceiling_is_derived_not_written_down():
-    """Derived so it cannot drift when a bound changes."""
-    expected = (CFG["med_dose_raw"]["fentanyl"]["mcg/hr"][1]
-                / CFG["analysis_unit_bounds"]["vitals"]["weight_kg"][0])
-    assert fentanyl_sanity_ceiling(CFG) == expected == 25.0
+def test_fentanyl_sanity_ceiling_covers_every_charted_arm():
+    """Derived so it cannot drift when a bound changes, and taken over ALL arms.
+
+    The analysis unit became mcg/hr on 2026-09-07. Three charted units feed it,
+    and a bound only constrains the arm it is written in -- so the ceiling is the
+    largest value any arm can still produce after conversion. Taking the mcg/hr
+    bound alone (500) understated it and the assertion fired on one window the
+    bounds had legitimately accepted: a mcg/kg/hr rate under its own bound of 10,
+    multiplied by a large weight.
+    """
+    raw = CFG["med_dose_raw"]["fentanyl"]
+    w_max = CFG["analysis_unit_bounds"]["vitals"]["weight_kg"][1]
+    assert fentanyl_sanity_ceiling(CFG) == raw["mcg/kg/hr"][1] * w_max == 11000.0
+    # every arm must sit at or below it, or the assertion can fire on clean data
+    for arm, factor in (("mcg/hr", 1.0), ("mg/hr", 1000.0),
+                        ("mcg/kg/hr", w_max)):
+        if arm in raw:
+            assert raw[arm][1] * factor <= fentanyl_sanity_ceiling(CFG), (
+                f"the {arm} arm can exceed the derived ceiling"
+            )
+
+
+def test_the_charted_mcg_hr_bound_is_below_the_derived_ceiling():
+    """The two serve different purposes and must not be confused: 500 is the
+    charted bound, above which a rate is extreme but bound-consistent; 11,000 is
+    proof the bounds did not run at all."""
+    assert fentanyl_charted_max_mcg_hr(CFG) == 500.0
+    assert fentanyl_charted_max_mcg_hr(CFG) < fentanyl_sanity_ceiling(CFG)
 
 
 def test_nee_sanity_ceiling_matches_the_reference_implementation():
