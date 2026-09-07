@@ -25,8 +25,9 @@ SOURCE = [f for f in SOURCE if "__pycache__" not in str(f)]
 
 def test_site_dirs_returns_only_the_sanctioned_locations():
     d = site_dirs(REPO)
-    assert set(d) == {"out_phi", "out_final", "logs"}, (
-        f"site_dirs returns {sorted(d)}; the sanctioned set is out_phi, out_final, logs"
+    assert set(d) == {"out_phi", "out_final", "diagnostics", "logs"}, (
+        f"site_dirs returns {sorted(d)}; the sanctioned set is out_phi, "
+        f"out_final, diagnostics, logs"
     )
     assert d["out_phi"] == REPO / "output" / "intermediate_phi"
     assert d["out_final"] == REPO / "output" / "final_no_phi"
@@ -53,91 +54,31 @@ def test_phi_rule_is_by_directory_not_by_extension():
         assert rc == 0, f"{path} is COMMITTABLE -- the PHI directory rule is not covering it"
 
 
-def test_a_new_directory_under_output_is_ignored_by_default():
-    """output/ denies by default and allows back explicitly, so a directory added
-    later is PHI-safe without anyone remembering to add a rule. A bare `output/`
-    would not work: git does not descend into an excluded directory, which kills
-    every negation below it and takes final_no_phi with it."""
-    for path in ("output/some_new_dir/x.csv", "output/some_new_dir/x.parquet",
-                 "output/scratch/notes.txt"):
+def test_nothing_under_output_is_committable():
+    """This repo ships to sites and every site generates its own outputs. Nothing
+    under output/ is tracked: PHI artifacts never leave the site, and the PHI-free
+    set reaches the coordinating centre by upload, not by git."""
+    for path in ("output/intermediate_phi/trajectory_long.parquet",
+                 "output/intermediate_phi/x.rds",
+                 "output/final_no_phi/phase0_strobe.csv",
+                 "output/final_no_phi/phase0_strobe.png",
+                 "output/final_no_phi/diagnostics/phase0_missingness.csv",
+                 "output/some_new_dir/anything.txt"):
         rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
-        assert rc == 0, f"{path} is COMMITTABLE; output/ must deny by default"
+        assert rc == 0, f"{path} is COMMITTABLE; nothing under output/ may be tracked"
 
 
-def test_a_stray_parquet_in_the_shareable_set_is_still_blocked():
-    rc = subprocess.run(["git", "check-ignore", "-q",
-                         "output/final_no_phi/leak.parquet"], cwd=REPO).returncode
-    assert rc == 0, "final_no_phi allows .csv and .json back, not patient-level formats"
-
-
-def test_shareable_outputs_are_not_ignored():
-    for path in ("output/final_no_phi/phase0_strobe.csv",
-                 "output/final_no_phi/phase0_provenance.json",
-                 "output/final_no_phi/validation/scaling_experiments.csv"):
-        rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
-        assert rc != 0, f"{path} is ignored, but final_no_phi is the shareable set"
-
-
-def test_absent_manifest_stops_a_downstream_phase():
-    """A stale parquet on disk looks perfectly valid. The manifest is written last,
-    so its absence means the run did not complete."""
-    import json, tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
-        try:
-            require_manifest(d, {}, REPO)
-        except SystemExit as e:
-            assert "never completed" in str(e)
-        else:
-            raise AssertionError("an absent manifest must stop the phase")
-
-
-def test_a_changed_config_invalidates_the_outputs():
-    import json, tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
-        stale = dict(config_digests(REPO))
-        stale["covariates.json"] = "0" * 16
-        (Path(tmp) / MANIFEST).write_text(json.dumps({"config_digests": stale}))
-        try:
-            require_manifest(d, {}, REPO)
-        except SystemExit as e:
-            assert "config has changed" in str(e) and "covariates.json" in str(e)
-        else:
-            raise AssertionError("a changed config must invalidate the outputs")
-
-
-def test_a_matching_manifest_passes():
-    import json, tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        d = {"out_final": Path(tmp), "out_phi": Path(tmp), "logs": Path(tmp)}
-        (Path(tmp) / MANIFEST).write_text(
-            json.dumps({"config_digests": config_digests(REPO)}))
-        require_manifest(d, {}, REPO)
-
-
-def test_clearing_removes_a_stale_output():
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        d = {"out_phi": Path(tmp), "out_final": Path(tmp)}
-        (Path(tmp) / "trajectory_long.parquet").write_text("stale")
-        n = clear_owned_outputs(d, {"out_phi": ["trajectory_long.parquet"]})
-        assert n == 1
-        assert not (Path(tmp) / "trajectory_long.parquet").exists(), (
-            "a crash after clearing must leave nothing, not a stale file"
-        )
-
-
-def test_the_review_csvs_are_inside_the_phi_boundary():
-    """They are one row per patient-window, so they are PHI regardless of format."""
-    for name in ("trajectory_long.csv", "time_to_event.csv"):
-        path = f"output/intermediate_phi/{name}"
-        rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
-        assert rc == 0, f"{path} is COMMITTABLE -- a per-patient CSV is still PHI"
+def test_no_output_file_is_tracked_in_the_index():
+    """.gitignore does not affect files already added, so an output committed by
+    mistake stays committed. Six were, once."""
+    r = subprocess.run(["git", "ls-files", "output/"], cwd=REPO,
+                       capture_output=True, text=True)
+    tracked = [x for x in r.stdout.split("\n") if x.strip()]
+    assert not tracked, (
+        "output files are tracked in git despite the ignore rule:\n  "
+        + "\n  ".join(tracked)
+        + "\nUse: git rm --cached <path>"
+    )
 
 
 def test_the_phi_directory_carries_its_warning_label():

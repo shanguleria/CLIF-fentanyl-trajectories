@@ -24,10 +24,11 @@ transcript. Only `output/final_no_phi/` is shareable.
 
 
 def site_dirs(repo: Path) -> dict[str, Path]:
-    """Create and return the three directories this pipeline may write to."""
+    """Create and return the directories this pipeline may write to."""
     d = {
         "out_phi": repo / "output" / "intermediate_phi",
         "out_final": repo / "output" / "final_no_phi",
+        "diagnostics": repo / "output" / "final_no_phi" / "diagnostics",
         "logs": repo / "logs",
     }
     for p in d.values():

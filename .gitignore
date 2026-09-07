@@ -1,16 +1,10 @@
-# ---- PHI and patient-level artifacts: NEVER commit ----
-# Everything under output/ is treated as PHI unless explicitly allowed back.
-# NOTE the trailing /* rather than a bare `output/`: git does not descend into an
-# excluded DIRECTORY, so a bare `output/` makes every negation below dead and
-# takes final_no_phi with it.
-output/*
-!output/final_no_phi/
-output/final_no_phi/*
-!output/final_no_phi/**/
-!output/final_no_phi/**/*.csv
-!output/final_no_phi/**/*.json
-!output/final_no_phi/*.csv
-!output/final_no_phi/*.json
+# ---- Outputs: NEVER commit ----
+# This repo ships to sites, and every site generates its own outputs. Nothing
+# under output/ is tracked: PHI artifacts never leave the site, and the PHI-free
+# set reaches the coordinating centre by upload, not by git. A bare `output/` is
+# deliberate -- git does not descend into an excluded directory, which is exactly
+# what we want here.
+output/
 logs/
 *.parquet
 !config/*.csv

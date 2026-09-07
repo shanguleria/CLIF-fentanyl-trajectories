@@ -1,9 +1,0 @@
-step,n_before,n_excluded,reason,n_after
-Hospitalizations in the CLIF extract,,,,166814
-Encounter blocks after stitching,166814.0,137.0,merged into an existing block within 6h,166677
-Blocks with any IMV record,166677.0,148174.0,no invasive ventilation recorded,18503
-Ventilated at least 4h (one analysis window),18503.0,3579.0,first continuous IMV episode shorter than 4h,14924
-Adult blocks (age >= 18),14924.0,0.0,age < 18 or age missing,14924
-Blocks with follow-up after the anchor,14924.0,3.0,discharged or died at or before the anchor,14921
-ANALYTIC COHORT -- trajectory_long,14921.0,24.0,no weight charted anywhere in the block,14897
-LANDMARK COHORT -- time_to_event (ventilated at T=72h),14897.0,8166.0,"extubated, died or discharged before T=72h",6731

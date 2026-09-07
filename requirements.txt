@@ -5,3 +5,4 @@ numpy==2.4.2
 pyarrow==23.0.0
 duckdb==1.4.4
 PyYAML==6.0.3
+matplotlib==3.11.1   # STROBE diagram only; pinned like the rest

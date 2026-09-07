@@ -35,6 +35,7 @@ from utils.waterfall_cache import (  # noqa: E402
     cache_key, describe as describe_cache, load as cache_load,
     store as cache_store,
 )
+from utils.strobe import render_png, render_text  # noqa: E402
 from utils.paths import (  # noqa: E402
     clear_owned_outputs, provenance, site_dirs, write_manifest,
 )
@@ -81,9 +82,10 @@ OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
                 "hospital_intervals.parquet"],
-    "out_final": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
-                  "phase0_strobe.csv", "phase0_strobe.txt", "phase0_diagnostics.csv",
+    "out_final": ["phase0_strobe.csv", "phase0_strobe.txt", "phase0_strobe.png",
                   "phase0_provenance.json", "phase0_manifest.json"],
+    "diagnostics": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
+                    "phase0_diagnostics.csv"],
 }
 
 STROBE: list[tuple[str, int]] = []
@@ -106,28 +108,6 @@ def flow(label: str, n_after: int, reason: str = "") -> None:
         print(f"  {label:.<52} {n_after:>9,}   (-{n_excl:,}: {reason})")
     else:
         print(f"  {label:.<52} {n_after:>9,}")
-
-
-def render_flow() -> str:
-    """The exclusion diagram, as text, so a cohort change is visible at a glance."""
-    w = max(len(r["step"]) for r in FLOW) + 2
-    lines = ["CONSORT / STROBE cohort flow", "=" * (w + 26), ""]
-    for i, r in enumerate(FLOW):
-        lines.append(f"{r['step']:<{w}} {r['n_after']:>10,}")
-        if i + 1 < len(FLOW):
-            nxt = FLOW[i + 1]
-            if nxt["n_excluded"]:
-                lines.append(f"{'':<{w}}     |")
-                lines.append(f"{'':<{w}}     |-- excluded {nxt['n_excluded']:>8,}"
-                             f"  {nxt['reason']}")
-                lines.append(f"{'':<{w}}     v")
-    return "\n".join(lines)
-
-
-# --------------------------------------------------------------------- loading
-LAB_NEEDED = sorted(set(LAB_VARS.values()) | {"po2_arterial", "creatinine", "platelet_count"})
-VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
-ASSESS_NEEDED = ["gcs_total"]
 
 
 def _kw(**extra) -> dict:
@@ -1448,16 +1428,19 @@ def main() -> None:
     tte.to_parquet(out / "time_to_event.parquet", index=False)
     tte.to_csv(out / "time_to_event.csv", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
-    per_variable.to_csv(dirs["out_final"] / "phase0_missingness.csv", index=False)
+    diag = dirs["diagnostics"]
+    per_variable.to_csv(diag / "phase0_missingness.csv", index=False)
     if len(per_pattern):
-        per_pattern.to_csv(dirs["out_final"] / "phase0_missingness_patterns.csv",
-                           index=False)
+        per_pattern.to_csv(diag / "phase0_missingness_patterns.csv", index=False)
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
-        dirs["out_final"] / "phase0_diagnostics.csv", index=False)
+        diag / "phase0_diagnostics.csv", index=False)
+
     pd.DataFrame(FLOW).to_csv(dirs["out_final"] / "phase0_strobe.csv", index=False)
-    (dirs["out_final"] / "phase0_strobe.txt").write_text(render_flow() + "\n")
+    (dirs["out_final"] / "phase0_strobe.txt").write_text(render_text(FLOW) + "\n")
+    render_png(FLOW, dirs["out_final"] / "phase0_strobe.png",
+               title=f"Phase 0 cohort flow -- {CONFIG['site_name']}")
     print()
-    print(render_flow())
+    print(render_text(FLOW))
     (dirs["out_final"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
 
     # Written last: its presence is what marks these outputs complete and current.

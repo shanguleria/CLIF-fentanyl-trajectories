@@ -262,10 +262,13 @@ CLIF-fentanyl-trajectories/
 ├── docs/
 │   └── design_notes.md           # protocol, decisions, evidence
 ├── output/
-│   ├── intermediate_phi/         # gitignored -- ALL patient-level artifacts
+│   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
-│   └── final_no_phi/             # the shareable set (incl. validation/)
+│   └── final_no_phi/             # PHI-free: STROBE flow (.csv/.txt/.png), provenance
+│       └── diagnostics/          #   missingness, patterns, counts
 └── logs/                         # gitignored
+                                  # NOTE: nothing under output/ is tracked;
+                                  # every site generates its own
 ```
 
 ## Definitions and provenance
