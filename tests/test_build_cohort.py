@@ -33,6 +33,54 @@ def _long(n_blocks=2, n_win=None):
     return pd.DataFrame(rows)
 
 
+# ----------------------------------------------------- module-level contract
+def test_every_module_constant_the_loaders_need_exists():
+    """A NameError inside a loader only fires at call time, so importing the
+    module is not enough to catch a deleted constant -- this has bitten three
+    times during editing, each costing a full run to discover."""
+    required = {
+        "WINDOW_H": int, "N_WINDOWS": int, "EXTENT_H": int, "STITCH_H": int,
+        "EPISODE_GAP_H": (int, float), "MIN_IMV_H": (int, float),
+        "INF_HOLD_H": (int, float), "NEE_HOLD_H": (int, float),
+        "FIO2_LOOKBACK_H": (int, float), "SPO2_CEILING": (int, float),
+        "RA_FIO2": float,
+    }
+    for name, kind in required.items():
+        assert hasattr(B, name), f"module constant {name} is missing"
+        assert isinstance(getattr(B, name), kind), f"{name} has the wrong type"
+
+    for name in ("LAB_NEEDED", "VITAL_NEEDED", "ASSESS_NEEDED", "LAB_VARS",
+                 "ZERO_VARS", "NOT_VENT_VARS", "SOFA_PRESSORS", "SOFA_INPUT_CAPS",
+                 "NEE_COEF", "NEE_PREFERRED", "OWNED", "EXPOSURE"):
+        assert hasattr(B, name), f"module constant {name} is missing"
+        assert len(getattr(B, name)), f"{name} is empty"
+
+
+def test_the_loaders_reference_only_names_that_exist():
+    """Compile-time check on every global a loader touches."""
+    import inspect
+
+    for fn_name in ("load_core", "load_cohort_tables", "_mac_categories",
+                    "assert_categories_present"):
+        fn = getattr(B, fn_name)
+        for name in fn.__code__.co_names:
+            if name.isupper() and "_" in name or name.isupper():
+                assert hasattr(B, name) or name in dir(__builtins__), (
+                    f"{fn_name} references {name}, which does not exist"
+                )
+
+
+def test_every_lab_the_analysis_needs_is_in_the_read_filter():
+    """The category filter is pushed down to the parquet read, so a lab absent
+    from it is absent from the data, silently."""
+    needed = set(B.LAB_VARS.values()) | {"po2_arterial", "creatinine",
+                                         "platelet_count"}
+    assert needed <= set(B.LAB_NEEDED), (
+        f"not read from disk: {sorted(needed - set(B.LAB_NEEDED))}"
+    )
+
+
+
 # --------------------------------------------------------------- LOCF caps
 def test_locf_respects_the_declared_cap_in_windows_not_rows():
     """A 24h cap on a 4h grid is 6 windows, not 24."""

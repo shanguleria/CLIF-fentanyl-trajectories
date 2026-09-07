@@ -110,6 +110,15 @@ def flow(label: str, n_after: int, reason: str = "") -> None:
         print(f"  {label:.<52} {n_after:>9,}")
 
 
+# --------------------------------------------------------------------- loading
+# Only the categories the analysis actually uses are read. Pushed down to the
+# parquet read, this is the difference between 9 lab categories and ~50.
+LAB_NEEDED = sorted(set(LAB_VARS.values()) | {"po2_arterial", "creatinine",
+                                              "platelet_count"})
+VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
+ASSESS_NEEDED = ["gcs_total"]
+
+
 def _kw(**extra) -> dict:
     return dict(
         data_directory=CONFIG["data_directory"],
