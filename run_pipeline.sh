@@ -31,6 +31,10 @@ if ! "$PY" tests/test_outliers.py; then
   echo "ERROR: outlier bounds failed their tests. Nothing was run." >&2
   exit 1
 fi
+if ! "$PY" tests/test_waterfall_cache.py; then
+  echo "ERROR: the waterfall cache failed its tests. Nothing was run." >&2
+  exit 1
+fi
 if ! "$PY" tests/test_doses.py; then
   echo "ERROR: dose unit conversion failed its tests. Nothing was run." >&2
   exit 1

@@ -56,21 +56,40 @@ def _path(key: str) -> Path:
     return CACHE_DIR / f"waterfall_{key}.parquet"
 
 
+def _covered_path(key: str) -> Path:
+    return CACHE_DIR / f"waterfall_{key}_covered.json"
+
+
+def _covered(key: str) -> set[str]:
+    """Hospitalizations already ATTEMPTED, which is not the same as those with rows.
+
+    A hospitalization can sit in an IMV block because a sibling hospitalization was
+    ventilated, yet have no respiratory_support rows of its own. It contributes
+    nothing to the cache, so keying on rows alone would mark it missing forever and
+    re-attempt it on every run.
+    """
+    f = _covered_path(key)
+    return set(json.loads(f.read_text())) if f.exists() else set()
+
+
 def load(key: str, hosp_ids: list[str]) -> tuple[pd.DataFrame | None, list[str]]:
     """Return (cached rows for the requested ids, ids still to compute)."""
     f = _path(key)
     if not f.exists():
         return None, list(hosp_ids)
     df = pd.read_parquet(f)
-    have = set(df["hospitalization_id"].astype(str))
     want = set(map(str, hosp_ids))
-    missing = sorted(want - have)
+    missing = sorted(want - _covered(key))
     hit = df[df["hospitalization_id"].astype(str).isin(want)]
     return hit, missing
 
 
-def store(key: str, new_rows: pd.DataFrame) -> int:
-    """Append newly computed hospitalizations. Returns the cache's total row count."""
+def store(key: str, new_rows: pd.DataFrame, attempted: list[str]) -> int:
+    """Append newly computed hospitalizations.
+
+    `attempted` is every id we tried, including those that yielded no rows, so a
+    row-less hospitalization is not retried on every subsequent run.
+    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     f = _path(key)
     if f.exists():
@@ -81,6 +100,8 @@ def store(key: str, new_rows: pd.DataFrame) -> int:
     else:
         out = new_rows
     out.to_parquet(f, index=False)
+    _covered_path(key).write_text(
+        json.dumps(sorted(_covered(key) | set(map(str, attempted)))))
     (CACHE_DIR / f"waterfall_{key}.json").write_text(json.dumps({
         "key": key, "rows": len(out),
         "hospitalizations": int(out["hospitalization_id"].nunique()),

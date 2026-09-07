@@ -19,6 +19,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "config/covariates.json failed its integr
 if ($LASTEXITCODE -ne 0) { Write-Error "fio2 unit handling failed its tests. Nothing was run." }
 & $py tests/test_outliers.py
 if ($LASTEXITCODE -ne 0) { Write-Error "outlier bounds failed their tests. Nothing was run." }
+& $py tests/test_waterfall_cache.py
+if ($LASTEXITCODE -ne 0) { Write-Error "the waterfall cache failed its tests. Nothing was run." }
 & $py tests/test_doses.py
 if ($LASTEXITCODE -ne 0) { Write-Error "dose unit conversion failed its tests. Nothing was run." }
 & $py tests/test_paths.py

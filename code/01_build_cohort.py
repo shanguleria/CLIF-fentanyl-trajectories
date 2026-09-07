@@ -189,11 +189,18 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
         rs = RespiratorySupport.from_file(
             **_kw(filters={"hospitalization_id": missing}))
         print(f"  {'respiratory_support to waterfall':.<52} {len(rs.df):,} rows")
-        fresh = _canonicalise_devices(
-            rs.waterfall(verbose=False, return_dataframe=True))
-        total = cache_store(key, fresh)
+        if len(rs.df):
+            fresh = _canonicalise_devices(
+                rs.waterfall(verbose=False, return_dataframe=True))
+            frames.append(fresh)
+        else:
+            # These hospitalizations sit in an IMV block because a sibling was
+            # ventilated; they have no respiratory_support rows of their own.
+            fresh = pd.DataFrame(columns=["hospitalization_id"])
+            print(f"  {len(missing):,} hospitalization(s) have no "
+                  f"respiratory_support rows; recorded as covered")
+        total = cache_store(key, fresh, attempted=missing)
         print(f"  waterfall cached: {total:,} rows total")
-        frames.append(fresh)
     t["resp"] = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
 
     for name, df in t.items():
