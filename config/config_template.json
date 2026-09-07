@@ -29,7 +29,7 @@
     "medications": {
         "opioid_infusion_categories": ["fentanyl"],
         "opioid_bolus_categories": ["fentanyl"],
-        "other_sedative_categories": ["propofol", "midazolam"]
+        "other_sedative_categories": ["propofol", "midazolam", "dexmedetomidine"]
     },
 
     "_comment_covariates": "Covariate aggregation and missingness rules are PROTOCOL and live in config/covariates.json, which IS tracked in git. This file is not tracked (it carries local paths), so nothing estimand-defining may live here alone.",

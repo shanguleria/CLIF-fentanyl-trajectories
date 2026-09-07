@@ -172,7 +172,7 @@ indicator that defines the groups, or it is not in the model.
 
 | Role | Variables | Where |
 |---|---|---|
-| Trajectory indicator | fentanyl dose (± propofol, midazolam — see §9) | `x.names` |
+| Trajectory indicator | fentanyl dose (± the companion sedatives — see §9) | `x.names` |
 | Normaliser | none for fentanyl as of 2026-09-07; weight still normalises `nee` | data prep — mcg/hr (§11) |
 | Membership predictor | age, sex, CCI, BMI at admission; plus **window-0** SOFA, NEE, oxygenation | stage 2: `multinom(group ~ ...)` |
 | Distal outcome | successful extubation, 30-day mortality, VFD-28 | stage 2 — competing risks, see Phase 6 |
@@ -185,7 +185,7 @@ and §11; this table only says what each is *for*. Two notes on what changed:
 - **RASS is not collected.** It appeared here as a candidate indicator, but it is
   in no other section, in no phase, and in the config. Adding an ordinal
   assessment as a second indicator runs into the same mixed-units problem as
-  propofol/midazolam (§3, §9) — if it is wanted, it goes through that decision,
+  the companion sedatives (§3, §9) — if it is wanted, it goes through that decision,
   not in by default.
 - **Severity enters as a membership predictor at window 0, not as "admission
   SOFA".** SOFA, NEE and oxygenation are time-varying here (§11), so the baseline
@@ -371,7 +371,7 @@ assumption, or as a separate paper.
 - [ ] Check the zero fraction of the Model A combined indicator once built. Heavy
       zero-inflation may argue for `crimCV`'s zero-inflated Poisson instead.
 - [ ] Script the `scaling` × BIC comparison so §7's numbers are reproducible.
-- [ ] Decide whether propofol / midazolam join as additional indicators — note
+- [ ] Decide whether the companion sedatives join as additional indicators — note
       that mixing units would force `scaling >= 2`, which §3 says destroys the
       level information we care about. Fentanyl-equivalents may be the escape.
 - [ ] Fix the **landmark time** for outcome ascertainment (§10 Phase 4). Measuring
@@ -406,7 +406,7 @@ assumption, or as a separate paper.
       not a running sum since intubation.
 - [ ] Measure the zero fraction of `total_dose` per window before Phase 2. If
       high, `crimCV`'s zero-inflated Poisson may fit better than `gbmt`.
-- [ ] Decide whether propofol / midazolam get their own dose columns in Table 1
+- [ ] Decide whether the companion sedatives get their own dose columns in Table 1
       now (cheap to add, expensive to backfill), even if unused until later.
 
 ---
@@ -428,7 +428,7 @@ table is the block-level shape only.
 |---|---|
 | Keys | `patient_id` (chr), `encounter_block`, `id_num` (int), `window_idx`, `window_start_hr` |
 | Fentanyl dose — **three columns, kept separate** | `inf_dose`, `bolus_dose`, `total_dose` (within-window, mcg/hr; rules in §5) |
-| Other sedatives | `propofol_dose`, `midazolam_dose` — added now; cheap here, expensive to backfill |
+| Other sedatives | `propofol_dose`, `midazolam_dose`, `dexmedetomidine_dose` — infusions only, each in its own clinical unit (§11) |
 | Normaliser | `weight_kg` (fixed at the anchor), `weight_lag_hours` |
 | Time-invariant | `age`, `sex`, `race`, `cci`, `bmi_admission`, `bmi_lag_hours` |
 | Site / hospital | `hospital_id_admission`, `hospital_id_discharge` (§11) |
@@ -567,20 +567,42 @@ grid was audited against the raw records rather than assumed correct:
   Where an infusion was running, the grid shows it.
 - **13.9% of the ≥72h panel never receive fentanyl at all** across the whole 72h,
   and at hour 24 about half of the panel is genuinely off it.
-- **The likely reason is that this cohort is not fentanyl-only.** UCMC charts
-  **dexmedetomidine at nearly the volume of fentanyl** (469,385 continuous rows
-  against 659,338), plus hydromorphone, ketamine, remifentanil and morphine
-  infusions. "Zero fentanyl" frequently means "on another agent", not "no
-  analgesia or sedation". **None of those agents is currently collected**, and
-  that is a limitation to state explicitly — the study describes *fentanyl*
-  trajectories, not analgosedation intensity.
+- **It is mostly NOT substitution onto another drip.** Dexmedetomidine was added
+  as a collected sedative on 2026-09-07 partly to test this, and the measurement
+  contradicts the obvious guess. Of the 93,929 ventilated windows with zero
+  fentanyl, only **36.1%** carry propofol, midazolam or dexmedetomidine, and that
+  share *falls* with time: 65.5% at hour 0, 32.0% at 24h, 25.9% at 48h, **23.3%
+  at 68h**. By the end of the window three-quarters of zero-fentanyl episodes are
+  on none of the four collected drugs. Propofol accounts for 26.0% of
+  zero-fentanyl windows and dexmedetomidine for 13.2%.
+- **The pattern is de-escalation, not swapping.** Between hour 0 and hour 68 the
+  share receiving fentanyl falls 63.5% → 35.8% and propofol 73.8% → 29.1%, while
+  dexmedetomidine rises only 13.0% → 16.5% and midazolam 1.5% → 2.8%. The rise in
+  dexmedetomidine (+3.5pp) comes nowhere near offsetting the fall in the other two
+  (−72pp combined). Continuous sedation is being withdrawn, with a modest shift
+  toward dexmedetomidine among those who stay on something.
+- **Residual uncollected agents are small but real.** UCMC also charts
+  hydromorphone (27,218 rows), ketamine (23,835), remifentanil (10,050) and
+  morphine (8,677) infusions, none collected — together under 11% of fentanyl's
+  659,338 rows, so they cannot account for the bulk of the zero-fentanyl windows.
+  State as a limitation nonetheless: the study describes *fentanyl* trajectories,
+  not total analgosedation intensity.
 
-**Companion sedatives.** Propofol is used at a similar rate to fentanyl (73.8%
-of ventilated episodes at hour 0, falling to 29.1% at 72h) and midazolam
-infusions are rare at UCMC — **98.1%** of ventilated windows are zero (source:
-`phase1_dose_summary.csv`, `phase1_zero_fraction.csv`). Midazolam is therefore
-not a candidate second indicator here on prevalence grounds alone, independently
-of the units problem.
+**Companion sedatives.** Three are collected, infusions only, each in the unit it
+is ordered in. Share of ventilated windows carrying any, hour 0 → 68h (source:
+`phase1_dose_summary.csv`, `phase1_zero_fraction.csv`):
+
+| Drug | Unit | h0 | h68 | Windows with any |
+|---|---|---:|---:|---:|
+| propofol | mcg/kg/min | 73.8% | 29.1% | 47.2% |
+| dexmedetomidine | mcg/kg/hr | 13.0% | 16.5% | 16.9% |
+| midazolam | mg/hr | 1.5% | 2.8% | 1.9% |
+
+Median dose among receivers is flat-to-rising for all three: propofol 27.5 → 30.0
+mcg/kg/min, dexmedetomidine 0.50 → 0.80 mcg/kg/hr, midazolam 1.5 → 3.75 mg/hr —
+the same narrowing-not-lowering shape as fentanyl. **Midazolam is not a candidate
+second indicator here** on prevalence grounds alone (98.1% of windows zero),
+independently of the units problem.
 
 **Ventilation episodes and the repeat-patient dependence.** 14,897 episodes from
 13,627 patients; **932 patients (6.8%) contribute more than one**, max 16 blocks
@@ -783,7 +805,7 @@ removes the patient from observation. Name it accordingly in the manuscript.
 - ~~7-day grid as exposure~~ — descriptive only.
 - ~~"Cumulative dose" ambiguity~~ — **within-window total**, expressed mcg/hr.
 - ~~Window width~~ — **4h**.
-- ~~Other sedatives~~ — propofol and midazolam columns added to Table 1 now.
+- ~~Other sedatives~~ — propofol, midazolam and dexmedetomidine columns in Table 1.
 
 ---
 
@@ -1544,7 +1566,7 @@ Two mechanisms:
   bound changes: fentanyl **11,000 mcg/hr** and NEE **17.45 mcg/kg/min-equiv** —
   the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
   independent check that both ported tables match theirs.
-- **`tests/test_covariates.py`** — 17 static checks, all verified to fire by
+- **`tests/test_covariates.py`** — 19 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the
   per-variable declarations; LOCF-eligible variables have caps and ineligible ones

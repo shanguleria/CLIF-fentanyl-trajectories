@@ -307,6 +307,61 @@ def test_window_width_agrees_with_the_site_config_template():
         )
 
 
+def test_every_declared_sedative_is_wired_end_to_end():
+    """A sedative is declared in four places and must be live in all four.
+
+    When a config governs N items, check all N. Adding dexmedetomidine touched
+    config.json (the category to load), covariates.json exposure.sedatives
+    (column and unit), covariates.json dose_units (how to convert it) and
+    outlier_config.json (its bounds). Any one of those missing is a silent
+    partial application: the run still exits 0 and the column is empty, wrong,
+    or unbounded.
+    """
+    cfg = json.loads((REPO / "config" / "config.json").read_text()) \
+        if (REPO / "config" / "config.json").exists() else TEMPLATE
+    cats = cfg["medications"]["other_sedative_categories"]
+    spec = COV["exposure"]["sedatives"]
+    bounds = json.loads((REPO / "config" / "outlier_config.json").read_text())
+    targets = {d for t, v in COV["dose_units"].items() if not t.startswith("_")
+               for d in v.get("_target_for", [])}
+
+    assert cats, "no sedative categories configured"
+    for cat in cats:
+        col = f"{cat}_dose"
+        assert col in spec["columns"], (
+            f"{cat} is loaded but {col} is not in exposure.sedatives.columns, so "
+            f"Phase 0 raises rather than building it"
+        )
+        assert spec["units"].get(col), f"{col} has no declared unit"
+        assert cat in targets, (
+            f"{cat} has no dose_units target, so convert() raises on its first row"
+        )
+        assert cat in bounds["med_dose_raw"], (
+            f"{cat} has no raw outlier bound; its rows would pass unbounded and "
+            f"only appear as a NO BOUND line in the log"
+        )
+    # and nothing declared that is not loaded
+    for col in spec["columns"]:
+        assert col.removesuffix("_dose") in cats, (
+            f"{col} is declared but its category is not in "
+            f"config.json medications.other_sedative_categories"
+        )
+
+
+def test_the_sedative_target_unit_matches_its_declared_unit():
+    """dose_units decides what the converter produces; exposure.sedatives.units
+    is what the protocol, the figures and the docs promise."""
+    spec = COV["exposure"]["sedatives"]
+    target_of = {d: t for t, v in COV["dose_units"].items() if not t.startswith("_")
+                 for d in v.get("_target_for", [])}
+    for col, unit in spec["units"].items():
+        drug = col.removesuffix("_dose")
+        assert target_of.get(drug) == unit, (
+            f"{drug}: dose_units target is {target_of.get(drug)!r} but "
+            f"exposure.sedatives.units says {unit!r}"
+        )
+
+
 def test_the_extended_grid_is_labelled_while_nothing_consumes_it():
     """The declared-but-never-consumed failure mode, caught by construction.
 

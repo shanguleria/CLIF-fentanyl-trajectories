@@ -338,8 +338,8 @@
 
     "sedatives": {
       "_role": "DESCRIPTIVE COMPANIONS to the fentanyl exposure, not indicators. Added SG 2026-09-07 after the Phase 1 planning pass found that design_notes.md section 10 promised propofol_dose and midazolam_dose in Table 1 while Phase 0 only loaded the categories and checked they were present -- no column was ever computed. Declared, checked, never consumed.",
-      "columns": ["propofol_dose", "midazolam_dose"],
-      "units": {"propofol_dose": "mcg/kg/min", "midazolam_dose": "mg/hr"},
+      "columns": ["propofol_dose", "midazolam_dose", "dexmedetomidine_dose"],
+      "units": {"propofol_dose": "mcg/kg/min", "midazolam_dose": "mg/hr", "dexmedetomidine_dose": "mcg/kg/hr"},
       "_units_why": "SG 2026-09-07: each drug in the unit it is ordered in, not forced onto fentanyl's mcg/kg/hr. The three columns are never compared numerically to one another, and a unit no clinician orders in makes every reported number need a mental conversion. Recorded in dose_units, which is what the converter reads.",
       "source": {
         "table": "medication_admin_continuous",
@@ -347,6 +347,7 @@
       },
       "_category_CONFIRMED": "SG 2026-09-07: both propofol and midazolam ARE present in medication_admin_continuous at UCMC. Established by execution, not assumption -- assert_categories_present() prints a NOTE naming any other_sedative_categories absent from mac, and the 2026-09-06 run log carries no such line. This supersedes the 'NOT confirmed in the same breath and remain assumed' note on the bolus arm.",
       "infusion_only": true,
+      "_dexmedetomidine_ADDED": "SG 2026-09-07, after the Phase 1 run made the case: UCMC charts dexmedetomidine at NEARLY THE VOLUME OF FENTANYL (469,385 continuous rows against 659,338), so 'zero fentanyl' in a ventilated window frequently meant 'on dexmedetomidine' rather than 'no sedation'. Leaving it out made the fentanyl zeros uninterpretable. MEASURED before adding: 100% charted in mcg/kg/hr, ZERO rows in medication_admin_intermittent, median 1.0, p90 1.5, p99 1.5 -- tight to the labelled 0.2-1.5 range.",
       "_infusion_only_why": "SG 2026-09-07. Continuous infusion is how both drugs are given for sustained sedation, which is what a trajectory describes. Boluses are NOT collected for them: config.json medications carries no other_sedative_bolus_categories, and outlier_config.json med_bolus_mcg bounds fentanyl only. Adding them would mean setting two bolus ceilings with no measurement behind them. Midazolam pushes are common, so this UNDERSTATES benzodiazepine exposure -- state it as a limitation rather than treating the infusion column as total exposure.",
       "summary": "mean of the hourly grid cells in the window, identical machinery to the fentanyl infusion arm",
       "hold_hours": 4,
@@ -389,6 +390,16 @@
       "milli-units/kg/hr":    {"factor": 1.6666666666666667e-05, "weight": "multiply"},
       "units/kg/min":         {"factor": 1.0,                    "weight": "multiply"},
       "units/kg/hr":          {"factor": 0.016666666666666666,   "weight": "multiply"}
+    },
+
+    "mcg/kg/hr": {
+      "_target_for": ["dexmedetomidine"],
+      "_note": "Dexmedetomidine is ordered in mcg/kg/hr clinically (SG, 2026-09-07), and 100% of UCMC rows are already charted that way, so the target arm is an identity. The other entries exist so a site charting differently converts rather than raising.",
+      "mcg/kg/hr":   {"factor": 1.0,    "weight": "none"},
+      "mcg/kg/min":  {"factor": 60.0,   "weight": "none"},
+      "mcg/hr":      {"factor": 1.0,    "weight": "divide"},
+      "mcg/min":     {"factor": 60.0,   "weight": "divide"},
+      "mg/hr":       {"factor": 1000.0, "weight": "divide"}
     },
 
     "mg/hr": {

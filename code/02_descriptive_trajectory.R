@@ -41,6 +41,17 @@ LANDMARK  <- config$cohort$landmark_hours
 COV       <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 SED_UNITS <- COV$exposure$sedatives$units
 
+# Read the drug list FROM the config rather than restating it. A hardcoded list
+# here is how a declared sedative becomes a no-op: adding dexmedetomidine to
+# covariates.json would have changed nothing.
+SED_COLS <- unlist(COV$exposure$sedatives$columns)
+DRUGS <- c(fentanyl = "total_dose",
+           setNames(SED_COLS, sub("_dose$", "", SED_COLS)))
+UNITS <- c(fentanyl = COV$exposure$units,
+           setNames(vapply(SED_COLS, function(c) SED_UNITS[[c]], character(1)),
+                    sub("_dose$", "", SED_COLS)))
+SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
+
 
 # ---- 3. Paths and provenance -------------------------------------------------
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
@@ -84,6 +95,7 @@ long <- as.data.frame(read_parquet(
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
                  "total_dose", "propofol_dose", "midazolam_dose",
+                 "dexmedetomidine_dose",
                  "age", "sex", "race", "cci", "bmi_admission", "weight_kg",
                  "sofa_total", "nee", "oxygenation", "lactate",
                  "first_imv_episode_hours", "n_imv_episodes")))
@@ -107,6 +119,14 @@ stopifnot(
   "a window cannot be ventilated without being alive and admitted" =
     all(long$ventilated <= long$alive_admitted)
 )
+
+missing_cols <- setdiff(unname(DRUGS), names(long))
+if (length(missing_cols)) {
+  stop("covariates.json declares dose columns that trajectory_long does not carry: ",
+       paste(missing_cols, collapse = ", "),
+       ". Re-run code/01_build_cohort.py rather than dropping them silently.",
+       call. = FALSE)
+}
 
 anchor_n <- length(unique(long$encounter_block))
 elig     <- tte$encounter_block[tte$landmark_eligible]
@@ -150,12 +170,6 @@ print(choosing_T, row.names = FALSE)
 # Three curves, not one: weaning-to-zero among the still-ventilated and dropout
 # of low-dose patients move the overall median in opposite directions.
 
-DRUGS <- c(fentanyl = "total_dose",
-           propofol = "propofol_dose",
-           midazolam = "midazolam_dose")
-UNITS <- c(fentanyl = COV$exposure$units,
-           propofol = SED_UNITS$propofol_dose,
-           midazolam = SED_UNITS$midazolam_dose)
 
 summarise_dose <- function(v, drug, denom, w, hr) {
   v <- v[!is.na(v)]
@@ -371,10 +385,10 @@ baseline <- rbind(
   row_continuous("Lactate, mmol/L", base$lactate),
   row_continuous(sprintf("Fentanyl dose, first window (%s)", UNITS[["fentanyl"]]),
                  base$total_dose),
-  row_continuous(sprintf("Propofol dose, first window (%s)", UNITS[["propofol"]]),
-                 base$propofol_dose),
-  row_continuous(sprintf("Midazolam dose, first window (%s)", UNITS[["midazolam"]]),
-                 base$midazolam_dose),
+  do.call(rbind, lapply(SEDATIVES, function(d) row_continuous(
+    sprintf("%s dose, first window (%s)",
+            paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
+    base[[DRUGS[[d]]]]))),
   row_continuous("First IMV episode, hours", base$first_imv_episode_hours),
   row_continuous("IMV episodes per block", base$n_imv_episodes)
 )
@@ -531,8 +545,20 @@ ggsave(file.path(dirs$out_final, "phase1_fentanyl_distribution.png"), p_dist,
 
 # --- Secondary figure: the companion sedatives -------------------------------
 # Separate units per drug, so free_y and a label carrying the unit.
-sed <- curves[curves$drug != "fentanyl", ]
-sed$facet <- sprintf("%s (%s)", sed$drug, sed$unit)
+sed <- curves[curves$drug %in% SEDATIVES, ]
+# Facet order follows the config, not the alphabet, so the panels stay put when
+# a drug is added.
+sed$facet <- factor(sprintf("%s (%s)", sed$drug, sed$unit),
+                    levels = sprintf("%s (%s)", SEDATIVES, UNITS[SEDATIVES]))
+
+# Prevalence per drug, so the caption states which of these are actually used
+# here rather than naming one by hand.
+zf_w <- zero_fraction[zero_fraction$population == "whole_cohort", ]
+prev <- vapply(SEDATIVES, function(d)
+  100 - zf_w$pct_zero[zf_w$drug == d], numeric(1))
+prev_txt <- paste(sprintf("%s %.1f%%", SEDATIVES, prev), collapse = ", ")
+# Wrap by hand: ggplot does not wrap a subtitle, it clips it at the canvas edge.
+prev_txt <- paste(strwrap(prev_txt, width = 66), collapse = "\n")
 
 p_sed <- house(
   ggplot(sed, aes(window_start_hr, median, colour = series, fill = series)) +
@@ -545,14 +571,13 @@ p_sed <- house(
     guides(fill = "none", colour = guide_legend(override.aes = list(fill = NA))) +
     labs(title = "Companion sedatives",
          subtitle = sprintf(
-           "Secondary to the fentanyl exposure. Infusions only -- boluses are not collected for these two.\nMidazolam infusions are rare here: %.1f%% of ventilated windows are zero.",
-           zero_fraction$pct_zero[zero_fraction$drug == "midazolam" &
-                                    zero_fraction$population == "whole_cohort"]),
+           "Secondary to the fentanyl exposure. Infusions only.\nShare of ventilated windows with any drug:\n%s",
+           prev_txt),
          x = "Hours since first IMV episode", y = "Median dose (band = IQR)",
          colour = NULL))
 
 ggsave(file.path(dirs$out_final, "phase1_sedative_curves.png"), p_sed,
-       width = 7.5, height = 6.4, dpi = 200)
+       width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
 
 
 # ---- 14. Write ---------------------------------------------------------------

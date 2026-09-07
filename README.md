@@ -36,8 +36,14 @@ values below were verified against `clifpy`'s bundled schemas.
 | `medication_admin_intermittent` | `hospitalization_id`, `admin_dttm`, `med_category`, `med_dose`, `med_dose_unit`, `mar_action_category` | boluses; **summed within window, never carried forward** |
 | `vitals` | `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value` | weight, for `nee` and BMI normalization |
 
-Propofol and midazolam are extracted into their own columns from the same
-medication tables, for later use.
+Propofol, midazolam and dexmedetomidine are extracted into their own columns
+from `medication_admin_continuous` as **descriptive companions** to the fentanyl
+exposure — infusions only, each in the unit it is ordered in (mcg/kg/min, mg/hr
+and mcg/kg/hr respectively). They are not `gbmt` indicators: mixed units across
+drugs would force `scaling >= 2`, which erases the absolute dose level the design
+rests on. Add a drug by adding its category to
+`medications.other_sedative_categories` **and** its column, unit, conversion and
+outlier bound — a test fails if any of the four is missing.
 
 ### Ventilation status and outcomes
 
