@@ -505,6 +505,14 @@ full-cohort-with-zeros denominator answer different questions, and the latter
 mostly measures extubation rate rather than dosing. Use the still-ventilated
 denominator, and say so.
 
+**The age filter, resolved.** `min_age = 18` excluded exactly zero blocks on
+every cohort derivation, which looked like a bug. It is not: `age_at_admission`
+is populated for **all 166,814** hospitalizations at UCMC (zero nulls), the
+minimum is exactly 18 and 1,143 patients are aged 18. **The extract is adult-only
+by construction.** The filter is correct and inert here and will bind at a site
+whose extract includes children — keep it, and do not read a zero exclusion as
+evidence the field is unpopulated.
+
 #### Federated pooling exports
 
 *(SG, 2026-09-07.)* Phase 1 emits two files whose only purpose is to be pooled
