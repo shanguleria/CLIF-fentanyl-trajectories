@@ -66,8 +66,11 @@
     "model": {
         "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level. See docs/design_notes.md section 3.",
         "scaling": 0,
-        "ng_range": [1, 6],
+        "_comment_ng_range": "Inclusive [min, max] number of trajectory groups the Phase 3 sweep fits. Lower bound is 2, not 1: a one-group model has no classes to compare and no APPA, OCC or entropy to evaluate. Upper bound 5 (SG, 2026-09-08) -- dBIC was already flattening 43k -> 16k -> 7.7k by ng=5, which is enough to read an elbow; section 7 selects on the elbow, not the global minimum.",
+        "ng_range": [2, 5],
         "polynomial_degree": 2,
+        "_comment_min_exposed_windows": "Phase 3 fits trajectory classes among episodes that received ANY fentanyl inside [0, T]. Episodes with zero dose in every window are held out as a NAMED STRATUM, not modelled as a class: their within-group variance is exactly zero, which makes the Gaussian mixture likelihood unbounded and the IC comparison invalid across ng. MEASURED at UCMC 2026-09-08: with them in, AIC/BIC flipped sign between ng=3 and ng=4 (+1,097,565 to -311,611) as the model isolated the 932 all-zero episodes into a zero-variance component. Threshold is 1: SG 2026-09-08, to maximise n. Raising it to 2 or 3 would drop 490 and 912 episodes respectively.",
+        "min_exposed_windows": 1,
         "nstart": 50,
         "seed": 20260905
     },

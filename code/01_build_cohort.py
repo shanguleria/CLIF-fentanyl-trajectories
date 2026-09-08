@@ -38,7 +38,7 @@ from utils.waterfall_cache import (  # noqa: E402
 )
 from utils.strobe import render_png, render_text  # noqa: E402
 from utils.paths import (  # noqa: E402
-    clear_owned_outputs, provenance, site_dirs, write_manifest,
+    clear_owned_outputs, phase_dir, provenance, site_dirs, write_manifest,
 )
 
 CONFIG = json.loads((REPO / "config" / "config.json").read_text())
@@ -75,12 +75,20 @@ NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
 SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 
 # Everything this script owns. Cleared before it runs so a crash cannot leave a stale file
+# The shareable tree is subdivided by the script that produced each file; the
+# phaseN_ prefixes stay, so the folder says which script and the prefix says
+# which phase. phase0_manifest.json is the exception and lives at the ROOT of
+# out_final: it is not a Phase 0 result but the pipeline's staleness marker,
+# which every later phase consults through require_manifest().
+PHASE_DIR = "01_cohort"
+
 OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
                 "hospital_intervals.parquet"],
-    "out_final": ["phase0_strobe.csv", "phase0_strobe.txt", "phase0_strobe.png",
-                  "phase0_provenance.json", "phase0_manifest.json"],
+    "out_final": ["phase0_manifest.json"],
+    "phase": ["phase0_strobe.csv", "phase0_strobe.txt", "phase0_strobe.png",
+              "phase0_provenance.json"],
     "diagnostics": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
                     "phase0_diagnostics.csv"],
 }
@@ -91,6 +99,14 @@ RETIRED_OUTPUTS = [
     "output/final_no_phi/phase0_missingness.csv",
     "output/final_no_phi/phase0_missingness_patterns.csv",
     "output/final_no_phi/phase0_diagnostics.csv",
+    # flat locations retired 2026-09-08 when out_final was subdivided by script
+    "output/final_no_phi/phase0_strobe.csv",
+    "output/final_no_phi/phase0_strobe.txt",
+    "output/final_no_phi/phase0_strobe.png",
+    "output/final_no_phi/phase0_provenance.json",
+    "output/final_no_phi/diagnostics/phase0_missingness.csv",
+    "output/final_no_phi/diagnostics/phase0_missingness_patterns.csv",
+    "output/final_no_phi/diagnostics/phase0_diagnostics.csv",
 ]
 
 STROBE: list[tuple[str, int]] = []
@@ -1413,6 +1429,9 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
 
 def main() -> None:
     dirs = site_dirs(REPO)
+    dirs["phase"] = phase_dir(dirs, PHASE_DIR)
+    dirs["diagnostics"] = dirs["phase"] / "diagnostics"
+    dirs["diagnostics"].mkdir(parents=True, exist_ok=True)
     n_cleared = clear_owned_outputs(dirs, OWNED, retired=RETIRED_OUTPUTS)
     if n_cleared:
         print(f"cleared {n_cleared} output(s) from a previous run")
@@ -1532,13 +1551,13 @@ def main() -> None:
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
         diag / "phase0_diagnostics.csv", index=False)
 
-    pd.DataFrame(FLOW).to_csv(dirs["out_final"] / "phase0_strobe.csv", index=False)
-    (dirs["out_final"] / "phase0_strobe.txt").write_text(render_text(FLOW) + "\n")
-    render_png(FLOW, dirs["out_final"] / "phase0_strobe.png",
+    pd.DataFrame(FLOW).to_csv(dirs["phase"] / "phase0_strobe.csv", index=False)
+    (dirs["phase"] / "phase0_strobe.txt").write_text(render_text(FLOW) + "\n")
+    render_png(FLOW, dirs["phase"] / "phase0_strobe.png",
                title=f"Phase 0 cohort flow -- {CONFIG['site_name']}")
     print()
     print(render_text(FLOW))
-    (dirs["out_final"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
+    (dirs["phase"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
 
     # Written last: its presence is what marks these outputs complete and current.
     write_manifest(dirs, CONFIG, REPO, {

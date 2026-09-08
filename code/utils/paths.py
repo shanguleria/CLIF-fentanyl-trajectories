@@ -24,11 +24,13 @@ transcript. Only `output/final_no_phi/` is shareable.
 
 
 def site_dirs(repo: Path) -> dict[str, Path]:
-    """Create and return the directories this pipeline may write to."""
+    """Create and return the directories this pipeline may write to.
+
+    Per-script subfolders of out_final come from phase_dir(), not from here.
+    """
     d = {
         "out_phi": repo / "output" / "intermediate_phi",
         "out_final": repo / "output" / "final_no_phi",
-        "diagnostics": repo / "output" / "final_no_phi" / "diagnostics",
         "logs": repo / "logs",
     }
     for p in d.values():
@@ -38,6 +40,19 @@ def site_dirs(repo: Path) -> dict[str, Path]:
     if not label.exists():
         label.write_text(PHI_LABEL)
 
+    return d
+
+
+def phase_dir(dirs: dict[str, Path], name: str) -> Path:
+    """A per-script subfolder of the shareable output tree.
+
+    output/final_no_phi/ accumulates every phase's artifacts and became hard to
+    scan. Each script writes into its own subfolder named for the script that
+    produced it, while the phaseN_ file prefixes stay -- the folder says which
+    script, the prefix says which phase, and neither is inferred from the other.
+    """
+    d = dirs["out_final"] / name
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 

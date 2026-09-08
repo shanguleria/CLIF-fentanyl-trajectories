@@ -513,6 +513,27 @@ by construction.** The filter is correct and inert here and will bind at a site
 whose extract includes children — keep it, and do not read a zero exclusion as
 evidence the field is unpopulated.
 
+**Where the shareable outputs live** *(SG, 2026-09-08).* `output/final_no_phi/`
+is subdivided by the **script** that produced each file, while the `phaseN_`
+file prefixes stay:
+
+```
+output/final_no_phi/
+├── phase0_manifest.json        <- pipeline staleness marker, not a phase result
+├── 01_cohort/                  <- 01_build_cohort.py   (phase0_*)
+│   └── diagnostics/
+├── 02_descriptive/             <- 02_descriptive_trajectory.R (phase1_*)
+├── 03_landmark/                <- 03_landmark_cohort.R (phase2_*)
+├── 04_gbmt/                    <- 04_gbmt_classes.R
+└── 05_lcmm/                    <- 05_lcmm_classes.R
+```
+
+The folder says which script wrote it, the prefix says which phase it belongs
+to, and neither is inferred from the other. `phase_dir()` in `code/utils/paths.R`
+and `paths.py` is the only way to reach one. `output/intermediate_phi/` stays
+flat: it is the machine handoff and later phases read earlier phases' tables
+from it by name.
+
 #### Federated pooling exports
 
 *(SG, 2026-09-07.)* Phase 1 emits two files whose only purpose is to be pooled
@@ -1536,7 +1557,7 @@ which variables go missing *together*, and that is what determines whether an
 imputation model is well posed. Suppress pattern cells below 11, rolling the
 remainder into one "other" row that states how many it absorbed.
 
-Phase 0 emits `output/final_no_phi/diagnostics/phase0_missingness.csv` with **both sides of
+Phase 0 emits `output/final_no_phi/01_cohort/diagnostics/phase0_missingness.csv` with **both sides of
 the fill**, since they answer different questions — how much was carried, and
 what is still absent in the analysis data:
 

@@ -60,6 +60,7 @@ T_SWEEP <- sort(unique(c(24, 48, LANDMARK)))
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
+dirs$phase <- phase_dir(dirs, "03_landmark")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
 message(sprintf("[03_landmark_cohort] site=%s  clif=%s  data=%s",
@@ -74,7 +75,7 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
 
 OWNED <- list(
   out_phi = c("landmark_cohort.parquet", "landmark_cohort.csv"),
-  out_final = c("phase2_landmark_flow.csv", "phase2_landmark_flow.txt",
+  phase = c("phase2_landmark_flow.csv", "phase2_landmark_flow.txt",
                 "phase2_T_sensitivity.csv", "phase2_failed_extubation.csv",
                 "phase2_dose_curve.csv", "phase2_dose_curve.png",
                 "phase2_dependence.csv",
@@ -224,7 +225,8 @@ curve <- do.call(rbind, lapply(names(DRUGS), function(drug) {
   }))
 }))
 
-p1 <- file.path(dirs$out_final, "phase1_balanced_panels.csv")
+# Phase 1's output, not this script's -- read it from ITS folder.
+p1 <- file.path(phase_dir(dirs, "02_descriptive"), "phase1_balanced_panels.csv")
 if (file.exists(p1)) {
   bp <- read.csv(p1)
   bp <- bp[bp$panel_hours == LANDMARK, ]
@@ -301,7 +303,7 @@ writeLines(c(
   sprintf("Estimand: conditional on being alive and mechanically ventilated at T = %dh.",
           LANDMARK),
   "The unit is the ventilation episode, not the patient."),
-  file.path(dirs$out_final, "phase2_landmark_flow.txt"))
+  file.path(dirs$phase, "phase2_landmark_flow.txt"))
 
 
 # ---- 12. Figure --------------------------------------------------------------
@@ -344,7 +346,7 @@ p_curve <- house(
            100 * length(elig) / anchor_n, LANDMARK),
          x = "Hours since first IMV episode", y = NULL))
 
-ggsave(file.path(dirs$out_final, "phase2_dose_curve.png"), p_curve,
+ggsave(file.path(dirs$phase, "phase2_dose_curve.png"), p_curve,
        width = 7.5, height = 7.6, dpi = 200)
 
 
@@ -410,7 +412,7 @@ cat(sprintf("\nwritten: landmark_cohort.parquet  %s rows x %d cols (PHI)\n",
 # ---- 15. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
-  f <- file.path(dirs$out_final, name)
+  f <- file.path(dirs$phase, name)
   write.csv(x, f, row.names = FALSE)
   cat(sprintf("written: %s\n", name))
 }
@@ -423,7 +425,7 @@ write_out(dep, "phase2_dependence.csv")
 write_out(pooling_continuous, "phase2_pooling_continuous.csv")
 write_out(pooling_categorical, "phase2_pooling_categorical.csv")
 
-write_json(prov, file.path(dirs$out_final, "phase2_provenance.json"),
+write_json(prov, file.path(dirs$phase, "phase2_provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
 cat("written: phase2_provenance.json\n")
 

@@ -18,19 +18,32 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "output" / "final_no_phi"
-CONT = OUT / "phase1_pooling_continuous.csv"
-CAT = OUT / "phase1_pooling_categorical.csv"
+# out_final is subdivided by the script that produced each file (2026-09-08).
+CONT = OUT / "02_descriptive" / "phase1_pooling_continuous.csv"
+CAT = OUT / "02_descriptive" / "phase1_pooling_categorical.csv"
 # Phases 1 and 2 share one pooling contract, so both are held to it.
-ALL_CONT = [OUT / "phase1_pooling_continuous.csv", OUT / "phase2_pooling_continuous.csv"]
-ALL_CAT = [OUT / "phase1_pooling_categorical.csv", OUT / "phase2_pooling_categorical.csv"]
+ALL_CONT = [CONT, OUT / "03_landmark" / "phase2_pooling_continuous.csv"]
+ALL_CAT = [CAT, OUT / "03_landmark" / "phase2_pooling_categorical.csv"]
 TOL = 1e-5          # the exports are rounded to 6 decimals
 
 
 def _skip_if_absent(f: Path) -> pd.DataFrame | None:
     if not f.exists():
-        print(f"  SKIP  {f.name} absent -- run code/02_descriptive_trajectory.R")
+        print(f"  SKIP  {f.name} absent -- run the phase that writes it")
         return None
     return pd.read_csv(f)
+
+
+def test_the_pooling_exports_this_suite_checks_actually_exist():
+    """Every other check here returns quietly when its input is missing, so a
+    relocated output would make the whole suite pass vacuously. It did, once:
+    out_final was subdivided by script on 2026-09-08 and these paths still
+    pointed at the old flat locations. This is the check that cannot skip."""
+    missing = [str(f.relative_to(REPO)) for f in ALL_CONT + ALL_CAT if not f.exists()]
+    assert not missing, (
+        "pooling exports are missing, so the rest of this suite is skipping "
+        "rather than checking:\n  " + "\n  ".join(missing)
+    )
 
 
 def test_mean_is_recoverable_from_sum_and_n():

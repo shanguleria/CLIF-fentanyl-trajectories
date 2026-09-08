@@ -26,9 +26,9 @@ SOURCE = [f for f in SOURCE if "__pycache__" not in str(f)]
 
 def test_site_dirs_returns_only_the_sanctioned_locations():
     d = site_dirs(REPO)
-    assert set(d) == {"out_phi", "out_final", "diagnostics", "logs"}, (
+    assert set(d) == {"out_phi", "out_final", "logs"}, (
         f"site_dirs returns {sorted(d)}; the sanctioned set is out_phi, "
-        f"out_final, diagnostics, logs"
+        f"out_final, logs. Per-script subfolders come from phase_dir()."
     )
     assert d["out_phi"] == REPO / "output" / "intermediate_phi"
     assert d["out_final"] == REPO / "output" / "final_no_phi"

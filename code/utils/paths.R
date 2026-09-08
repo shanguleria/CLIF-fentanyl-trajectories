@@ -14,13 +14,13 @@ PHI_LABEL <- paste(
   "transcript. Only `output/final_no_phi/` is shareable.",
   sep = "\n")
 
-# Create and return the four directories this pipeline may write to.
+# Create and return the directories this pipeline may write to. Per-script
+# subfolders of out_final come from phase_dir(), not from here.
 site_dirs <- function() {
   root <- here::here()
   d <- list(
     out_phi     = file.path(root, "output", "intermediate_phi"),
     out_final   = file.path(root, "output", "final_no_phi"),
-    diagnostics = file.path(root, "output", "final_no_phi", "diagnostics"),
     logs        = file.path(root, "logs")
   )
   for (p in d) dir.create(p, recursive = TRUE, showWarnings = FALSE)
@@ -32,6 +32,16 @@ site_dirs <- function() {
 
   d
 }
+
+# A per-script subfolder of the shareable output tree. Mirrors phase_dir() in
+# paths.py; the two must agree. The folder says which script produced the file,
+# the phaseN_ prefix says which phase it belongs to.
+phase_dir <- function(dirs, name) {
+  d <- file.path(dirs$out_final, name)
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  d
+}
+
 
 # Delete this script's own outputs before it starts, so a crash leaves nothing
 # rather than a stale file that still looks valid. Mirrors clear_owned_outputs()

@@ -68,6 +68,7 @@ POOL_CAT <- list()
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
+dirs$phase <- phase_dir(dirs, "02_descriptive")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
 message(sprintf("[02_descriptive_trajectory] site=%s  clif=%s  data=%s",
@@ -82,7 +83,7 @@ manifest <- require_manifest(dirs, here())
 message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
-OWNED <- list(out_final = c(
+OWNED <- list(phase = c(
   "phase1_baseline_characteristics.csv", "phase1_retention.csv",
   "phase1_dose_summary.csv", "phase1_dose_distribution.csv",
   "phase1_balanced_panels.csv", "phase1_zero_fraction.csv",
@@ -528,7 +529,7 @@ p_fent <- house(
            "The two medians diverge: exposure narrows to fewer episodes rather than falling within them."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$out_final, "phase1_fentanyl_curves.png"), p_fent,
+ggsave(file.path(dirs$phase, "phase1_fentanyl_curves.png"), p_fent,
        width = 7.5, height = 7.6, dpi = 200)
 
 # --- Primary figure: fentanyl balanced panels --------------------------------
@@ -573,7 +574,7 @@ p_panels <- house(
            "the median falls onto the floor at h24 and every panel collapses onto one line."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$out_final, "phase1_fentanyl_balanced_panels.png"), p_panels,
+ggsave(file.path(dirs$phase, "phase1_fentanyl_balanced_panels.png"), p_panels,
        width = 7.5, height = 9.2, dpi = 200)
 
 # --- Primary figure: fentanyl distribution -----------------------------------
@@ -596,7 +597,7 @@ p_dist <- house(
            zero_pct, clip, FENT_U, trimws(format(n_clipped, big.mark = ","))),
          x = sprintf("Dose (%s)", FENT_U), y = "Windows"))
 
-ggsave(file.path(dirs$out_final, "phase1_fentanyl_distribution.png"), p_dist,
+ggsave(file.path(dirs$phase, "phase1_fentanyl_distribution.png"), p_dist,
        width = 7.5, height = 4.8, dpi = 200)
 
 # --- Secondary figure: the companion sedatives -------------------------------
@@ -638,14 +639,14 @@ p_sed <- house(
          x = "Hours since first IMV episode", y = NULL, colour = NULL) +
     theme(strip.placement = "outside", strip.text.y.left = element_text(angle = 90)))
 
-ggsave(file.path(dirs$out_final, "phase1_sedative_curves.png"), p_sed,
+ggsave(file.path(dirs$phase, "phase1_sedative_curves.png"), p_sed,
        width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
 
 
 # ---- 14. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
-  f <- file.path(dirs$out_final, name)
+  f <- file.path(dirs$phase, name)
   write.csv(x, f, row.names = FALSE)
   cat(sprintf("written: %s\n", name))
 }
@@ -665,7 +666,7 @@ pooling_categorical <- do.call(rbind, POOL_CAT)
 write_out(pooling_continuous, "phase1_pooling_continuous.csv")
 write_out(pooling_categorical, "phase1_pooling_categorical.csv")
 
-write_json(prov, file.path(dirs$out_final, "phase1_provenance.json"),
+write_json(prov, file.path(dirs$phase, "phase1_provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
 cat("written: phase1_provenance.json\n")
 

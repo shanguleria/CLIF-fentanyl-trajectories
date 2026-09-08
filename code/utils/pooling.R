@@ -65,3 +65,49 @@ collapse_levels <- function(v, map) {
   stopifnot("collapse_levels changed the vector length" = length(out) == length(v))
   as.character(out)
 }
+
+
+# ---- Model-selection table, Chen et al. layout -------------------------------
+# Statistics as ROWS, one column per candidate class count, with a %classK row
+# per class so every solution's class sizes are visible at once -- not just the
+# smallest. Format follows Chen et al., BMC Infect Dis 2026;26:950
+# (doi:10.1186/s12879-026-12981-9) Table 1.
+#
+# stats: a data.frame with one row per model, an `ng` column, and any numeric
+#        columns to show as rows.
+# sizes: a named list, one element per model, each a vector of class counts.
+selection_table <- function(stats, sizes, rows = NULL) {
+  stopifnot("stats needs an ng column" = "ng" %in% names(stats),
+            "one size vector per model" = nrow(stats) == length(sizes))
+  if (is.null(rows)) {
+    rows <- setdiff(names(stats), c("model", "ng"))
+    rows <- rows[vapply(stats[rows], is.numeric, logical(1))]
+  }
+  cols <- paste0("ng", stats$ng)
+
+  body <- lapply(rows, function(r) {
+    v <- stats[[r]]
+    data.frame(statistic = r, t(setNames(as.character(round(v, 4)), cols)),
+               check.names = FALSE, stringsAsFactors = FALSE)
+  })
+
+  kmax <- max(vapply(sizes, length, integer(1)))
+  pct <- lapply(seq_len(kmax), function(k) {
+    v <- vapply(sizes, function(s)
+      if (length(s) >= k) sprintf("%.2f", 100 * s[k] / sum(s)) else NA_character_,
+      character(1))
+    data.frame(statistic = sprintf("%%class%d", k),
+               t(setNames(v, cols)), check.names = FALSE,
+               stringsAsFactors = FALSE)
+  })
+
+  n <- lapply(seq_len(kmax), function(k) {
+    v <- vapply(sizes, function(s)
+      if (length(s) >= k) as.character(s[k]) else NA_character_, character(1))
+    data.frame(statistic = sprintf("n_class%d", k),
+               t(setNames(v, cols)), check.names = FALSE,
+               stringsAsFactors = FALSE)
+  })
+
+  do.call(rbind, c(body, pct, n))
+}

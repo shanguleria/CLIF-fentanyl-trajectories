@@ -177,13 +177,19 @@ artifacts never leave the site, and the PHI-free set reaches the coordinating
 centre by upload rather than by git. `logs/` is gitignored too. The PHI directory
 gets a `README.md` warning label written at runtime by `site_dirs()`.
 
-What each phase writes to `output/final_no_phi/`:
+`output/final_no_phi/` is subdivided by the **script** that produced each file;
+the `phaseN_` prefixes stay, so the folder says which script and the prefix says
+which phase. `phase0_manifest.json` sits at the root because it is the pipeline's
+staleness marker rather than a phase result. `output/intermediate_phi/` stays
+flat — it is the machine handoff between phases.
+
+What each phase writes:
 
 | Phase | Files |
 |---|---|
-| 0 | `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
-| 1 | `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_pooling_continuous.csv`, `phase1_pooling_categorical.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
-| 2 | `phase2_landmark_flow.{csv,txt}`, `phase2_T_sensitivity.csv`, `phase2_failed_extubation.csv`, `phase2_dose_curve.{csv,png}`, `phase2_dependence.csv`, `phase2_pooling_{continuous,categorical}.csv`, `phase2_provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| 0 | `01_cohort/` — `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
+| 1 | `02_descriptive/` — `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_pooling_continuous.csv`, `phase1_pooling_categorical.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
+| 2 | `03_landmark/` — `phase2_landmark_flow.{csv,txt}`, `phase2_T_sensitivity.csv`, `phase2_failed_extubation.csv`, `phase2_dose_curve.{csv,png}`, `phase2_dependence.csv`, `phase2_pooling_{continuous,categorical}.csv`, `phase2_provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `phase1_pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
