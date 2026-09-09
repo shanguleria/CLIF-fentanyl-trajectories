@@ -112,7 +112,7 @@ long <- as.data.frame(read_parquet(
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
                  "total_dose", "died",
                  "age", "sex", "bmi_admission", "cci",
-                 "nee", "oxygenation", "crrt_status",
+                 "nee", "oxygenation", "spo2_plateau", "crrt_status",
                  "bun", "bicarbonate", "lactate")))
 
 stopifnot("window count on disk disagrees with the config grid" =
@@ -173,7 +173,13 @@ names(counts)[3] <- "n"
 # SOFA, all silent and all biasing severity downward; the explicit markers below
 # carry the severity signal instead.
 TIME_INVARIANT <- c("age", "sex", "bmi_admission", "cci")
-TIME_VARYING   <- c("nee", "oxygenation", "crrt_status",
+# spo2_plateau sits BESIDE oxygenation, not instead of it. Above the SpO2
+# ceiling the dissociation curve is flat, so Severinghaus cannot invert a
+# saturation into a PaO2 and Phase 0 leaves the P/F NA -- but NA is the wrong
+# encoding, because the window says the patient is oxygenating WELL. Filling it
+# with a median P/F imputes moderate hypoxaemia for the patients doing best.
+# The flag carries that fact directly (SG, 2026-09-09).
+TIME_VARYING   <- c("nee", "oxygenation", "spo2_plateau", "crrt_status",
                     "bun", "bicarbonate", "lactate")
 HISTORY        <- c("hours_in_state", "cumulative_dose", "window_start_hr")
 COVS <- c(HISTORY, TIME_INVARIANT, TIME_VARYING)

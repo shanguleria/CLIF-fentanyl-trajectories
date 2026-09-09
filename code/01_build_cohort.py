@@ -1533,6 +1533,29 @@ def main() -> None:
     per_variable = pd.concat(
         [per_variable, _sofa_report_row(long),
          oxygenation_absence_reasons(long)], ignore_index=True)
+    # Emit the plateau as a COVARIATE before the internals are dropped (SG,
+    # 2026-09-09). A window where SpO2 was measured, every reading sat at or above
+    # the ceiling, and no PaO2 was drawn carries real information: the patient is
+    # oxygenating well and the P/F is right-censored HIGH, not unknown. Filling
+    # such a window with a median P/F imputes moderate hypoxaemia for exactly the
+    # patients doing best. This flag lets a model use the fact directly.
+    #
+    # Note the condition does NOT include "oxygenation is missing": it is a
+    # statement about what was measured in the window, so it stays true and
+    # interpretable even where LOCF later carried a value in.
+    long["spo2_plateau"] = (
+        (long["_n_pao2"].fillna(0) == 0)
+        & (long["_n_spo2"].fillna(0) > 0)
+        & (long["_n_spo2_usable"].fillna(0) == 0)
+    ).astype(int)
+    note(f"windows on the SpO2 plateau (>= {SPO2_CEILING}, no PaO2)",
+         int(long.loc[long["alive_admitted"], "spo2_plateau"].sum()))
+    pl = long.loc[long["alive_admitted"] & long["spo2_plateau"].astype(bool)]
+    if len(pl):
+        print(f"    of those, oxygenation still missing after LOCF: "
+              f"{int(pl['oxygenation'].isna().sum()):,} "
+              f"({100 * pl['oxygenation'].isna().mean():.1f}%)")
+
     long = long.drop(columns=[c for c in long.columns if c.startswith("_n_")])
     cols = ["variable", "kind", "locf_cap_hours", "n_observed", "n_zero_by_rule",
             "pct_missing_pre_locf", "pct_filled_by_locf", "pct_missing_final"]

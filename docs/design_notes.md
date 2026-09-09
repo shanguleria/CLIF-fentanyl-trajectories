@@ -432,7 +432,7 @@ table is the block-level shape only.
 | Normaliser | `weight_kg` (fixed at the anchor), `weight_lag_hours` |
 | Time-invariant | `age`, `sex`, `race`, `cci`, `bmi_admission`, `bmi_lag_hours` |
 | Site / hospital | `hospital_id_admission`, `hospital_id_discharge` (§11) |
-| Time-varying severity | `sofa_total`, `nee`, `oxygenation`, `oxygenation_source` |
+| Time-varying severity | `sofa_total`, `nee`, `oxygenation`, `oxygenation_source`, `spo2_plateau` |
 | Time-varying labs | `bun`, `bicarbonate`, `pco2_arterial`, `lactate`, `inr`, `bilirubin_total` |
 | **Status flags** | `imv_status` — required to identify extubated windows and count failed extubations. `crrt_status` |
 | Provenance | `<var>_locf` per LOCF-eligible variable; `alive_admitted` per window |
@@ -866,13 +866,38 @@ multinomial model per origin state** for the next delivery state:
 ```
 state(t+1) ~ hours_in_state + cumulative_dose + window_start_hr        # history
            + age + sex + bmi_admission + cci                          # time-invariant
-           + nee + oxygenation + crrt_status + bun + bicarbonate + lactate
+           + nee + oxygenation + spo2_plateau + crrt_status
+           + bun + bicarbonate + lactate
 ```
 
 fitted separately within each origin state. Summary rules are Phase 0's, declared
 in `covariates.json`: NEE `max_of_summed_step_function`, oxygenation `min`
 (worst, Severinghaus S/F fallback), CRRT `any`, BUN `max`, bicarbonate `min`,
 lactate `max`.
+
+**`spo2_plateau` sits beside `oxygenation`, not instead of it** *(SG, 2026-09-09).*
+Above the SpO2 ceiling (`>= 97`) the dissociation curve is flat, so Severinghaus
+cannot invert a saturation into a PaO2 and Phase 0 leaves the S/F-derived
+`oxygenation` NA. But NA is the wrong encoding for that window: it says the
+patient is oxygenating *well*, and the median fill below would otherwise impute
+moderate hypoxaemia for exactly the patients doing best. `spo2_plateau` is 1 when
+a window has no PaO2, at least one SpO2, and **every** charted SpO2 at or above
+the ceiling — 78,183 windows, 31.1% of the analytic cohort. It is never missing,
+so it takes no `_measured` flag.
+
+The flag was motivated by measuring *why* oxygenation goes missing, which
+corrected an earlier guess of mine that the plateau explained most of it:
+
+| windows | on the plateau | oxygenation missing | of the missing, % plateau |
+|---|---:|---:|---:|
+| ventilated | 31.8% | 13.2% | **96.4%** |
+| extubated | 29.0% | 30.6% | **49.8%** |
+
+So the plateau is nearly the whole story while a patient is ventilated, and only
+half of it once extubated — the other half is FiO2 not being charted as
+`fio2_set` on nasal cannula, which `oxygenation_measured` continues to carry.
+The two terms are not redundant: `spo2_plateau = 1` means *known well*, whereas
+`oxygenation_measured = 0` with `spo2_plateau = 0` means *not assessed*.
 
 **`imv_status` is deliberately absent.** Ventilation status *is* the state here,
 so it is constant within every per-origin model — 1 for all four fentanyl states,
@@ -899,8 +924,9 @@ Complete case would have discarded two thirds of the extubated-origin rows — t
 transitions carrying reintubation, discharge and death — and `multinom` does that
 silently.
 
-Instead **every row is kept**. Six covariates carry missingness
-(`bmi_admission`, `cci`, `oxygenation`, `bun`, `bicarbonate`, `lactate`); each
+Instead **every row is kept**. Six of the eleven carry
+missingness (`bmi_admission`, `cci`, `oxygenation`, `bun`, `bicarbonate`,
+`lactate`; `spo2_plateau` never does); each
 gains a binary `<var>_measured` flag and is filled with the cohort median. The
 flag is not a nuisance term: **a drawn lactate means somebody was worried**, so
 "was it measured" carries real information about the clinician's assessment,
@@ -1378,6 +1404,7 @@ hand-written list drifts, and the first draft of exactly such a list in
 | `nee` | state (rate) | **max of the summed step function** | **no** | — | `absence_means_zero` |
 | `oxygenation` | derived ratio | **min** (worst) | yes | 8h | `time_varying` |
 | `oxygenation_source` | provenance | stamped, not summarised | never | — | own level, never imputed |
+| `spo2_plateau` | vitals `spo2` + labs `po2_arterial` | any-in-window | never | — | never missing; 0 when the condition does not hold |
 | `imv_status` | state | **any in window** | **no** | — | `absence_means_not_ventilated` |
 | `crrt_status` | state | **any in window** | **no** | — | `absence_means_zero` |
 | `bun` | measurement | **max** | yes | 24h | `time_varying` |

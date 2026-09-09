@@ -224,6 +224,19 @@
       "missing_class": "not_applicable"
     },
 
+    "spo2_plateau": {
+      "label": "SpO2 on the plateau: oxygenating well, P/F right-censored high",
+      "source": {"table": "vitals", "category": "spo2", "paired_with": "labs.po2_arterial"},
+      "algorithm": "1 if, in this window, NO PaO2 was drawn AND SpO2 was measured AND every SpO2 reading was at or above time_varying.oxygenation.spo2_ceiling. Otherwise 0. Deliberately NOT conditioned on oxygenation being missing: it is a statement about what was measured in the window, so it stays interpretable where LOCF later carried a P/F in.",
+      "summary": "any",
+      "role": "covariate; the informative half of oxygenation missingness",
+      "_why": "SG 2026-09-09. Above the SpO2 ceiling the oxyhaemoglobin dissociation curve is flat, so Severinghaus cannot invert a saturation into a PaO2 -- a reading of 98% is consistent with a P/F of 200 or 500. Phase 0 therefore leaves those windows NA (the option A plateau decision). But NA is the wrong encoding: the window is not uninformative, it says the patient is oxygenating WELL. Median-filling it imputes moderate hypoxaemia for exactly the patients doing best. This flag lets a model use the fact directly instead.",
+      "_MEASURED": "2026-09-09 over 251,695 alive-admitted windows: 31.1% are on the plateau. Among windows whose P/F is missing, the plateau explains 96.4% for VENTILATED windows but only 49.8% for extubated ones -- after extubation a second mechanism bites, most likely that FiO2 is not charted as fio2_set on nasal cannula, so no S/F pair can be formed at all.",
+      "missing_class": "not_applicable",
+      "missing": "Never missing: it is 0 when the condition does not hold, including when nothing was measured, so no missingness class applies. Read it alongside oxygenation, not instead of it.",
+      "locf": {"eligible": false, "_why": "A statement about what was measured in THIS window. Carrying it forward would assert a measurement that did not happen."}
+    },
+
     "imv_status": {
       "label": "On invasive mechanical ventilation at any point in the window",
       "type": "binary",
@@ -485,7 +498,7 @@
 
     "not_applicable": {
       "rule": "Never imputed; the missing level is its own level.",
-      "members": ["oxygenation_source"]
+      "members": ["oxygenation_source", "spo2_plateau"]
     },
 
     "sofa_inputs": {
