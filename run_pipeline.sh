@@ -58,7 +58,7 @@ echo "== Phase 0: build cohort (Python) =="
 "$PY" code/01_build_cohort.py
 
 for s in 02_descriptive_trajectory 03_landmark_cohort 04_gbmt_classes \
-         05_lcmm_classes 06_two_indicator 07_outcomes; do
+         05_lcmm_classes 06_transition_model 07_outcomes; do
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done

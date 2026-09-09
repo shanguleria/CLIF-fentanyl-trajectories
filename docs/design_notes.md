@@ -835,37 +835,66 @@ Expect difficulty if the zero fraction is high — measure it in Phase 1 first.
 `hlme()` off the identical table. Expect **fewer** classes: random effects absorb
 heterogeneity `gbmt` can only handle by adding groups. Compare partitions by ARI.
 
-### Phase 5 — two indicators: infusion vs bolus strategy
+### Phase 5 — discrete-time transition model
 
-**Specification**
+*Replaced the two-indicator gbmt plan on 2026-09-09 (SG).* The original Phase 5
+fitted `gbmt` on `c("inf_dose", "bolus_dose")` to characterise management
+strategy. Three measurements retired it:
 
-| Setting | Value | Why |
-|---|---|---|
-| `x.names` | `c("inf_dose", "bolus_dose")` | both in mcg/hr |
-| `scaling` | **`0` — mandatory** | any `scaling >= 1` normalises within unit, erasing absolute dose level; `scaling = 2` additionally divides by a within-patient SD that is exactly zero for a near-all-zero indicator, with no error raised (§3) |
-| `nstart` | **≥ 50** | `gbmt` initialises EM from a Ward hierarchical clustering, which is scale-sensitive, so random restarts are needed rather than one deterministic start |
-| `d` | 2 (3 if windows allow) | balanced panel, so the degree cap below does not bind |
+- **`bolus_dose` is 87% zero at the window level** — the near-all-zero second
+  indicator §3 names as the most dangerous configuration, and the same shape of
+  problem that produced the degenerate zero-variance class in Phase 3.
+- **`bolus_fraction` has ICC 0.702**, so strategy is a *between-episode*
+  property. Random effects would absorb it exactly as they absorbed dose level,
+  and the classes would collapse the same way.
+- **The state description captures the same distinction more directly**:
+  `bolus only` persists in only 40.7% of windows and goes straight to
+  `no fentanyl` 45.9% of the time. That *is* the strategy finding, without a
+  degenerate indicator.
 
-**What the model now estimates.** Σ_j becomes 2×2 per class, and its off-diagonal
-is the within-class infusion–bolus covariance — arguably *the* parameter of
-interest for a strategy question. Classes are shapes in two dimensions, e.g.
-"steady drip, few boluses" / "low drip, bolus-driven" / "escalating both."
+**What Phase 5 does now.** `code/06_transition_model.R` fits a discrete-time
+multinomial model for the next delivery state:
 
-**Checks specific to this phase**
+```
+state(t+1) ~ state(t) + hours_in_state + cumulative_dose + window_start_hr
+             + sofa_total + nee + age + cci + sex
+```
 
-1. Fraction of patients with an all-zero `bolus_dose` across every window. At
-   `scaling = 0` these are numerically harmless but contribute a degenerate
-   dimension; if it is most of the cohort, the second indicator is buying little.
-2. Confirm both indicators actually separate the classes. A class distinguished
-   only along the near-zero bolus axis is an artifact, not a phenotype.
-3. **ARI against the Phase 3/4 single-indicator classes.** High ARI means the
-   second indicator added nothing and Model A already captured the structure.
+on **178,126 transition pairs** from all 14,897 episodes (13,627 patients),
+reference destination `no fentanyl`. Rows whose current state is terminal are
+dropped — nothing transitions out of an absorbing state.
 
-**Alternative formulation worth testing.** Instead of two dose columns, use
-`total_dose` plus **`bolus_fraction`** = bolus_dose / total_dose. This encodes
-strategy directly, is bounded [0, 1], and separates "how much" from "delivered
-how." Caveat: undefined when `total_dose = 0` — code as `NA`, which `gbmt`
-accepts as missing rather than as a zero.
+**Why not a trajectory class.** It does not partition anyone: no *k* to choose,
+no claim that groups exist. Everything that undermined the class approach — level
+continuous, no gaps, a random intercept absorbing the signal — simply does not
+apply.
+
+**Why not `msm` or `mstate`.** `msm` requires the Markov property, which is not
+credible here: an episode on hour 60 of an infusion is not exchangeable with one
+that started an hour ago. `mstate` relaxes it through a clock-reset (semi-Markov)
+time scale but needs *exactly observed* transition times, which a 4h window grid
+does not provide. Because the states are **defined on the window**, the process is
+genuinely discrete-time — history enters as covariates (`hours_in_state`,
+`cumulative_dose`, `prior_state`) and no Markov assumption is made at all. The
+cost is that results are tied to the 4h grid and are not directly comparable to a
+study on a different window.
+
+**Inference.** 17 transitions from one episode are correlated and 932 of 13,627
+patients contribute more than one episode (§11), so naive `multinom` standard
+errors are too narrow. `sandwich` has no `estfun` method for `multinom`, so
+intervals come from a **cluster bootstrap resampling patients**, 200 replicates
+by default. One fit over 178,126 rows takes ~29s, so a full run is ~1.6h;
+`TRANSITION_BOOT_REPS` overrides it for a quick pass. It is deliberately not a
+config key — it changes the precision of the interval, not the estimand, and
+putting it in `config.json` would force a Phase 0 re-run to alter a compute
+setting.
+
+**The state definition lives in `code/utils/states.R`** and is shared with Phase
+1, so the model and the alluvial cannot drift apart. Verified: the transition
+matrices the two scripts emit are identical row for row.
+
+**Estimand: none.** This is descriptive. Coefficients are associations between
+covariates and the next observed state, not causal effects of dosing.
 
 ### Phase 6 — class membership as predictor
 

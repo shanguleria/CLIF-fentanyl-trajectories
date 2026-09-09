@@ -27,6 +27,7 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
+source(here("code", "utils", "states.R"))
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -479,18 +480,7 @@ print(baseline, row.names = FALSE)
 # construction, and the liberation pathway is exactly what makes this figure
 # worth drawing. 8,169 of 14,897 episodes leave before 72h, median at 24h.
 
-STATE_LEVELS <- c("no fentanyl", "continuous only", "bolus only",
-                  "continuous + bolus", "extubated", "discharged alive", "died")
-
-long$state <- with(long, ifelse(
-  !alive_admitted, ifelse(died, "died", "discharged alive"),
-  ifelse(!ventilated, "extubated",
-    ifelse(inf_dose > 0 & bolus_dose > 0, "continuous + bolus",
-      ifelse(inf_dose > 0, "continuous only",
-        ifelse(bolus_dose > 0, "bolus only", "no fentanyl"))))))
-long$state <- factor(long$state, levels = STATE_LEVELS)
-stopifnot("every episode-window must land in exactly one state" =
-            !any(is.na(long$state)))
+long <- derive_states(long)      # shared definition, code/utils/states.R
 
 # Prevalence per window -- the stacked view
 state_prevalence <- do.call(rbind, lapply(sort(unique(long$window_idx)), function(w) {
@@ -508,25 +498,16 @@ names(pv) <- sub("^pct\\.", "", names(pv))
 print(pv[pv$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
 
 # Transition matrix over consecutive windows
-ord <- long[order(long$encounter_block, long$window_idx), ]
-nxt <- ave(as.character(ord$state), ord$encounter_block,
-           FUN = function(v) c(v[-1], NA))
-tr <- data.frame(from = ord$state, to = factor(nxt, levels = STATE_LEVELS))
-tr <- tr[!is.na(tr$to), ]
-tm <- table(tr$from, tr$to)
-transition_matrix <- as.data.frame.matrix(round(100 * prop.table(tm, 1), 2))
-transition_matrix <- cbind(from = rownames(transition_matrix),
-                           n_at_risk = as.integer(rowSums(tm)), transition_matrix)
+tp <- transition_pairs(long)
+transition_matrix_tbl <- transition_matrix(tp)
 
 cat("\nTransition matrix (row = state at t, col = state at t+1, row %)\n")
-print(transition_matrix, row.names = FALSE)
+print(transition_matrix_tbl, row.names = FALSE)
 
-# Terminal states must absorb; if they do not, the state definition is wrong.
-for (term in c("died", "discharged alive")) {
-  row <- tm[term, ]
-  stopifnot("a terminal state must be absorbing" =
-              sum(row[setdiff(STATE_LEVELS, term)]) == 0)
-}
+# Terminal states must absorb; transition_pairs() drops rows starting in one, so
+# a terminal state appearing as an ORIGIN here would mean the definition is wrong.
+stopifnot("a terminal state must not originate a transition" =
+            !any(tp$state %in% STATE_TERMINAL))
 cat("  terminal states verified absorbing\n")
 
 
@@ -789,7 +770,7 @@ write_out(balanced_panels, "phase1_balanced_panels.csv")
 write_out(zero_fraction, "phase1_zero_fraction.csv")
 write_out(imv_episodes, "phase1_imv_episodes.csv")
 write_out(state_prevalence, "phase1_state_prevalence.csv")
-write_out(transition_matrix, "phase1_state_transitions.csv")
+write_out(transition_matrix_tbl, "phase1_state_transitions.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)

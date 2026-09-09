@@ -36,7 +36,7 @@ Write-Host "== Phase 0: build cohort (Python) =="
 if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 
 $steps = @("02_descriptive_trajectory","03_landmark_cohort","04_gbmt_classes",
-           "05_lcmm_classes","06_two_indicator","07_outcomes")
+           "05_lcmm_classes","06_transition_model","07_outcomes")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"

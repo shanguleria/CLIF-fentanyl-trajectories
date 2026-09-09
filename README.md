@@ -249,7 +249,7 @@ python3 code/check_config.py
 | 2 | R | `code/03_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
 | 3 | R | `code/04_gbmt_classes.R` | `gbmt` on combined dose, `ng` sweep, class enumeration |
 | 4 | R | `code/05_lcmm_classes.R` | `lcmm::hlme` on the same data; compare partitions by ARI |
-| 5 | R | `code/06_two_indicator.R` | Two-indicator infusion-vs-bolus strategy model |
+| 5 | R | `code/06_transition_model.R` | Discrete-time multinomial model for the next fentanyl delivery state, whole analytic cohort |
 | 6 | R | `code/07_outcomes.R` | Competing-risks outcome models from the landmark |
 
 ## Project structure
@@ -272,7 +272,7 @@ CLIF-fentanyl-trajectories/
 │   ├── 03_landmark_cohort.R
 │   ├── 04_gbmt_classes.R
 │   ├── 05_lcmm_classes.R
-│   ├── 06_two_indicator.R
+│   ├── 06_transition_model.R
 │   ├── 07_outcomes.R
 │   └── utils/
 │       ├── doses.py              # dose unit conversion (not clifpy's)
