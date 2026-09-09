@@ -92,7 +92,7 @@ OWNED <- list(
   out_phi = c("transition_model.rds"),
   phase   = c("phase5_transition_matrix.csv", "phase5_transition_counts.csv",
               "phase5_model_coefficients.csv", "phase5_predicted_transitions.csv",
-              "phase5_predicted_transitions.png", "phase5_model_fit.csv",
+              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv",
               "phase5_provenance.json"))
 n_cleared <- clear_owned_outputs(dirs, OWNED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
@@ -135,70 +135,112 @@ counts <- as.data.frame(table(from = tp$state, to = tp$state_next))
 names(counts)[3] <- "n"
 
 
-# ---- 7. Model ----------------------------------------------------------------
-# multinom estimates, for every state other than the reference, the log-odds of
-# moving THERE rather than to the reference, given the covariates. History enters
-# as covariates -- hours_in_state, cumulative_dose, prior_state -- which is what
-# makes this a non-Markov model rather than a relaxation of one.
+# ---- 7. Model -- ONE FIT PER ORIGIN STATE ------------------------------------
+# Five separate multinomial fits, one per origin, rather than a single pooled fit
+# with `state` as a covariate. The two differ in whether covariate effects may
+# vary by origin: pooling forces ONE coefficient for, say, SOFA across every
+# origin, when clinically a rising SOFA should mean "keep sedating, do not
+# extubate" from `continuous only` and "this patient is failing" from
+# `extubated` -- plausibly opposite signs.
 #
-# Reference level for the OUTCOME is "no fentanyl": the modal destination and the
-# clinically natural comparator ("relative to fentanyl being stopped").
+# NOT a matter of taste. MEASURED 2026-09-09 on 238,630 rows: the pooled fit has
+# deviance 262,596.8 on 78 df, the fully interacted equivalent 258,200.3 on 270
+# df -- a drop of 4,396.5 on 192 df, p < 1e-300, and AIC prefers per-origin by
+# ~4,000 despite the extra parameters. The pooled specification was misspecified.
+#
+# Fitting them separately rather than as `state * (covariates)` is statistically
+# identical but reads better: each model's coefficient table is directly "what
+# drives moves out of THIS state".
+#
+# Reference destination is `no fentanyl` throughout -- observed from every origin,
+# and the natural comparator ("relative to fentanyl being stopped").
 
-tp$state_next <- relevel(droplevels(tp$state_next), ref = "no fentanyl")
-tp$state      <- droplevels(tp$state)
+COVS <- c("hours_in_state", "cumulative_dose", "window_start_hr",
+          "sofa_total", "nee", "age", "cci", "sex")
+FORM <- as.formula(paste("state_next ~", paste(COVS, collapse = " + ")))
+REF  <- "no fentanyl"
 
-FORM <- state_next ~ state + hours_in_state + cumulative_dose +
-                     window_start_hr + sofa_total + nee + age + cci + sex
+tp$state <- droplevels(tp$state)
+tp <- tp[stats::complete.cases(tp[, c("state", "state_next", COVS)]), ]
+ORIGINS <- levels(tp$state)
 
-cat("\nFitting multinomial transition model ...\n")
-t0 <- Sys.time()
-fit <- multinom(FORM, data = tp, maxit = 500, trace = FALSE)
-cat(sprintf("  fitted in %.1f min  (%d observations, %d coefficients)\n",
-            as.numeric(difftime(Sys.time(), t0, units = "mins")),
-            nrow(fit$fitted.values), length(coef(fit))))
-
-model_fit <- data.frame(
-  n_transitions = nrow(tp),
-  n_episodes    = length(unique(tp$encounter_block)),
-  n_patients    = length(unique(tp$patient_id)),
-  deviance      = round(fit$deviance, 1),
-  aic           = round(fit$AIC, 1),
-  n_coefficients = length(coef(fit)),
-  converged     = as.integer(fit$convergence == 0))
-print(model_fit, row.names = FALSE)
-if (fit$convergence != 0) {
-  warning("multinom did not converge; raise maxit before reading the coefficients")
+fit_origin <- function(d) {
+  d$state_next <- droplevels(d$state_next)
+  if (REF %in% levels(d$state_next)) d$state_next <- relevel(d$state_next, ref = REF)
+  multinom(FORM, data = d, maxit = 800, trace = FALSE)
 }
+
+cat("\nFitting one multinomial model per origin state ...\n")
+t0 <- Sys.time()
+fits <- lapply(ORIGINS, function(s) fit_origin(tp[tp$state == s, ]))
+names(fits) <- ORIGINS
+cat(sprintf("  %d models in %.1f min\n", length(fits),
+            as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+
+model_fit <- do.call(rbind, lapply(ORIGINS, function(s) {
+  d <- tp[tp$state == s, ]; f <- fits[[s]]
+  data.frame(origin = s,
+             n_transitions  = nrow(d),
+             n_episodes     = length(unique(d$encounter_block)),
+             n_destinations = nlevels(droplevels(d$state_next)),
+             deviance       = round(f$deviance, 1),
+             aic            = round(f$AIC, 1),
+             n_coefficients = length(coef(f)),
+             converged      = as.integer(f$convergence == 0))
+}))
+print(model_fit, row.names = FALSE)
+if (any(model_fit$converged != 1)) {
+  warning("these origin models did not converge: ",
+          paste(model_fit$origin[model_fit$converged != 1], collapse = ", "))
+}
+cat("  NOTE: an origin with few at-risk windows has the least well estimated\n")
+cat("  coefficients -- read n_transitions alongside them.\n")
 
 
 # ---- 8. Cluster bootstrap ----------------------------------------------------
-# Resample PATIENTS with replacement, refit, and take percentile intervals. This
-# is the honest interval here: 17 transitions from one episode are correlated,
-# and 932 of 13,627 patients contribute more than one episode (section 11).
-# Naive multinom SEs ignore both and are too narrow.
+# Resample PATIENTS with replacement and refit ALL FIVE models per replicate.
+# 17 transitions from one episode are correlated and 932 of 13,627 patients
+# contribute more than one episode (section 11), so naive multinom standard
+# errors are too narrow. sandwich has no estfun method for multinom.
 
-pt <- unique(tp$patient_id)
+flat <- function(fl) unlist(lapply(names(fl), function(s) {
+  cf <- coef(fl[[s]])
+  if (is.null(dim(cf))) cf <- matrix(cf, nrow = 1,
+                                     dimnames = list(setdiff(levels(
+                                       fl[[s]]$lev), REF)[1], names(cf)))
+  setNames(as.numeric(cf),
+           paste(s, rep(rownames(cf), times = ncol(cf)),
+                 rep(colnames(cf), each = nrow(cf)), sep = "|"))
+}))
+
+est <- flat(fits)
+pt  <- unique(tp$patient_id)
+idx <- split(seq_len(nrow(tp)), tp$patient_id)
+
 cat(sprintf("\nCluster bootstrap: %d replicates over %s patients ...\n",
             BOOT_REPS, format(length(pt), big.mark = ",")))
 t0 <- Sys.time()
-idx <- split(seq_len(nrow(tp)), tp$patient_id)
-
 boot <- vapply(seq_len(BOOT_REPS), function(b) {
   take <- sample(pt, length(pt), replace = TRUE)
   s <- tp[unlist(idx[as.character(take)], use.names = FALSE), ]
-  m <- try(multinom(FORM, data = s, maxit = 500, trace = FALSE), silent = TRUE)
-  if (inherits(m, "try-error")) rep(NA_real_, length(coef(fit)))
-  else as.numeric(coef(m))
-}, numeric(length(coef(fit))))
+  r <- try({
+    fl <- lapply(ORIGINS, function(o) fit_origin(s[s$state == o, ]))
+    names(fl) <- ORIGINS
+    v <- flat(fl)
+    v[names(est)]          # align; a destination unseen in this replicate is NA
+  }, silent = TRUE)
+  if (inherits(r, "try-error")) rep(NA_real_, length(est)) else as.numeric(r)
+}, numeric(length(est)))
 
 cat(sprintf("  %.1f min; %d of %d replicates converged\n",
             as.numeric(difftime(Sys.time(), t0, units = "mins")),
             sum(!is.na(boot[1, ])), BOOT_REPS))
 
-est <- coef(fit)
+parts <- do.call(rbind, strsplit(names(est), "|", fixed = TRUE))
 coefs <- data.frame(
-  destination = rep(rownames(est), times = ncol(est)),
-  term        = rep(colnames(est), each = nrow(est)),
+  origin      = parts[, 1],
+  destination = parts[, 2],
+  term        = parts[, 3],
   estimate    = as.numeric(est),
   boot_se     = apply(boot, 1, stats::sd, na.rm = TRUE),
   lower       = apply(boot, 1, stats::quantile, 0.025, na.rm = TRUE),
@@ -211,31 +253,64 @@ coefs[c("estimate", "boot_se", "lower", "upper")] <-
 
 
 # ---- 9. Predicted transition probabilities -----------------------------------
-# More legible than a coefficient table: hold the covariates at the cohort median
-# and read off where each state goes next.
+# More legible than 250-odd coefficients: hold the covariates fixed and read off
+# where each state goes next. Predictions come from that origin's OWN model, so
+# each row is a probability distribution over the destinations observed from it;
+# a destination never seen from an origin is a structural zero, not a small
+# estimate.
 
-ref <- data.frame(
-  hours_in_state  = median(tp$hours_in_state, na.rm = TRUE),
-  cumulative_dose = median(tp$cumulative_dose, na.rm = TRUE),
-  window_start_hr = median(tp$window_start_hr, na.rm = TRUE),
-  sofa_total      = median(tp$sofa_total, na.rm = TRUE),
-  nee             = median(tp$nee, na.rm = TRUE),
-  age             = median(tp$age, na.rm = TRUE),
-  cci             = median(tp$cci, na.rm = TRUE),
-  sex             = names(sort(table(tp$sex), decreasing = TRUE))[1])
+profile_at <- function(sofa, nee, label) {
+  data.frame(
+    label           = label,
+    hours_in_state  = median(tp$hours_in_state,  na.rm = TRUE),
+    cumulative_dose = median(tp$cumulative_dose, na.rm = TRUE),
+    window_start_hr = median(tp$window_start_hr, na.rm = TRUE),
+    sofa_total      = sofa,
+    nee             = nee,
+    age             = median(tp$age, na.rm = TRUE),
+    cci             = median(tp$cci, na.rm = TRUE),
+    sex             = names(sort(table(tp$sex), decreasing = TRUE))[1],
+    stringsAsFactors = FALSE)
+}
 
-grid <- do.call(rbind, lapply(levels(tp$state), function(st)
-  cbind(data.frame(state = factor(st, levels = levels(tp$state))), ref)))
-pred <- as.data.frame(predict(fit, newdata = grid, type = "probs"))
-pred$state <- grid$state
+qq <- function(x, p) as.numeric(quantile(x, p, na.rm = TRUE))
+PROFILES <- rbind(
+  profile_at(qq(tp$sofa_total, .10), qq(tp$nee, .10), "least sick (p10)"),
+  profile_at(qq(tp$sofa_total, .50), qq(tp$nee, .50), "median (p50)"),
+  profile_at(qq(tp$sofa_total, .90), qq(tp$nee, .90), "sickest (p90)"))
 
-predicted <- do.call(rbind, lapply(seq_len(nrow(pred)), function(i)
-  data.frame(from = pred$state[i],
-             to = setdiff(names(pred), "state"),
-             probability = round(as.numeric(pred[i, setdiff(names(pred), "state")]), 4))))
+predict_all <- function(prof) {
+  do.call(rbind, lapply(ORIGINS, function(s) {
+    pr <- predict(fits[[s]], newdata = prof, type = "probs")
+    if (is.null(dim(pr))) pr <- setNames(as.numeric(pr), fits[[s]]$lev)
+    p <- setNames(rep(0, length(STATE_LEVELS)), STATE_LEVELS)
+    p[names(pr)] <- as.numeric(pr)
+    data.frame(profile = prof$label, from = s, to = STATE_LEVELS,
+               probability = round(as.numeric(p), 5), row.names = NULL)
+  }))
+}
 
-cat("\nPredicted next-state probability at the cohort median covariate profile\n")
-print(reshape(predicted, idvar = "from", timevar = "to", direction = "wide"),
+predicted_all <- do.call(rbind, lapply(seq_len(nrow(PROFILES)),
+                                       function(i) predict_all(PROFILES[i, ])))
+predicted <- predicted_all[predicted_all$profile == "median (p50)", ]
+
+# Each row must be a distribution. Tolerance is 1e-4, not 1e-6: the stored
+# probabilities are rounded to 5 dp, and seven rounded values can drift further
+# than 1e-6 from 1 without anything being wrong.
+chk <- tapply(predicted_all$probability,
+              paste(predicted_all$profile, predicted_all$from), sum)
+stopifnot("each origin's predicted probabilities must sum to 1" =
+            all(abs(chk - 1) < 1e-4))
+
+cat("\nPredicted next-state probability, median covariate profile\n")
+print(reshape(predicted[, c("from", "to", "probability")],
+              idvar = "from", timevar = "to", direction = "wide"),
+      row.names = FALSE)
+
+cat("\nSeverity gradient: P(died next window) and P(extubated next window)\n")
+g <- predicted_all[predicted_all$to %in% c("died", "extubated"), ]
+print(reshape(g[, c("from", "profile", "to", "probability")],
+              idvar = c("from", "to"), timevar = "profile", direction = "wide"),
       row.names = FALSE)
 
 
@@ -258,10 +333,11 @@ p_heat <- ggplot(predicted, aes(to, from, fill = probability)) +
   # top-to-bottom in state order, matching the printed table
   scale_y_discrete(limits = rev) +
   scale_colour_manual(values = c(`FALSE` = ink, `TRUE` = "white")) +
-  labs(title = sprintf("Where an episode goes in the next %d hours", WINDOW_H),
+  labs(title = sprintf("Probability of moving to each state in the next %d hours",
+                       WINDOW_H),
        subtitle = paste0(
-         "Predicted probability at the cohort median covariate profile.\n",
-         "Rows are the current state, columns the next. Terminal states never originate."),
+         "Median covariate profile. Rows are the current state, columns the next.\n",
+         "A 4h probability of 0.005 compounds to roughly 9% over the 18-window course."),
        x = "State at t + 1", y = "State at t", fill = "P") +
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(colour = ink, face = "bold"),
@@ -274,6 +350,43 @@ p_heat <- ggplot(predicted, aes(to, from, fill = probability)) +
 
 ggsave(file.path(dirs$phase, "phase5_predicted_transitions.png"), p_heat,
        width = 8.0, height = 5.2, dpi = 200)
+
+# The severity gradient is where the clinical content is, and a single-profile
+# heatmap hides it entirely.
+grad <- predicted_all[predicted_all$to %in%
+                        c("no fentanyl", "continuous only", "extubated", "died"), ]
+grad$profile <- factor(grad$profile, levels = PROFILES$label)
+grad$from <- factor(grad$from, levels = STATE_LEVELS)
+grad$to   <- factor(grad$to, levels = STATE_LEVELS)
+
+p_grad <- ggplot(grad, aes(profile, probability, group = from, colour = from)) +
+  geom_line(linewidth = 0.9) + geom_point(size = 1.8) +
+  facet_wrap(~ to, scales = "free_y", nrow = 1) +
+  scale_colour_manual(values = c(
+    "no fentanyl" = "#898781", "continuous only" = "#14427e",
+    "bolus only" = "#eb6834", "continuous + bolus" = "#4a8bd8",
+    "extubated" = "#7fb069")) +
+  guides(colour = guide_legend(nrow = 2)) +
+  labs(title = "The same transitions across a severity gradient",
+       subtitle = sprintf(
+         "SOFA and NEE at their p10, p50 and p90. Panels are the DESTINATION; colour the origin.\nSOFA p10/p50/p90 = %.0f / %.0f / %.0f.",
+         qq(tp$sofa_total, .10), qq(tp$sofa_total, .50), qq(tp$sofa_total, .90)),
+       x = "Severity profile", y = sprintf("P(destination) in the next %dh", WINDOW_H),
+       colour = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(colour = ink, face = "bold"),
+        plot.subtitle = element_text(colour = muted, margin = margin(b = 10)),
+        legend.position = "top",
+        legend.text = element_text(colour = muted, size = 9),
+        axis.title = element_text(colour = muted),
+        axis.text = element_text(colour = muted),
+        axis.text.x = element_text(angle = 20, hjust = 1),
+        panel.grid.minor = element_blank(),
+        strip.text = element_text(colour = ink, face = "bold"),
+        plot.background = element_rect(fill = "#fcfcfb", colour = NA))
+
+ggsave(file.path(dirs$phase, "phase5_severity_gradient.png"), p_grad,
+       width = 9.5, height = 4.6, dpi = 200)
 
 
 # ---- 11. Write ---------------------------------------------------------------
@@ -288,11 +401,12 @@ cat("\n")
 write_out(tm,        "phase5_transition_matrix.csv")
 write_out(counts,    "phase5_transition_counts.csv")
 write_out(coefs,     "phase5_model_coefficients.csv")
-write_out(predicted, "phase5_predicted_transitions.csv")
+write_out(predicted_all, "phase5_predicted_transitions.csv")
 write_out(model_fit, "phase5_model_fit.csv")
 
 # PHI: the fit carries fitted values per episode-window.
-saveRDS(list(fit = fit, formula = FORM, boot = boot),
+saveRDS(list(fits = fits, formula = FORM, origins = ORIGINS,
+             reference = REF, boot = boot, coefficients = coefs),
         file.path(dirs$out_phi, "transition_model.rds"))
 cat("written: transition_model.rds (PHI)\n")
 

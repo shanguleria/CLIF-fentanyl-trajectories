@@ -860,17 +860,36 @@ strategy. Three measurements retired it:
   `no fentanyl` 45.9% of the time. That *is* the strategy finding, without a
   degenerate indicator.
 
-**What Phase 5 does now.** `code/06_transition_model.R` fits a discrete-time
-multinomial model for the next delivery state:
+**What Phase 5 does now.** `code/06_transition_model.R` fits **one discrete-time
+multinomial model per origin state** for the next delivery state:
 
 ```
 state(t+1) ~ state(t) + hours_in_state + cumulative_dose + window_start_hr
              + sofa_total + nee + age + cci + sex
 ```
 
-on **178,126 transition pairs** from all 14,897 episodes (13,627 patients),
-reference destination `no fentanyl`. Rows whose current state is terminal are
-dropped — nothing transitions out of an absorbing state.
+on **238,630 transition pairs** from all 14,897 episodes, reference destination
+`no fentanyl`. Rows whose current state is *absorbing* are dropped; `extubated`
+is kept, being transient.
+
+**One model per origin, not one pooled model.** A pooled fit with `state` as a
+covariate forces a single coefficient per covariate across every origin. That is
+not credible here — a rising SOFA should mean "keep sedating, do not extubate"
+from `continuous only` and "this patient is failing" from `extubated`, plausibly
+opposite in sign. **Measured 2026-09-09** on 238,630 rows: pooled deviance
+262,596.8 on 78 df against 258,200.3 on 270 df for the fully interacted
+equivalent — a drop of **4,396.5 on 192 df, p < 1e-300**, with AIC preferring
+per-origin by ~4,000 despite the extra parameters. The pooled specification was
+misspecified. Fitting five separate models is statistically identical to full
+interaction and reads better: each coefficient table is "what drives moves out of
+*this* state". Per-origin n ranges 8,612 (`continuous + bolus`) to 89,535
+(`no fentanyl`), so the thin panels are the least well estimated and the n is
+reported alongside.
+
+The heterogeneity is visible in `phase5_severity_gradient.png`: from `extubated`,
+P(died) in the next 4h rises to **0.067** at p90 severity, an order of magnitude
+above any ventilated origin — exactly the interaction a pooled model cannot
+represent.
 
 **Why not a trajectory class.** It does not partition anyone: no *k* to choose,
 no claim that groups exist. Everything that undermined the class approach — level
