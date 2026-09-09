@@ -534,6 +534,66 @@ and `paths.py` is the only way to reach one. `output/intermediate_phi/` stays
 flat: it is the machine handoff and later phases read earlier phases' tables
 from it by name.
 
+#### Delivery states and transitions *(SG, 2026-09-09)*
+
+A second description of the same 72 hours, added after Phase 3/4 established
+that dose *level* is continuous and its latent classes were a discretisation of
+it. Seven mutually exclusive, exhaustive states per episode-window:
+
+| | State | Defined by |
+|---|---|---|
+| 1 | no fentanyl | ventilated, `inf_dose == 0` and `bolus_dose == 0` |
+| 2 | continuous only | ventilated, infusion running, no bolus |
+| 3 | bolus only | ventilated, bolus given, no infusion |
+| 4 | continuous + bolus | ventilated, both |
+| 5 | extubated | alive and admitted, `imv_status == 0` |
+| 6 | discharged alive | not `alive_admitted`, `died == FALSE` |
+| 7 | died | not `alive_admitted`, `died == TRUE` |
+
+**Defined by delivery route, not by a threshold**, so unlike a dose band there
+are no cut points to defend — which is the point, given what §10 Phase 4 found.
+States 5–7 are terminal and the script asserts they absorb.
+
+**Run on the WHOLE analytic cohort (14,897), not the landmark set.** The landmark
+conditions on being ventilated at T, so inside [0, T] nobody dies, is discharged,
+or is permanently extubated — the three terminal states would be empty by
+construction. 8,169 of 14,897 episodes (54.8%) leave before 72h, median at 24h,
+and that liberation pathway is what makes the description worth drawing.
+
+**What it shows at UCMC** (source: `phase1_state_prevalence.csv`,
+`phase1_state_transitions.csv`):
+
+| Hour | no fent | cont only | bolus only | cont+bolus | extubated | disch. alive | died |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 36.5% | 37.4% | 15.0% | 11.0% | 0% | 0% | 0% |
+| 24 | 38.6% | 27.6% | 4.5% | 3.2% | 22.2% | 0.2% | 3.7% |
+| 48 | 33.2% | 16.8% | 2.7% | 2.1% | 36.1% | 2.0% | 7.2% |
+| 68 | 29.0% | 11.8% | 2.6% | 1.7% | 41.3% | 4.1% | 9.5% |
+
+The transition matrix (row %, state at *t* → *t+1*) is strongly patterned rather
+than diffuse:
+
+- **`no fentanyl` and `continuous only` are near-absorbing** — 84.2% and 82.3%
+  self-transition. A running drip tends to keep running.
+- **`bolus only` is transient** — only 40.7% persists and **45.9% goes straight
+  to `no fentanyl`.** Bolus-only is a one-off dose, not a strategy.
+- **`continuous + bolus` resolves to `continuous only`** 61.7% of the time —
+  dual delivery is a transition, not a steady state.
+- **Escalation is asymmetric.** From `no fentanyl` the route in is via `bolus`
+  (6.8%) more than directly to `cont` (2.1%); from `cont` the way out is
+  `no fentanyl` (8.3%) or via `both` (6.1%), essentially never via `bolus` (0.6%).
+
+`bolus only` and `continuous + bolus` each roughly **halve within the first 24
+hours** while `continuous only` holds nearly flat until h24 and only then
+declines — early supplementation resolving well before the infusion itself is
+weaned. The summed dose curves cannot show this, because a bolus and an
+equivalent infusion rate are indistinguishable once added together.
+
+**Caveat to check before relying on it.** With a 4h window, a single push at hour
+3 followed by a drip starting at hour 5 reads as `bolus → cont` when clinically
+it was one decision. Worth a sensitivity analysis on window width, or requiring a
+state to persist ≥2 windows before counting it as entered.
+
 #### Federated pooling exports
 
 *(SG, 2026-09-07.)* Phase 1 emits two files whose only purpose is to be pooled

@@ -18,6 +18,7 @@ library(here)       # project-relative paths
 library(jsonlite)   # config.json
 library(arrow)      # parquet handoff from the Python phase
 library(ggplot2)    # figures
+library(ggalluvial)  # state-transition alluvial (Phase 1)
 library(gbmt)       # group-based trajectory models (Phases 3, 5)
 library(lcmm)       # latent class mixed models (Phase 4)
 library(survival)   # competing risks (Phase 6)

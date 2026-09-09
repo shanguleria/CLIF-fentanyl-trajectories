@@ -1504,8 +1504,15 @@ def main() -> None:
     long = long.merge(ti.drop(columns=["patient_id"]), on="encounter_block", how="left")
     long = long.merge(
         cohort[["encounter_block", "weight_kg", "first_imv_episode_hours",
-                "n_imv_episodes"]],
+                "n_imv_episodes", "discharge_category"]],
         on="encounter_block", how="left")
+
+    # died is derived here rather than left to each consumer, so the mortality
+    # rule lives in one place. time_to_event applies the identical rule to the
+    # landmark subset; this carries it for the WHOLE analytic cohort, which the
+    # Phase 1 state description needs in order to tell died from discharged.
+    long["died"] = long["discharge_category"].isin(
+        set(CONFIG["outcomes"]["mortality_categories"]))
 
     print("\n  SOFA")
     sofa_in = _sofa_inputs(t, cohort)

@@ -17,7 +17,7 @@
 
 # ---- 1. Packages -------------------------------------------------------------
 
-pkgs <- c("here", "jsonlite", "ggplot2", "arrow")
+pkgs <- c("here", "jsonlite", "ggplot2", "arrow", "ggalluvial")
 for (p in pkgs) {
   if (!requireNamespace(p, quietly = TRUE)) {
     install.packages(p, repos = "https://cloud.r-project.org")
@@ -91,7 +91,9 @@ OWNED <- list(phase = c(
   "phase1_pooling_continuous.csv", "phase1_pooling_categorical.csv",
   "phase1_provenance.json",
   "phase1_fentanyl_curves.png", "phase1_fentanyl_balanced_panels.png",
-  "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png"))
+  "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png",
+  "phase1_state_prevalence.csv", "phase1_state_transitions.csv",
+  "phase1_state_alluvial.png", "phase1_state_prevalence.png"))
 
 # Figures renamed 2026-09-07 when fentanyl became the primary view. A rename
 # leaves a stale twin the owned list no longer names.
@@ -112,7 +114,8 @@ long <- as.data.frame(read_parquet(
                  "dexmedetomidine_dose",
                  "age", "sex", "race", "cci", "bmi_admission", "weight_kg",
                  "sofa_total", "nee", "oxygenation", "lactate",
-                 "first_imv_episode_hours", "n_imv_episodes")))
+                 "first_imv_episode_hours", "n_imv_episodes",
+                 "died")))          # terminal states, section 12b
 
 tte <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "time_to_event.parquet"),
@@ -459,6 +462,74 @@ cat("\nBaseline characteristics\n")
 print(baseline, row.names = FALSE)
 
 
+# ---- 12b. Delivery states and transitions ------------------------------------
+# A different description of the same 72h: not "what shape is the dose curve"
+# but "what state is the episode in, and where does it go next".
+#
+# Seven states. Four describe HOW fentanyl was delivered while the patient was
+# ventilated; three are terminal. Because they are defined by which route was
+# used rather than by a threshold on a continuum, there are no cut points to
+# defend -- which is the whole point after the Phase 3/4 finding that dose level
+# is continuous and its classes were a discretisation of it (design notes
+# section 10, Phase 4).
+#
+# WHOLE ANALYTIC COHORT, not the landmark set. The landmark conditions on being
+# ventilated at T, so inside [0, T] nobody dies, is discharged or is
+# permanently extubated -- the three terminal states would be empty by
+# construction, and the liberation pathway is exactly what makes this figure
+# worth drawing. 8,169 of 14,897 episodes leave before 72h, median at 24h.
+
+STATE_LEVELS <- c("no fentanyl", "continuous only", "bolus only",
+                  "continuous + bolus", "extubated", "discharged alive", "died")
+
+long$state <- with(long, ifelse(
+  !alive_admitted, ifelse(died, "died", "discharged alive"),
+  ifelse(!ventilated, "extubated",
+    ifelse(inf_dose > 0 & bolus_dose > 0, "continuous + bolus",
+      ifelse(inf_dose > 0, "continuous only",
+        ifelse(bolus_dose > 0, "bolus only", "no fentanyl"))))))
+long$state <- factor(long$state, levels = STATE_LEVELS)
+stopifnot("every episode-window must land in exactly one state" =
+            !any(is.na(long$state)))
+
+# Prevalence per window -- the stacked view
+state_prevalence <- do.call(rbind, lapply(sort(unique(long$window_idx)), function(w) {
+  x <- long[long$window_idx == w, ]
+  data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
+             state = STATE_LEVELS,
+             n = as.integer(table(x$state)[STATE_LEVELS]),
+             pct = round(100 * as.numeric(table(x$state)[STATE_LEVELS]) / nrow(x), 2))
+}))
+
+cat("\nDelivery states, % of the analytic cohort\n")
+pv <- reshape(state_prevalence[, c("window_start_hr", "state", "pct")],
+              idvar = "window_start_hr", timevar = "state", direction = "wide")
+names(pv) <- sub("^pct\\.", "", names(pv))
+print(pv[pv$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
+
+# Transition matrix over consecutive windows
+ord <- long[order(long$encounter_block, long$window_idx), ]
+nxt <- ave(as.character(ord$state), ord$encounter_block,
+           FUN = function(v) c(v[-1], NA))
+tr <- data.frame(from = ord$state, to = factor(nxt, levels = STATE_LEVELS))
+tr <- tr[!is.na(tr$to), ]
+tm <- table(tr$from, tr$to)
+transition_matrix <- as.data.frame.matrix(round(100 * prop.table(tm, 1), 2))
+transition_matrix <- cbind(from = rownames(transition_matrix),
+                           n_at_risk = as.integer(rowSums(tm)), transition_matrix)
+
+cat("\nTransition matrix (row = state at t, col = state at t+1, row %)\n")
+print(transition_matrix, row.names = FALSE)
+
+# Terminal states must absorb; if they do not, the state definition is wrong.
+for (term in c("died", "discharged alive")) {
+  row <- tm[term, ]
+  stopifnot("a terminal state must be absorbing" =
+              sum(row[setdiff(STATE_LEVELS, term)]) == 0)
+}
+cat("  terminal states verified absorbing\n")
+
+
 # ---- 13. Figures -------------------------------------------------------------
 
 ink <- "#0b0b0b"; muted <- "#898781"; gridline <- "#e1e0d9"
@@ -643,6 +714,63 @@ ggsave(file.path(dirs$phase, "phase1_sedative_curves.png"), p_sed,
        width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
 
 
+# --- Delivery-state figures ---------------------------------------------------
+# Alluvial: every episode is a ribbon, its width the number of episodes moving
+# between states. Ribbons entering a terminal state never leave it, so
+# liberation and death are visible as the flow drains out of the fentanyl states.
+
+STATE_PAL <- c(
+  "no fentanyl"        = "#d8d6cf",
+  "continuous only"    = "#14427e",
+  "bolus only"         = "#eb6834",
+  "continuous + bolus" = "#4a8bd8",
+  "extubated"          = "#7fb069",
+  "discharged alive"   = "#a8c8ee",
+  "died"               = "#8c2f18")
+
+# Alluvial at every second window keeps the ribbons legible; 18 axes is a smear.
+# The x axis MUST be discrete: with a continuous x, ggalluvial draws the strata
+# but no flows at all, because it cannot tell which axes are adjacent.
+alv <- long[long$window_idx %% 2 == 0,
+            c("encounter_block", "window_start_hr", "state")]
+alv$hr <- factor(alv$window_start_hr)
+stopifnot("alluvial data must be in lodes form" =
+            is_lodes_form(alv, key = hr, value = state,
+                          id = encounter_block, silent = TRUE))
+
+p_alluvial <- house(
+  ggplot(alv, aes(x = hr, stratum = state, alluvium = encounter_block,
+                  fill = state)) +
+    geom_flow(alpha = 0.55, width = 0.42) +
+    geom_stratum(width = 0.42, colour = "#fcfcfb", linewidth = 0.25) +
+    scale_fill_manual(values = STATE_PAL, drop = FALSE) +
+    guides(fill = guide_legend(nrow = 2)) +
+    labs(title = "How fentanyl is delivered, and how episodes leave",
+         subtitle = sprintf(
+           "All %s ventilation episodes from the first IMV episode. Terminal states absorb.\nShown every %dh for legibility; the underlying grid is %dh.",
+           format(anchor_n, big.mark = ","), 2 * WINDOW_H, WINDOW_H),
+         x = "Hours since first IMV episode", y = "Ventilation episodes",
+         fill = NULL))
+
+ggsave(file.path(dirs$phase, "phase1_state_alluvial.png"), p_alluvial,
+       width = 9.0, height = 5.8, dpi = 200)
+
+# The same thing as proportions, which reads better for the trend than for the flow
+p_states <- house(
+  ggplot(state_prevalence, aes(window_start_hr, pct, fill = state)) +
+    geom_area(colour = "#fcfcfb", linewidth = 0.2) +
+    scale_fill_manual(values = STATE_PAL, drop = FALSE) +
+    scale_x_continuous(breaks = seq(0, EXTENT_H, by = 12)) +
+    guides(fill = guide_legend(nrow = 2)) +
+    labs(title = "Delivery state over the first 72h of ventilation",
+         subtitle = sprintf("%s ventilation episodes; states are mutually exclusive and exhaustive.",
+                            format(anchor_n, big.mark = ",")),
+         x = "Hours since first IMV episode", y = "% of episodes", fill = NULL))
+
+ggsave(file.path(dirs$phase, "phase1_state_prevalence.png"), p_states,
+       width = 7.5, height = 4.8, dpi = 200)
+
+
 # ---- 14. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
@@ -660,6 +788,8 @@ write_out(dose_distribution, "phase1_dose_distribution.csv")
 write_out(balanced_panels, "phase1_balanced_panels.csv")
 write_out(zero_fraction, "phase1_zero_fraction.csv")
 write_out(imv_episodes, "phase1_imv_episodes.csv")
+write_out(state_prevalence, "phase1_state_prevalence.csv")
+write_out(transition_matrix, "phase1_state_transitions.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)
