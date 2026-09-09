@@ -58,6 +58,15 @@ EXTENT_H <- config$cohort$granular_extent_hours
 MIN_CELL <- config$reporting$small_cell_min_den
 COV      <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 FENT_U   <- COV$exposure$units
+# Dose bands, read from the config and never defaulted here -- the cuts are
+# federation-critical (covariates.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE).
+DS_SPEC   <- COV$exposure$dose_states
+DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
+DOSE_LAB  <- unlist(DS_SPEC$labels)
+stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
+            length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
+          "dose states must be defined on window_mcg" =
+            identical(DS_SPEC$variable, "window_mcg"))
 
 # Cluster bootstrap replicates. 17 transitions from one episode are correlated,
 # and some patients contribute several episodes, so naive multinom standard
@@ -90,15 +99,26 @@ manifest <- require_manifest(dirs, here())
 message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
+PHASE5_STEMS <- c("transition_matrix.csv", "transition_counts.csv",
+                  "model_coefficients.csv", "predicted_transitions.csv",
+                  "transition_hazards.csv", "model_fit.csv",
+                  "measurement_by_origin.csv", "covariate_missingness.csv",
+                  "predicted_transitions.png", "severity_gradient.png",
+                  "transition_hazards.png")
+# One list, both definitions. Deriving the owned set from the same stems the
+# writer uses is the point: a stem added to one and not the other leaves a stale
+# file that the next run silently keeps.
 OWNED <- list(
   out_phi = c("transition_model.rds"),
-  phase   = c("phase5_transition_matrix.csv", "phase5_transition_counts.csv",
-              "phase5_model_coefficients.csv", "phase5_predicted_transitions.csv",
-              "phase5_predicted_transitions.png", "phase5_severity_gradient.png",
-              "phase5_transition_hazards.png", "phase5_transition_hazards.csv", "phase5_model_fit.csv", "phase5_measurement_by_origin.csv",
-              "phase5_covariate_missingness.csv",
+  phase   = c(as.vector(outer(c("phase5_", "phase5_dose_"), PHASE5_STEMS, paste0)),
               "phase5_provenance.json"))
-n_cleared <- clear_owned_outputs(dirs, OWNED)
+# A stem removed from the writer leaves a stale twin the owned list no longer
+# names, so clear_owned_outputs walks past it forever. phase5_complete_case_loss
+# was written while the missing-indicator decision was still open (design notes
+# section 10) and orphaned when it closed.
+RETIRED <- file.path("output", "final_no_phi", "06_transitions",
+                     "phase5_complete_case_loss.csv")
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
@@ -113,7 +133,7 @@ long <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
-                 "total_dose", "died",
+                 "total_dose", "window_mcg", "died",
                  "age", "sex", "bmi_admission", "cci",
                  "nee", "oxygenation", "spo2_plateau", "crrt_status",
                  "bun", "bicarbonate", "lactate")))
@@ -121,16 +141,35 @@ long <- as.data.frame(read_parquet(
 stopifnot("window count on disk disagrees with the config grid" =
             length(unique(long$window_idx)) == EXTENT_H / WINDOW_H)
 
-long <- derive_states(long)          # shared definition, code/utils/states.R
-long <- add_history(long, window_h = WINDOW_H)
+# States are derived INSIDE run_definition (section 11) -- each definition needs
+# its own. add_history is definition-dependent too: hours_in_state counts a run
+# of the CURRENT state, so it must be recomputed per definition.
 
 n_ep <- length(unique(long$encounter_block))
 cat(sprintf("\nAnalytic cohort: %s ventilation episodes x %d windows\n",
             format(n_ep, big.mark = ","), length(unique(long$window_idx))))
 
 
+# ---- 6..10b as ONE function, run once per state definition -------------------
+# Both definitions -- delivery ROUTE and intensity BAND -- go through identical
+# machinery: per-origin multinomial, cluster bootstrap, predicted transitions,
+# hazard curves. Writing it once is the only way the two stay comparable; a
+# copied second script would drift on the first edit. Lyons et al. fit two
+# multistate models on one cohort for the same reason.
+#
+# TAG prefixes the outputs ("" for route, "dose_" for intensity) and REF names
+# the multinomial reference destination, which differs because the natural
+# baseline differs: `no fentanyl` for routes, `zero` for bands.
+
+run_definition <- function(long, TAG, LABEL, REF) {
+
+LEVELS <- levels(long$state)
+cat(sprintf("\n\n%s\n== %s states: %s\n%s\n",
+            strrep("=", 78), LABEL, paste(LEVELS, collapse = " | "), strrep("=", 78)))
+
 # ---- 6. Transition pairs -----------------------------------------------------
 
+long <- add_history(long, window_h = WINDOW_H)
 tp <- transition_pairs(long)
 cat(sprintf("Transition pairs: %s rows (terminal origins dropped)\n",
             format(nrow(tp), big.mark = ",")))
@@ -409,9 +448,9 @@ predict_all <- function(prof) {
   do.call(rbind, lapply(ORIGINS, function(s) {
     pr <- predict(fits[[s]], newdata = prof, type = "probs")
     if (is.null(dim(pr))) pr <- setNames(as.numeric(pr), fits[[s]]$lev)
-    p <- setNames(rep(0, length(STATE_LEVELS)), STATE_LEVELS)
+    p <- setNames(rep(0, length(LEVELS)), LEVELS)
     p[names(pr)] <- as.numeric(pr)
-    data.frame(profile = prof$label, from = s, to = STATE_LEVELS,
+    data.frame(profile = prof$label, from = s, to = LEVELS,
                probability = round(as.numeric(p), 5), row.names = NULL)
   }))
 }
@@ -443,8 +482,8 @@ print(reshape(g[, c("from", "profile", "to", "probability")],
 # ---- 10. Figure --------------------------------------------------------------
 
 ink <- "#0b0b0b"; muted <- "#898781"; gridline <- "#e1e0d9"
-predicted$to <- factor(predicted$to, levels = STATE_LEVELS)
-predicted$from <- factor(as.character(predicted$from), levels = STATE_LEVELS)
+predicted$to <- factor(predicted$to, levels = LEVELS)
+predicted$from <- factor(as.character(predicted$from), levels = LEVELS)
 
 p_heat <- ggplot(predicted, aes(to, from, fill = probability)) +
   geom_tile(colour = "#fcfcfb", linewidth = 0.6) +
@@ -474,7 +513,7 @@ p_heat <- ggplot(predicted, aes(to, from, fill = probability)) +
         panel.grid = element_blank(),
         plot.background = element_rect(fill = "#fcfcfb", colour = NA))
 
-ggsave(file.path(dirs$phase, "phase5_predicted_transitions.png"), p_heat,
+ggsave(file.path(dirs$phase, sprintf("phase5_%spredicted_transitions.png", TAG)), p_heat,
        width = 8.0, height = 5.2, dpi = 200)
 
 # The severity gradient is where the clinical content is, and a single-profile
@@ -482,8 +521,8 @@ ggsave(file.path(dirs$phase, "phase5_predicted_transitions.png"), p_heat,
 grad <- predicted_all[predicted_all$to %in%
                         c("no fentanyl", "continuous only", "extubated", "died"), ]
 grad$profile <- factor(grad$profile, levels = PROFILES$label)
-grad$from <- factor(grad$from, levels = STATE_LEVELS)
-grad$to   <- factor(grad$to, levels = STATE_LEVELS)
+grad$from <- factor(grad$from, levels = LEVELS)
+grad$to   <- factor(grad$to, levels = LEVELS)
 
 p_grad <- ggplot(grad, aes(profile, probability, group = from, colour = from)) +
   geom_line(linewidth = 0.9) + geom_point(size = 1.8) +
@@ -512,7 +551,7 @@ p_grad <- ggplot(grad, aes(profile, probability, group = from, colour = from)) +
         strip.text = element_text(colour = ink, face = "bold"),
         plot.background = element_rect(fill = "#fcfcfb", colour = NA))
 
-ggsave(file.path(dirs$phase, "phase5_severity_gradient.png"), p_grad,
+ggsave(file.path(dirs$phase, sprintf("phase5_%sseverity_gradient.png", TAG)), p_grad,
        width = 9.5, height = 4.6, dpi = 200)
 
 # ---- 10b. Transition hazards over the ventilation course ---------------------
@@ -554,7 +593,7 @@ STD_N    <- 2000L   # standardisation sample per origin
 # point estimate rather than erroring anywhere near the cause.
 haz_counts <- function(d, grid) {
   tb <- table(factor(d$window_start_hr, levels = grid),
-              factor(d$state_next, levels = STATE_LEVELS))
+              factor(d$state_next, levels = LEVELS))
   sweep(tb, 1, pmax(rowSums(tb), 1), "/")
 }
 
@@ -600,10 +639,10 @@ haz_adjusted <- do.call(rbind, lapply(ORIGINS, function(s) {
     pr <- predict(fits[[s]], newdata = nd, type = "probs")
     if (is.null(dim(pr))) pr <- matrix(pr, ncol = 1,
                                        dimnames = list(NULL, fits[[s]]$lev[2]))
-    m <- setNames(rep(0, length(STATE_LEVELS)), STATE_LEVELS)
+    m <- setNames(rep(0, length(LEVELS)), LEVELS)
     m[colnames(pr)] <- colMeans(pr)
     data.frame(curve = "adjusted", origin = s, window_start_hr = w,
-               destination = STATE_LEVELS, n_at_risk = sum(d$window_start_hr == w),
+               destination = LEVELS, n_at_risk = sum(d$window_start_hr == w),
                hazard = round(as.numeric(m), 5),
                lower = NA_real_, upper = NA_real_, row.names = NULL)
   }))
@@ -646,14 +685,20 @@ cat(paste(sprintf("%s %s", ORIGINS,
 # (they dominate the axis at 0.80-0.97 and carry no information the others lack)
 hz <- hazards[as.character(hazards$destination) != as.character(hazards$origin) &
                 !is.na(hazards$hazard), ]
-hz$origin      <- factor(hz$origin, levels = STATE_LEVELS)
-hz$destination <- factor(hz$destination, levels = STATE_LEVELS)
+hz$origin      <- factor(hz$origin, levels = LEVELS)
+hz$destination <- factor(hz$destination, levels = LEVELS)
 hz$curve       <- factor(hz$curve, levels = c("observed", "adjusted"))
 
-STATE_COL <- c("no fentanyl" = "#898781", "continuous only" = "#14427e",
-               "bolus only" = "#eb6834", "continuous + bolus" = "#4a8bd8",
-               "extubated" = "#7fb069", "discharged alive" = "#c9a227",
-               "died" = "#a03030")
+# Categorical for routes, an ordered ramp for intensity bands -- a reader should
+# be able to see escalation as a gradient, and routes are not ordered.
+STATE_COL <- if (identical(TAG, "")) {
+  c("no fentanyl" = "#898781", "continuous only" = "#14427e",
+    "bolus only" = "#eb6834", "continuous + bolus" = "#4a8bd8",
+    "extubated" = "#7fb069", "discharged alive" = "#c9a227", "died" = "#a03030")
+} else {
+  setNames(c("#898781", "#a8c8ee", "#4a8bd8", "#14427e",
+             "#7fb069", "#c9a227", "#a03030"), LEVELS)
+}
 
 p_haz <- ggplot(hz, aes(window_start_hr, hazard,
                         colour = destination, fill = destination)) +
@@ -684,34 +729,52 @@ p_haz <- ggplot(hz, aes(window_start_hr, hazard,
         strip.text = element_text(colour = ink, face = "bold"),
         plot.background = element_rect(fill = "#fcfcfb", colour = NA))
 
-ggsave(file.path(dirs$phase, "phase5_transition_hazards.png"), p_haz,
+ggsave(file.path(dirs$phase, sprintf("phase5_%stransition_hazards.png", TAG)), p_haz,
        width = 10.5, height = 7.0, dpi = 200)
 
+  list(tag = TAG, label = LABEL, levels = LEVELS, reference = REF,
+       tm = tm, counts = counts, coefs = coefs, predicted_all = predicted_all,
+       model_fit = model_fit, cc = cc, missing_by_cov = missing_by_cov,
+       hazards = hazards, fits = fits, formula = FORM, origins = ORIGINS,
+       boot = boot)
+}
 
 
-# ---- 11. Write ---------------------------------------------------------------
+
+# ---- 11. Run both definitions, then write ------------------------------------
+
+RESULTS <- list(
+  run_definition(derive_states(long), "", "Delivery route", "no fentanyl"),
+  run_definition(derive_dose_states(long, DOSE_CUTS, DOSE_LAB), "dose_",
+                 sprintf("Intensity band (0 / <=%s / <=%s / >%s mcg per %dh window)",
+                         DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2], WINDOW_H),
+                 DOSE_LAB[1]))
 
 write_out <- function(x, name) {
-  f <- file.path(dirs$phase, name)
-  write.csv(x, f, row.names = FALSE)
+  write.csv(x, file.path(dirs$phase, name), row.names = FALSE)
   cat(sprintf("written: %s\n", name))
 }
 
 cat("\n")
-write_out(tm,        "phase5_transition_matrix.csv")
-write_out(counts,    "phase5_transition_counts.csv")
-write_out(coefs,     "phase5_model_coefficients.csv")
-write_out(predicted_all, "phase5_predicted_transitions.csv")
-write_out(hazards,   "phase5_transition_hazards.csv")
-write_out(model_fit, "phase5_model_fit.csv")
-write_out(cc, "phase5_measurement_by_origin.csv")
-write_out(missing_by_cov, "phase5_covariate_missingness.csv")
+for (R in RESULTS) {
+  g <- function(stem) sprintf("phase5_%s%s", R$tag, stem)
+  write_out(R$tm,            g("transition_matrix.csv"))
+  write_out(R$counts,        g("transition_counts.csv"))
+  write_out(R$coefs,         g("model_coefficients.csv"))
+  write_out(R$predicted_all, g("predicted_transitions.csv"))
+  write_out(R$hazards,       g("transition_hazards.csv"))
+  write_out(R$model_fit,     g("model_fit.csv"))
+  write_out(R$cc,            g("measurement_by_origin.csv"))
+  write_out(R$missing_by_cov, g("covariate_missingness.csv"))
+}
 
-# PHI: the fit carries fitted values per episode-window.
-saveRDS(list(fits = fits, formula = FORM, origins = ORIGINS,
-             reference = REF, boot = boot, coefficients = coefs),
+# PHI: the fits carry fitted values per episode-window. Both definitions in one
+# object, keyed by tag, so a reader cannot pick up one and think it is the other.
+saveRDS(setNames(RESULTS, vapply(RESULTS, function(R)
+                   if (nzchar(R$tag)) sub("_$", "", R$tag) else "route",
+                   character(1))),
         file.path(dirs$out_phi, "transition_model.rds"))
-cat("written: transition_model.rds (PHI)\n")
+cat("written: transition_model.rds (PHI, both definitions)\n")
 
 write_json(prov, file.path(dirs$phase, "phase5_provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)

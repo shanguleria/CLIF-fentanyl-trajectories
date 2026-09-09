@@ -41,6 +41,16 @@ PANELS    <- unlist(config$cohort$balanced_panel_hours)
 LANDMARK  <- config$cohort$landmark_hours
 
 COV       <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
+# Dose-band definition. Read from the config, never defaulted here: the cuts are
+# federation-critical and a local default is how a site keeps cutting at the old
+# values after the consortium moves them.
+DS_SPEC   <- COV$exposure$dose_states
+DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
+DOSE_LAB  <- unlist(DS_SPEC$labels)
+stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
+            length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
+          "dose states must be defined on window_mcg" =
+            identical(DS_SPEC$variable, "window_mcg"))
 SED_UNITS <- COV$exposure$sedatives$units
 
 # Read the drug list FROM the config rather than restating it. A hardcoded list
@@ -94,7 +104,9 @@ OWNED <- list(phase = c(
   "phase1_fentanyl_curves.png", "phase1_fentanyl_balanced_panels.png",
   "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png",
   "phase1_state_prevalence.csv", "phase1_state_transitions.csv",
-  "phase1_state_alluvial.png", "phase1_state_prevalence.png"))
+  "phase1_state_alluvial.png", "phase1_state_prevalence.png",
+  "phase1_dose_state_prevalence.csv", "phase1_dose_state_transitions.csv",
+  "phase1_dose_state_alluvial.png", "phase1_dose_state_prevalence.png"))
 
 # Figures renamed 2026-09-07 when fentanyl became the primary view. A rename
 # leaves a stale twin the owned list no longer names.
@@ -111,7 +123,7 @@ long <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
-                 "total_dose", "propofol_dose", "midazolam_dose",
+                 "total_dose", "window_mcg", "propofol_dose", "midazolam_dose",
                  "dexmedetomidine_dose",
                  "age", "sex", "race", "cci", "bmi_admission", "weight_kg",
                  "sofa_total", "nee", "oxygenation", "lactate",
@@ -480,35 +492,53 @@ print(baseline, row.names = FALSE)
 # construction, and the liberation pathway is exactly what makes this figure
 # worth drawing. 8,169 of 14,897 episodes leave before 72h, median at 24h.
 
-long <- derive_states(long)      # shared definition, code/utils/states.R
+# TWO definitions, same machinery. The first describes HOW fentanyl was
+# delivered (route); the second HOW MUCH (intensity band on window_mcg). Lyons
+# et al. fit two multistate models on one cohort for the same reason -- AKI
+# stage, then AKI x IMV -- and called it triangulation. Everything below is
+# written once and run twice, so the two can never drift apart in their handling.
 
-# Prevalence per window -- the stacked view
-state_prevalence <- do.call(rbind, lapply(sort(unique(long$window_idx)), function(w) {
-  x <- long[long$window_idx == w, ]
-  data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
-             state = STATE_LEVELS,
-             n = as.integer(table(x$state)[STATE_LEVELS]),
-             pct = round(100 * as.numeric(table(x$state)[STATE_LEVELS]) / nrow(x), 2))
-}))
+state_summary <- function(d, tag) {
+  lv <- levels(d$state)
+  prevalence <- do.call(rbind, lapply(sort(unique(d$window_idx)), function(w) {
+    x <- d[d$window_idx == w, ]
+    tb <- table(x$state)[lv]
+    data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
+               state = lv, n = as.integer(tb),
+               pct = round(100 * as.numeric(tb) / nrow(x), 2))
+  }))
+  tp <- transition_pairs(d)
+  # Terminal states must absorb; transition_pairs() drops rows starting in one,
+  # so a terminal state appearing as an ORIGIN means the definition is wrong.
+  stopifnot("an absorbing state must not originate a transition" =
+              !any(tp$state %in% STATE_ABSORBING))
 
-cat("\nDelivery states, % of the analytic cohort\n")
-pv <- reshape(state_prevalence[, c("window_start_hr", "state", "pct")],
-              idvar = "window_start_hr", timevar = "state", direction = "wide")
-names(pv) <- sub("^pct\\.", "", names(pv))
-print(pv[pv$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
+  cat(sprintf("\n%s states, %% of the analytic cohort\n", tag))
+  pv <- reshape(prevalence[, c("window_start_hr", "state", "pct")],
+                idvar = "window_start_hr", timevar = "state", direction = "wide")
+  names(pv) <- sub("^pct\\.", "", names(pv))
+  print(pv[pv$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
 
-# Transition matrix over consecutive windows
-tp <- transition_pairs(long)
-transition_matrix_tbl <- transition_matrix(tp)
+  tmx <- transition_matrix(tp)
+  cat(sprintf("\n%s transition matrix (row = t, col = t+1, row %%)\n", tag))
+  print(tmx, row.names = FALSE)
+  cat("  terminal states verified absorbing\n")
 
-cat("\nTransition matrix (row = state at t, col = state at t+1, row %)\n")
-print(transition_matrix_tbl, row.names = FALSE)
+  list(prevalence = prevalence, matrix = tmx, data = d)
+}
 
-# Terminal states must absorb; transition_pairs() drops rows starting in one, so
-# a terminal state appearing as an ORIGIN here would mean the definition is wrong.
-stopifnot("an absorbing state must not originate a transition" =
-            !any(tp$state %in% STATE_ABSORBING))
-cat("  terminal states verified absorbing\n")
+long  <- derive_states(long)                              # route definition
+route <- state_summary(long, "Delivery")
+
+# The intensity definition. derive_dose_states() overwrites `state`, so it runs
+# on a COPY -- `long` keeps the route states for the rest of the script.
+dose <- state_summary(
+  derive_dose_states(long, DOSE_CUTS, DOSE_LAB),
+  sprintf("Intensity (0 / <=%s / <=%s / >%s mcg per %dh window)",
+          DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2], WINDOW_H))
+
+state_prevalence      <- route$prevalence
+transition_matrix_tbl <- route$matrix
 
 
 # ---- 13. Figures -------------------------------------------------------------
@@ -709,47 +739,66 @@ STATE_PAL <- c(
   "discharged alive"   = "#a8c8ee",
   "died"               = "#8c2f18")
 
+# A sequential ramp for intensity, because the bands are ORDERED: a reader
+# should be able to see escalation as a colour gradient. The route palette above
+# is categorical, because routes are not ordered.
+DOSE_PAL <- setNames(
+  c("#e8e6df", "#a8c8ee", "#4a8bd8", "#14427e", "#7fb069", "#a8c8ee", "#8c2f18"),
+  dose_state_levels(DOSE_LAB))
+DOSE_PAL[["discharged alive"]] <- "#c9a227"     # must not collide with `low`
+
 # Alluvial at every second window keeps the ribbons legible; 18 axes is a smear.
 # The x axis MUST be discrete: with a continuous x, ggalluvial draws the strata
 # but no flows at all, because it cannot tell which axes are adjacent.
-alv <- long[long$window_idx %% 2 == 0,
-            c("encounter_block", "window_start_hr", "state")]
-alv$hr <- factor(alv$window_start_hr)
-stopifnot("alluvial data must be in lodes form" =
-            is_lodes_form(alv, key = hr, value = state,
-                          id = encounter_block, silent = TRUE))
+draw_states <- function(res, pal, tag, title_flow, title_area, sub_area) {
+  d <- res$data
+  alv <- d[d$window_idx %% 2 == 0,
+           c("encounter_block", "window_start_hr", "state")]
+  alv$hr <- factor(alv$window_start_hr)
+  stopifnot("alluvial data must be in lodes form" =
+              is_lodes_form(alv, key = hr, value = state,
+                            id = encounter_block, silent = TRUE))
 
-p_alluvial <- house(
-  ggplot(alv, aes(x = hr, stratum = state, alluvium = encounter_block,
-                  fill = state)) +
-    geom_flow(alpha = 0.55, width = 0.42) +
-    geom_stratum(width = 0.42, colour = "#fcfcfb", linewidth = 0.25) +
-    scale_fill_manual(values = STATE_PAL, drop = FALSE) +
-    guides(fill = guide_legend(nrow = 2)) +
-    labs(title = "How fentanyl is delivered, and how episodes leave",
-         subtitle = sprintf(
-           "All %s ventilation episodes from the first IMV episode. Terminal states absorb.\nShown every %dh for legibility; the underlying grid is %dh.",
-           format(anchor_n, big.mark = ","), 2 * WINDOW_H, WINDOW_H),
-         x = "Hours since first IMV episode", y = "Ventilation episodes",
-         fill = NULL))
+  p_alluvial <- house(
+    ggplot(alv, aes(x = hr, stratum = state, alluvium = encounter_block,
+                    fill = state)) +
+      geom_flow(alpha = 0.55, width = 0.42) +
+      geom_stratum(width = 0.42, colour = "#fcfcfb", linewidth = 0.25) +
+      scale_fill_manual(values = pal, drop = FALSE) +
+      guides(fill = guide_legend(nrow = 2)) +
+      labs(title = title_flow,
+           subtitle = sprintf(
+             "All %s ventilation episodes from the first IMV episode. Terminal states absorb.\nShown every %dh for legibility; the underlying grid is %dh.",
+             format(anchor_n, big.mark = ","), 2 * WINDOW_H, WINDOW_H),
+           x = "Hours since first IMV episode", y = "Ventilation episodes",
+           fill = NULL))
+  ggsave(file.path(dirs$phase, sprintf("phase1_%salluvial.png", tag)),
+         p_alluvial, width = 9.0, height = 5.8, dpi = 200)
 
-ggsave(file.path(dirs$phase, "phase1_state_alluvial.png"), p_alluvial,
-       width = 9.0, height = 5.8, dpi = 200)
+  p_states <- house(
+    ggplot(res$prevalence, aes(window_start_hr, pct, fill = state)) +
+      geom_area(colour = "#fcfcfb", linewidth = 0.2) +
+      scale_fill_manual(values = pal, drop = FALSE) +
+      scale_x_continuous(breaks = seq(0, EXTENT_H, by = 12)) +
+      guides(fill = guide_legend(nrow = 2)) +
+      labs(title = title_area, subtitle = sub_area,
+           x = "Hours since first IMV episode", y = "% of episodes", fill = NULL))
+  ggsave(file.path(dirs$phase, sprintf("phase1_%sprevalence.png", tag)),
+         p_states, width = 7.5, height = 4.8, dpi = 200)
+}
 
-# The same thing as proportions, which reads better for the trend than for the flow
-p_states <- house(
-  ggplot(state_prevalence, aes(window_start_hr, pct, fill = state)) +
-    geom_area(colour = "#fcfcfb", linewidth = 0.2) +
-    scale_fill_manual(values = STATE_PAL, drop = FALSE) +
-    scale_x_continuous(breaks = seq(0, EXTENT_H, by = 12)) +
-    guides(fill = guide_legend(nrow = 2)) +
-    labs(title = "Delivery state over the first 72h of ventilation",
-         subtitle = sprintf("%s ventilation episodes; states are mutually exclusive and exhaustive.",
-                            format(anchor_n, big.mark = ",")),
-         x = "Hours since first IMV episode", y = "% of episodes", fill = NULL))
+draw_states(route, STATE_PAL, "state_",
+  "How fentanyl is delivered, and how episodes leave",
+  "Delivery state over the first 72h of ventilation",
+  sprintf("%s ventilation episodes; states are mutually exclusive and exhaustive.",
+          format(anchor_n, big.mark = ",")))
 
-ggsave(file.path(dirs$phase, "phase1_state_prevalence.png"), p_states,
-       width = 7.5, height = 4.8, dpi = 200)
+draw_states(dose, DOSE_PAL, "dose_state_",
+  "How much fentanyl, and how episodes leave",
+  "Fentanyl intensity over the first 72h of ventilation",
+  sprintf("%s episodes. Bands are mcg delivered per %dh window: 0 / <=%s / <=%s / >%s.",
+          format(anchor_n, big.mark = ","), WINDOW_H,
+          DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2]))
 
 
 # ---- 14. Write ---------------------------------------------------------------
@@ -771,6 +820,8 @@ write_out(zero_fraction, "phase1_zero_fraction.csv")
 write_out(imv_episodes, "phase1_imv_episodes.csv")
 write_out(state_prevalence, "phase1_state_prevalence.csv")
 write_out(transition_matrix_tbl, "phase1_state_transitions.csv")
+write_out(dose$prevalence, "phase1_dose_state_prevalence.csv")
+write_out(dose$matrix,     "phase1_dose_state_transitions.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)

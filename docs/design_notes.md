@@ -860,6 +860,58 @@ strategy. Three measurements retired it:
   `no fentanyl` 45.9% of the time. That *is* the strategy finding, without a
   degenerate indicator.
 
+**TWO state definitions, both run** *(SG, 2026-09-09).* The first describes
+**how** fentanyl was delivered (route); the second **how much** (intensity band).
+Lyons et al. fit two multistate models on one cohort -- AKI stage, then AKI x IMV
+-- and called it triangulation; this is the same move. Both share the three
+terminal states, so a single code path in `code/utils/states.R` and a single
+`run_definition()` in script 06 serve both, and they cannot drift.
+
+| | states | at-risk transitions per origin |
+|---|---|---|
+| route (`derive_states`) | no fentanyl / continuous only / bolus only / continuous + bolus | 89,607 / 65,544 / 14,359 / 8,616 |
+| intensity (`derive_dose_states`) | zero / low / medium / high | 89,607 / 38,281 / 22,492 / 27,746 |
+
+plus `extubated` (60,685), `discharged alive`, `died` in both.
+
+**Bands: 0 / <=200 / <=400 / >400 mcg per 4h window**, declared in
+`covariates.json` `exposure.dose_states`. Shares over ventilated windows are
+50.8 / 21.3 / 12.5 / 15.5%. The edges are 50 and 100 mcg/hr in rate terms and sit
+near the 4th and 6th deciles of non-zero dosing (deciles 50 100 150 200 300 400
+450 600 800 mcg, median 300).
+
+*Why a declared band is not the latent class Phase 3/4 rejected.* Those phases
+found dose level continuous with no gaps, which is fatal to a **latent** class
+claim -- that k kinds of patient exist, which gbmt asserted and could not support
+-- and says nothing about a **declared** band, which asserts nothing and only
+labels. KDIGO stage, the state definition in Lyons, is itself a cut on a
+continuous creatinine ratio.
+
+*Why the bands must be absolute.* Site-specific tertiles would make `high` mean a
+different dose at every site and the pooled transition matrices meaningless --
+the same failure mode as a site-chosen gbmt `nstart`. Moving them is a consortium
+decision.
+
+*Why `window_mcg` and not `total_dose`.* `total_dose` is a **rate** (mcg/hr, the
+time-weighted mean over the window's hourly cells); `window_mcg` is the **amount**
+delivered (mcg, the sum over those cells). They agree to a factor of
+`window_hours` on a full window but not on a short one: `_hourly_scaffold` drops
+cells past `followup_end_dttm`, so 632 of 184,854 ventilated windows (0.34%; 151
+at 1h, 215 at 2h, 266 at 3h) hold fewer than four, and rate x 4 would credit a
+patient with drug they were not present to receive -- up to 1,200 mcg in the worst
+case. Phase 0 therefore computes both in one pass rather than reconstructing one
+from the other. Extubation does **not** shorten a window; only discharge or death
+does. Trajectory modelling (Phases 3-4) keeps the rate, so those fits stand.
+
+**What the intensity bands show that routes cannot.** The transition matrix is
+**banded** -- movement is overwhelmingly to an adjacent band, an escalation and
+de-escalation ladder -- and 21.1% of ventilated-to-ventilated transitions change
+band, so there is real movement to model rather than a sticky diagonal.
+Extubation is steeply graded by dose (5.9% / 5.6% / 1.9% / 0.9% per 4h window
+from zero / low / medium / high) while death is flat (0.2-0.8%), so the gradient
+is not simply severity driving both. Route states are structurally blind to this:
+25 and 200 mcg/hr are both `continuous only`.
+
 **What Phase 5 does now.** `code/06_transition_model.R` fits **one discrete-time
 multinomial model per origin state** for the next delivery state:
 
@@ -1889,7 +1941,7 @@ Two mechanisms:
   bound changes: fentanyl **11,000 mcg/hr** and NEE **17.45 mcg/kg/min-equiv** —
   the latter reproducing exactly the figure `CRRT-dose-lmtp` reports, which is an
   independent check that both ported tables match theirs.
-- **`tests/test_covariates.py`** — 20 static checks, all verified to fire by
+- **`tests/test_covariates.py`** — 24 static checks, all verified to fire by
   breaking them: summary rules are in the dispatch vocabulary; every variable has
   exactly one missingness class; class membership lists agree with the
   per-variable declarations; LOCF-eligible variables have caps and ineligible ones

@@ -569,7 +569,8 @@ def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
         print(f"    across {long.loc[hit, 'encounter_block'].nunique():,} blocks; "
               f"median {long.loc[hit, 'total_dose'].median():.2f} mcg/hr, "
               f"{int((long.loc[hit, 'inf_dose'] == 0).sum()):,} bolus-only")
-    for c in ("inf_dose", "bolus_dose", "n_bolus", "total_dose"):
+    for c in ("inf_dose", "inf_mcg", "bolus_dose", "bolus_mcg", "n_bolus",
+              "total_dose", "window_mcg"):
         long.loc[off, c] = 0.0
     return long
 
@@ -653,23 +654,39 @@ def bolus_doses(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Data
     agg = b.groupby(["encounter_block", "window_idx"], as_index=False).agg(
         bolus_mcg=("mcg", "sum"), n_bolus=("mcg", "size"))
     # mcg delivered in the window, spread over its hours -> mcg/hr, the same scale
-    # as the infusion arm, so the two are additive.
+    # as the infusion arm, so the two are additive. bolus_mcg travels alongside
+    # for the amount scale: a bolus is charted as an amount already, so unlike
+    # the infusion arm it needs no reconstruction and is exact in a short window.
     agg["bolus_dose"] = agg["bolus_mcg"] / WINDOW_H
-    return agg[["encounter_block", "window_idx", "bolus_dose", "n_bolus"]]
+    return agg[["encounter_block", "window_idx", "bolus_dose", "bolus_mcg",
+                "n_bolus"]]
 
 
 def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
                     windows: pd.DataFrame) -> pd.DataFrame:
     g = grid.copy()
     g["window_idx"] = g["hr"] // WINDOW_H
-    inf = g.groupby(["encounter_block", "window_idx"], as_index=False)["rate"].mean()
-    inf = inf.rename(columns={"rate": "inf_dose"})
+    # mean AND sum in one pass. The mean is the time-weighted RATE (mcg/hr); the
+    # sum over hourly cells, each an hour wide, is the AMOUNT delivered (mcg).
+    #
+    # These are NOT interchangeable by a factor of WINDOW_H. _hourly_scaffold
+    # drops cells past followup_end_dttm, so a window straddling discharge or
+    # death holds fewer than WINDOW_H cells -- 632 ventilated windows at UCMC
+    # (151 with 1 hour, 215 with 2, 266 with 3; measured 2026-09-09). There the
+    # mean is still the right rate but mean * WINDOW_H overstates the amount.
+    # Taking the sum directly is exact in both cases; reconstructing it from the
+    # mean is not, which is why both are computed here rather than derived later.
+    # Note extubation does NOT shorten a window: the scaffold ends at discharge
+    # or death, and an extubated patient keeps all WINDOW_H cells.
+    inf = g.groupby(["encounter_block", "window_idx"], as_index=False)["rate"].agg(
+        inf_dose="mean", inf_mcg="sum")
 
     out = windows.merge(inf, on=["encounter_block", "window_idx"], how="left")
     out = out.merge(bolus, on=["encounter_block", "window_idx"], how="left")
-    for c in ("inf_dose", "bolus_dose", "n_bolus"):
+    for c in ("inf_dose", "inf_mcg", "bolus_dose", "bolus_mcg", "n_bolus"):
         out[c] = out[c].fillna(0.0)
-    out["total_dose"] = out["inf_dose"] + out["bolus_dose"]
+    out["total_dose"] = out["inf_dose"] + out["bolus_dose"]        # mcg/hr
+    out["window_mcg"] = out["inf_mcg"] + out["bolus_mcg"]          # mcg
 
     # The derived ceiling is exact for the infusion arm only: it is
     # max(mcg/hr) / min(weight). A window's bolus SUM has no principled ceiling,

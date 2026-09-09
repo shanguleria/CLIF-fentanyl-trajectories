@@ -249,7 +249,7 @@ python3 code/check_config.py
 | 2 | R | `code/03_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
 | 3 | R | `code/04_gbmt_classes.R` | `gbmt` on combined dose, `ng` sweep, class enumeration |
 | 4 | R | `code/05_lcmm_classes.R` | `lcmm::hlme` on the same data; compare partitions by ARI |
-| 5 | R | `code/06_transition_model.R` | Discrete-time multinomial model for the next fentanyl delivery state, whole analytic cohort |
+| 5 | R | `code/06_transition_model.R` | Discrete-time multinomial model for the next fentanyl state, whole analytic cohort. Run twice: delivery **route** and dose **intensity band** |
 | 6 | R | `code/07_outcomes.R` | Competing-risks outcome models from the landmark |
 
 ## Project structure

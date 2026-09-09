@@ -462,3 +462,67 @@ if __name__ == "__main__":
             traceback.print_exc(limit=2)
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+# --------------------------------------------------------------- dose states
+# exposure.dose_states is the newest config block, and a config block nothing
+# reads is the failure mode this repo has hit six times: it looks like a policy
+# declaration, so the next person trusts it, and editing it is a no-op. These
+# tests assert the block REACHES the operations it names.
+
+def _r_sources():
+    return {f.name: f.read_text()
+            for f in (REPO / "code").rglob("*.R")}
+
+
+def test_the_dose_band_cuts_are_read_from_the_config_not_hardcoded():
+    """Every consumer must reach the config. A literal 200 or 400 sitting in a
+    cut() call is the drifted-duplicate failure: the consortium moves the band
+    and one script keeps cutting at the old edge."""
+    spec = COV["exposure"]["dose_states"]
+    cuts = spec["cuts"]
+    consumers = {n: t for n, t in _r_sources().items()
+                 if "derive_dose_states(" in t and n != "states.R"}
+    assert consumers, "nothing calls derive_dose_states; the config block is dead"
+    for name, text in consumers.items():
+        assert "DS_SPEC" in text and "dose_states" in text, (
+            f"{name} calls derive_dose_states but never reads "
+            f"exposure.dose_states from covariates.json")
+        for c in cuts:
+            assert f"c({c}" not in text and f", {c})" not in text, (
+                f"{name} appears to hardcode the band edge {c}; read it from "
+                f"the config instead")
+
+
+def test_derive_dose_states_refuses_a_default_cut():
+    """states.R must not default `cuts`: a default is what keeps a site cutting
+    at the old edges after the consortium moves them."""
+    src = (REPO / "code" / "utils" / "states.R").read_text()
+    sig = src[src.index("derive_dose_states <- function("):]
+    sig = sig[:sig.index(")")]
+    assert "cuts," in sig or sig.rstrip().endswith("cuts"), sig
+    assert "cuts =" not in sig, (
+        "derive_dose_states must take `cuts` with NO default -- see "
+        "covariates.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE")
+
+
+def test_the_dose_band_variable_is_produced_by_phase_0():
+    """The band is defined on window_mcg, so Phase 0 must emit it and it must be
+    the SUM over hourly cells -- not total_dose * window_hours, which overstates
+    a window that straddles discharge."""
+    spec = COV["exposure"]["dose_states"]
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    assert spec["variable"] in COV["exposure"]["columns"], (
+        f"{spec['variable']} is the dose-state variable but is not declared in "
+        f"exposure.columns")
+    assert 'inf_mcg="sum"' in build, (
+        "window_mcg must come from a SUM over the hourly cells; reconstructing "
+        "it as total_dose * window_hours overstates short windows")
+    assert 'out["window_mcg"] = out["inf_mcg"] + out["bolus_mcg"]' in build
+
+
+def test_the_dose_bands_and_labels_agree_in_length():
+    spec = COV["exposure"]["dose_states"]
+    assert len(spec["labels"]) == len(spec["cuts"]) + 2, (
+        "labels = one zero band + one per interval the cuts create")
+    assert spec["cuts"] == sorted(set(spec["cuts"])) and spec["cuts"][0] > 0
