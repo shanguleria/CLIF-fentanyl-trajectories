@@ -36,6 +36,7 @@
 # nnet and MASS ship with R; nothing to install.
 
 pkgs <- c("here", "jsonlite", "arrow", "ggplot2", "nnet")
+library(splines)   # ships with R; ns() for the clock terms in section 6
 for (p in pkgs) {
   if (!requireNamespace(p, quietly = TRUE)) {
     install.packages(p, repos = "https://cloud.r-project.org")
@@ -54,6 +55,7 @@ set.seed(config$model$seed)
 
 WINDOW_H <- config$cohort$window_hours
 EXTENT_H <- config$cohort$granular_extent_hours
+MIN_CELL <- config$reporting$small_cell_min_den
 COV      <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 FENT_U   <- COV$exposure$units
 
@@ -92,7 +94,8 @@ OWNED <- list(
   out_phi = c("transition_model.rds"),
   phase   = c("phase5_transition_matrix.csv", "phase5_transition_counts.csv",
               "phase5_model_coefficients.csv", "phase5_predicted_transitions.csv",
-              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv", "phase5_measurement_by_origin.csv",
+              "phase5_predicted_transitions.png", "phase5_severity_gradient.png",
+              "phase5_transition_hazards.png", "phase5_transition_hazards.csv", "phase5_model_fit.csv", "phase5_measurement_by_origin.csv",
               "phase5_covariate_missingness.csv",
               "phase5_provenance.json"))
 n_cleared <- clear_owned_outputs(dirs, OWNED)
@@ -229,7 +232,27 @@ for (v in NEEDS_FLAG) {
 }
 FLAGS <- paste0(NEEDS_FLAG, "_measured")
 COVS  <- c(COVS, FLAGS)
-FORM  <- as.formula(paste("state_next ~", paste(COVS, collapse = " + ")))
+# The three clock terms enter as NATURAL SPLINES, not linear.
+#
+# WHY, measured 2026-09-09: with window_start_hr linear, the case-mix-adjusted
+# hazard curve in section 10b is a straight line in logit space and cannot bend.
+# The observed hazard of `no fentanyl` -> `bolus only` FALLS from 0.133 at hour 0
+# to 0.049 at hour 64; the linear-time adjusted curve ROSE across the same span.
+# That contradiction was misspecification, not a case-mix story, and it would
+# have been read as one. Time in an ICU course is not linear on the logit scale
+# for anything -- early boluses are peri-intubation and late ones are not the
+# same act -- so all three history terms get the same treatment.
+#
+# df = 4 is 3 interior knots at the quartiles: enough to turn once or twice
+# across 72h, far short of the 18-window saturation that would just redraw the
+# observed curve. Held in the config so every site splines identically.
+NS_DF <- config$model$spline_df
+stopifnot("model.spline_df must be an integer >= 3" =
+            is.numeric(NS_DF) && NS_DF >= 3 && NS_DF == as.integer(NS_DF))
+spl <- function(v) sprintf("ns(%s, df = %d)", v, NS_DF)
+FORM <- as.formula(paste("state_next ~",
+                         paste(c(vapply(HISTORY, spl, character(1)),
+                                 setdiff(COVS, HISTORY)), collapse = " + ")))
 
 cat(sprintf("\n  %d covariates carry missingness; a _measured flag was added for each\n",
             length(NEEDS_FLAG)))
@@ -492,6 +515,179 @@ p_grad <- ggplot(grad, aes(profile, probability, group = from, colour = from)) +
 ggsave(file.path(dirs$phase, "phase5_severity_gradient.png"), p_grad,
        width = 9.5, height = 4.6, dpi = 200)
 
+# ---- 10b. Transition hazards over the ventilation course ---------------------
+# The discrete-time analogue of Lyons et al., Crit Care Explor 2022;4:e0784,
+# Figure 3: one panel per ORIGIN state, every competing destination overlaid,
+# read against a clock. Their estimator is Nelson-Aalen on 12h-gridded event
+# times; ours is the discrete-time cause-specific hazard
+#     h_ij(t) = P(X_{t+1} = j | X_t = i)
+# which is the same quantity on a different clock (h ~ 1 - exp(-alpha*W)) and is
+# exactly what multinom fits. Fitted probabilities are invariant to the choice
+# of REF, so this figure does not depend on that decision.
+#
+# TIME AXIS: hours since intubation, NOT Lyons's time-since-entry-to-state.
+# Their clock-reset is unusable for two of our origins -- MEASURED 2026-09-09,
+# at-risk windows by hours in the current state:
+#     bolus only          8,670 -> 667 at 12h -> 74 at 24h
+#     continuous + bolus  6,441 -> 170 at 12h -> 17 at 24h
+# because their states are durable conditions (KDIGO stage persists until the
+# kidney changes) and two of ours are punctate events (a bolus has no duration).
+# On hours-since-intubation every origin holds >= 298 at-risk windows across the
+# whole 0-68h span. Time-in-state is retained as a covariate, so the clock-reset
+# information is in the model even though it is not the axis.
+#
+# TWO CURVES, deliberately:
+#   observed  -- empirical proportions, no model. Stands on its own if a reader
+#                rejects the multinomial entirely. This is the Lyons estimator.
+#   adjusted  -- the fitted model averaged over a case-mix held FIXED across
+#                windows (g-computation / marginal standardisation). The two
+#                diverge exactly where the surviving cohort's case-mix shifts,
+#                which is the point of showing both: `observed` confounds "what
+#                happens at hour 60" with "who is still ventilated at hour 60".
+
+HAZ_BOOT <- as.integer(Sys.getenv("HAZARD_BOOT_REPS", "500"))
+STD_N    <- 2000L   # standardisation sample per origin
+
+# -- observed: empirical cause-specific hazard, cluster-bootstrapped over patients
+# `grid` is passed in, not read off `d`: a bootstrap resample can miss a window
+# entirely, and a table that silently loses a row breaks the alignment with the
+# point estimate rather than erroring anywhere near the cause.
+haz_counts <- function(d, grid) {
+  tb <- table(factor(d$window_start_hr, levels = grid),
+              factor(d$state_next, levels = STATE_LEVELS))
+  sweep(tb, 1, pmax(rowSums(tb), 1), "/")
+}
+
+haz_observed <- do.call(rbind, lapply(ORIGINS, function(s) {
+  d <- tp[tp$state == s, ]
+  grid <- sort(unique(d$window_start_hr))
+  p <- haz_counts(d, grid)
+  den <- as.integer(table(factor(d$window_start_hr, levels = grid)))
+
+  # resample PATIENTS, not windows -- the same clustering the coefficient
+  # bootstrap uses. No refitting here, so 500 replicates costs seconds.
+  ptn <- unique(d$patient_id)
+  ix  <- split(seq_len(nrow(d)), d$patient_id)
+  bs <- vapply(seq_len(HAZ_BOOT), function(b) {
+    take <- sample(ptn, length(ptn), replace = TRUE)
+    as.numeric(haz_counts(d[unlist(ix[as.character(take)], use.names = FALSE), ], grid))
+  }, numeric(length(p)))
+
+  q <- function(a) matrix(apply(bs, 1, stats::quantile, a, na.rm = TRUE),
+                          nrow = nrow(p), dimnames = dimnames(p))
+  lo <- q(0.025); hi <- q(0.975)
+
+  data.frame(
+    curve = "observed", origin = s,
+    window_start_hr = as.integer(rep(rownames(p), times = ncol(p))),
+    destination = rep(colnames(p), each = nrow(p)),
+    n_at_risk = rep(den, times = ncol(p)),
+    hazard = round(as.numeric(p), 5),
+    lower  = round(as.numeric(lo), 5),
+    upper  = round(as.numeric(hi), 5),
+    row.names = NULL)
+}))
+
+# -- adjusted: model-averaged over a case-mix frozen at the origin's own
+# distribution, so only the clock moves. Sampling the standardisation set once
+# per origin (not per window) is what freezes it.
+haz_adjusted <- do.call(rbind, lapply(ORIGINS, function(s) {
+  d <- tp[tp$state == s, ]
+  std <- d[sample(nrow(d), min(STD_N, nrow(d))), COVS, drop = FALSE]
+  hrs <- sort(unique(d$window_start_hr))
+  do.call(rbind, lapply(hrs, function(w) {
+    nd <- std; nd$window_start_hr <- w
+    pr <- predict(fits[[s]], newdata = nd, type = "probs")
+    if (is.null(dim(pr))) pr <- matrix(pr, ncol = 1,
+                                       dimnames = list(NULL, fits[[s]]$lev[2]))
+    m <- setNames(rep(0, length(STATE_LEVELS)), STATE_LEVELS)
+    m[colnames(pr)] <- colMeans(pr)
+    data.frame(curve = "adjusted", origin = s, window_start_hr = w,
+               destination = STATE_LEVELS, n_at_risk = sum(d$window_start_hr == w),
+               hazard = round(as.numeric(m), 5),
+               lower = NA_real_, upper = NA_real_, row.names = NULL)
+  }))
+}))
+
+hazards <- rbind(haz_observed, haz_adjusted)
+
+# Windows nobody occupies are dropped, not reported as zero: at hour 0 every
+# episode is ventilated by construction, so `extubated` has no at-risk set and a
+# row of zeros there would read as "extubated patients never move", which is the
+# opposite of the truth.
+hazards <- hazards[hazards$n_at_risk > 0, ]
+
+# Check the distributions BEFORE suppression -- afterwards a fully suppressed
+# window sums to 0 and the assertion would fire on its own tidying.
+chk_h <- tapply(hazards$hazard,
+                paste(hazards$curve, hazards$origin, hazards$window_start_hr),
+                sum, na.rm = TRUE)
+stopifnot(
+  "each origin-window must be a distribution over destinations" =
+    all(abs(chk_h - 1) < 1e-3),
+  "adjusted curves must cover the same grid as observed" =
+    nrow(haz_adjusted) > 0 && all(unique(haz_observed$origin) %in% haz_adjusted$origin))
+
+# Structural zeros are real (you do not go from ventilated straight home), but a
+# hazard estimated off a handful of windows is not reportable.
+n_sup <- sum(hazards$n_at_risk < MIN_CELL)
+hazards$hazard[hazards$n_at_risk < MIN_CELL] <- NA_real_
+if (n_sup) cat(sprintf("  %d hazard cells suppressed (< %d at risk)\n", n_sup, MIN_CELL))
+
+cat(sprintf("\nTransition hazards: %d origin x window x destination rows, %d bootstrap reps\n",
+            nrow(hazards), HAZ_BOOT))
+cat("  minimum at-risk windows per origin: ")
+cat(paste(sprintf("%s %s", ORIGINS,
+                  vapply(ORIGINS, function(s)
+                    format(min(haz_observed$n_at_risk[haz_observed$origin == s]),
+                           big.mark = ","), character(1))), collapse = "; "), "\n")
+
+# -- figure: Lyons Figure 3, one panel per origin, self-transitions dropped
+# (they dominate the axis at 0.80-0.97 and carry no information the others lack)
+hz <- hazards[as.character(hazards$destination) != as.character(hazards$origin) &
+                !is.na(hazards$hazard), ]
+hz$origin      <- factor(hz$origin, levels = STATE_LEVELS)
+hz$destination <- factor(hz$destination, levels = STATE_LEVELS)
+hz$curve       <- factor(hz$curve, levels = c("observed", "adjusted"))
+
+STATE_COL <- c("no fentanyl" = "#898781", "continuous only" = "#14427e",
+               "bolus only" = "#eb6834", "continuous + bolus" = "#4a8bd8",
+               "extubated" = "#7fb069", "discharged alive" = "#c9a227",
+               "died" = "#a03030")
+
+p_haz <- ggplot(hz, aes(window_start_hr, hazard,
+                        colour = destination, fill = destination)) +
+  geom_ribbon(data = hz[hz$curve == "observed", ],
+              aes(ymin = lower, ymax = upper), alpha = 0.15, colour = NA) +
+  geom_line(aes(linetype = curve), linewidth = 0.8) +
+  facet_wrap(~ origin, nrow = 2, scales = "free_y") +
+  scale_colour_manual(values = STATE_COL) +
+  scale_fill_manual(values = STATE_COL, guide = "none") +
+  scale_linetype_manual(values = c(observed = "solid", adjusted = "22")) +
+  scale_x_continuous(breaks = seq(0, EXTENT_H, 12)) +
+  labs(title = sprintf("Probability of each transition in the next %dh, across the ventilation course",
+                       WINDOW_H),
+       subtitle = paste0(
+         "Panels are the CURRENT state; colour the next state. Staying put is omitted.\n",
+         "Solid = observed proportions with a 95% cluster-bootstrap band; dashed = model-adjusted to a fixed case-mix."),
+       x = "Hours since intubation", y = sprintf("P(transition) per %dh window",
+                                                 WINDOW_H),
+       colour = NULL, linetype = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(colour = ink, face = "bold"),
+        plot.subtitle = element_text(colour = muted, margin = margin(b = 10)),
+        legend.position = "top",
+        legend.text = element_text(colour = muted, size = 9),
+        axis.title = element_text(colour = muted),
+        axis.text = element_text(colour = muted),
+        panel.grid.minor = element_blank(),
+        strip.text = element_text(colour = ink, face = "bold"),
+        plot.background = element_rect(fill = "#fcfcfb", colour = NA))
+
+ggsave(file.path(dirs$phase, "phase5_transition_hazards.png"), p_haz,
+       width = 10.5, height = 7.0, dpi = 200)
+
+
 
 # ---- 11. Write ---------------------------------------------------------------
 
@@ -506,6 +702,7 @@ write_out(tm,        "phase5_transition_matrix.csv")
 write_out(counts,    "phase5_transition_counts.csv")
 write_out(coefs,     "phase5_model_coefficients.csv")
 write_out(predicted_all, "phase5_predicted_transitions.csv")
+write_out(hazards,   "phase5_transition_hazards.csv")
 write_out(model_fit, "phase5_model_fit.csv")
 write_out(cc, "phase5_measurement_by_origin.csv")
 write_out(missing_by_cov, "phase5_covariate_missingness.csv")
