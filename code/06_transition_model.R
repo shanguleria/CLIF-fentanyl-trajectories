@@ -92,7 +92,7 @@ OWNED <- list(
   out_phi = c("transition_model.rds"),
   phase   = c("phase5_transition_matrix.csv", "phase5_transition_counts.csv",
               "phase5_model_coefficients.csv", "phase5_predicted_transitions.csv",
-              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv", "phase5_complete_case_loss.csv",
+              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv", "phase5_measurement_by_origin.csv",
               "phase5_covariate_missingness.csv",
               "phase5_provenance.json"))
 n_cleared <- clear_owned_outputs(dirs, OWNED)
@@ -182,28 +182,70 @@ REF  <- "no fentanyl"
 
 tp$state <- droplevels(tp$state)
 
-# multinom drops incomplete rows silently. Report the loss PER ORIGIN, because it
-# is not uniform: labs are drawn less often once a patient is extubated, so
-# complete-case analysis preferentially discards extubated-origin rows -- the
-# very transitions the liberation story turns on.
-keep <- stats::complete.cases(tp[, c("state", "state_next", COVS)])
-cc <- do.call(rbind, lapply(levels(tp$state), function(s) {
-  i <- tp$state == s
-  data.frame(origin = s, n_rows = sum(i), n_complete = sum(i & keep),
-             pct_kept = round(100 * sum(i & keep) / sum(i), 1))
-}))
-cat("\nComplete-case loss by origin (multinom drops these silently)\n")
-print(cc, row.names = FALSE)
-cat(sprintf("  overall %s of %s rows (%.1f%%) enter the models\n",
-            format(sum(keep), big.mark = ","), format(nrow(tp), big.mark = ","),
-            100 * mean(keep)))
+# ---- Missing-indicator method (SG, 2026-09-09) --------------------------------
+# Complete-case analysis would keep only 133,653 of 238,811 transitions (56.0%),
+# and the loss is NOT uniform: labs are drawn far less often once a patient is
+# extubated, so extubated-origin rows kept just 34.3% against 57-71% elsewhere.
+# That preferentially discards reintubation, discharge and death -- the
+# transitions the liberation story turns on. multinom drops them silently.
+#
+# So: every row is kept. For each covariate with any missingness, a binary
+# `<var>_measured` flag is added and the value is filled with the cohort median
+# (mode for a categorical). The flag is not a nuisance -- a drawn lactate means
+# somebody was worried, so "was it measured" carries real information about the
+# clinician's assessment, which is exactly what this model is describing.
+#
+# VALID HERE, NOT IN GENERAL. The missing-indicator method is known to be biased
+# for causal estimation. This model is explicitly descriptive (no estimand), so
+# the trade -- keeping every extubated-origin row against a bias that would
+# matter only for a causal claim we are not making -- is the right way round.
+# Fill values are computed ONCE from the full data and held fixed across
+# bootstrap replicates; they are nuisance constants, not estimands.
+
 missing_by_cov <- data.frame(
   covariate = COVS,
   pct_missing = round(100 * vapply(COVS, function(v) mean(is.na(tp[[v]])), numeric(1)), 2),
   row.names = NULL)
 print(missing_by_cov, row.names = FALSE)
 
-tp <- tp[keep, ]
+NEEDS_FLAG <- COVS[vapply(COVS, function(v) anyNA(tp[[v]]), logical(1))]
+FILL <- lapply(NEEDS_FLAG, function(v) {
+  x <- tp[[v]]
+  if (is.character(x) || is.factor(x)) names(sort(table(x), decreasing = TRUE))[1]
+  else stats::median(x, na.rm = TRUE)
+})
+names(FILL) <- NEEDS_FLAG
+
+for (v in NEEDS_FLAG) {
+  flag <- paste0(v, "_measured")
+  tp[[flag]] <- as.integer(!is.na(tp[[v]]))
+  tp[[v]][is.na(tp[[v]])] <- FILL[[v]]
+}
+FLAGS <- paste0(NEEDS_FLAG, "_measured")
+COVS  <- c(COVS, FLAGS)
+FORM  <- as.formula(paste("state_next ~", paste(COVS, collapse = " + ")))
+
+cat(sprintf("\n  %d covariates carry missingness; a _measured flag was added for each\n",
+            length(NEEDS_FLAG)))
+cat(sprintf("  %s: %s\n", "flagged", paste(NEEDS_FLAG, collapse = ", ")))
+
+# How often each origin has each covariate measured -- the reason for doing this.
+cc <- do.call(rbind, lapply(levels(tp$state), function(s) {
+  i <- tp$state == s
+  d <- data.frame(origin = s, n_rows = sum(i))
+  for (v in NEEDS_FLAG) d[[paste0("pct_", v)]] <-
+    round(100 * mean(tp[[paste0(v, "_measured")]][i]), 1)
+  d
+}))
+cat("\n% of rows with each covariate actually measured, by origin\n")
+print(cc, row.names = FALSE)
+
+stopifnot("the missing-indicator fill must leave no NA in the model frame" =
+            !anyNA(tp[, c("state", "state_next", COVS)]),
+          "no row may be lost" = nrow(tp) == sum(!is.na(tp$state_next)))
+cat(sprintf("\n  ALL %s transition rows enter the models\n",
+            format(nrow(tp), big.mark = ",")))
+
 ORIGINS <- levels(droplevels(tp$state))
 
 fit_origin <- function(d) {
@@ -311,8 +353,10 @@ profile_at <- function(sofa, nee_val, label) {
     else stats::median(x, na.rm = TRUE)
   })
   names(vals) <- COVS
-  vals$sofa_total <- NULL
-  if ("oxygenation" %in% COVS) vals$oxygenation <- vals$oxygenation   # keep median
+  # Predict for a patient whose covariates WERE measured: the flags are set to 1,
+  # so the profile is a real clinical scenario rather than an average over
+  # measured and unmeasured windows.
+  for (f in FLAGS) vals[[f]] <- 1L
   vals$nee <- nee_val
   d <- as.data.frame(vals, stringsAsFactors = FALSE)
   d$label <- label
@@ -457,7 +501,7 @@ write_out(counts,    "phase5_transition_counts.csv")
 write_out(coefs,     "phase5_model_coefficients.csv")
 write_out(predicted_all, "phase5_predicted_transitions.csv")
 write_out(model_fit, "phase5_model_fit.csv")
-write_out(cc, "phase5_complete_case_loss.csv")
+write_out(cc, "phase5_measurement_by_origin.csv")
 write_out(missing_by_cov, "phase5_covariate_missingness.csv")
 
 # PHI: the fit carries fitted values per episode-window.

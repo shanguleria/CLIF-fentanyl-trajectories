@@ -881,42 +881,41 @@ retained by the state itself. **SOFA is absent too**: `covariates.json` records
 four verified defects in clifpy's SOFA, all silent and all biasing severity
 downward, so the explicit markers carry the severity signal (§11 decision 6).
 
-**Complete-case restriction, and it is not uniform.** pCO2, INR and bilirubin
-were dropped from the set (SG) at 26–32% missing. The retained ten still leave
-**133,653 of 238,811 transitions (56.0%)**, and the loss falls unevenly:
+**Missingness: the missing-indicator method, not complete case** *(SG,
+2026-09-09).* pCO2, INR and bilirubin were dropped from the covariate set at
+26–32% missing. The retained ten would still have left only **133,653 of 238,811
+transitions (56.0%)** under complete-case analysis, and the loss falls unevenly —
+labs are drawn far less often once a patient is extubated:
 
-| Origin | rows | complete | kept |
+| Origin | rows | complete-case kept | lactate measured |
 |---|---:|---:|---:|
-| no fentanyl | 89,607 | 51,128 | 57.1% |
-| continuous only | 65,544 | 45,918 | 70.1% |
-| bolus only | 14,359 | 10,161 | 70.8% |
-| continuous + bolus | 8,616 | 5,653 | 65.6% |
-| **extubated** | 60,685 | 20,793 | **34.3%** |
+| no fentanyl | 89,607 | 57.1% | 68.7% |
+| continuous only | 65,544 | 70.1% | 79.8% |
+| bolus only | 14,359 | 70.8% | 82.2% |
+| continuous + bolus | 8,616 | 65.6% | 76.3% |
+| **extubated** | 60,685 | **34.3%** | **50.0%** |
 
-Labs are drawn far less often once a patient is extubated, so complete-case
-analysis discards two thirds of the extubated-origin rows — the transitions the
-liberation story turns on. `multinom` does this silently, so the script prints
-the table above and writes it to `phase5_complete_case_loss.csv`. **Open
-decision:** whether to keep complete-case or switch to a missing-indicator
-specification that retains all 238,811 rows.
+Complete case would have discarded two thirds of the extubated-origin rows — the
+transitions carrying reintubation, discharge and death — and `multinom` does that
+silently.
 
-on **238,630 transition pairs** from all 14,897 episodes, reference destination
-`no fentanyl`. Rows whose current state is *absorbing* are dropped; `extubated`
-is kept, being transient.
+Instead **every row is kept**. Six covariates carry missingness
+(`bmi_admission`, `cci`, `oxygenation`, `bun`, `bicarbonate`, `lactate`); each
+gains a binary `<var>_measured` flag and is filled with the cohort median. The
+flag is not a nuisance term: **a drawn lactate means somebody was worried**, so
+"was it measured" carries real information about the clinician's assessment,
+which is precisely what this model describes. Fill values are computed once from
+the full data and held fixed across bootstrap replicates — they are nuisance
+constants, not estimands.
 
-**One model per origin, not one pooled model.** A pooled fit with `state` as a
-covariate forces a single coefficient per covariate across every origin. That is
-not credible here — a rising SOFA should mean "keep sedating, do not extubate"
-from `continuous only` and "this patient is failing" from `extubated`, plausibly
-opposite in sign. **Measured 2026-09-09** on 238,630 rows: pooled deviance
-262,596.8 on 78 df against 258,200.3 on 270 df for the fully interacted
-equivalent — a drop of **4,396.5 on 192 df, p < 1e-300**, with AIC preferring
-per-origin by ~4,000 despite the extra parameters. The pooled specification was
-misspecified. Fitting five separate models is statistically identical to full
-interaction and reads better: each coefficient table is "what drives moves out of
-*this* state". Per-origin n ranges 8,612 (`continuous + bolus`) to 89,535
-(`no fentanyl`), so the thin panels are the least well estimated and the n is
-reported alongside.
+**Valid here, not in general.** The missing-indicator method is known to be
+biased for *causal* estimation. This model has no estimand (§ above), so the
+trade — keeping every extubated-origin row against a bias that would matter only
+for a causal claim not being made — is the right way round. It would not be for
+Phase 6.
+
+All **238,811** transitions now enter the models; per-origin coefficient counts
+rise to 100–120 and all five converge.
 
 The heterogeneity is visible in `phase5_severity_gradient.png`: from `extubated`,
 P(died) in the next 4h rises to **0.067** at p90 severity, an order of magnitude
