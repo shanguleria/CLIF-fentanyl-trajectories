@@ -546,13 +546,21 @@ it. Seven mutually exclusive, exhaustive states per episode-window:
 | 2 | continuous only | ventilated, infusion running, no bolus |
 | 3 | bolus only | ventilated, bolus given, no infusion |
 | 4 | continuous + bolus | ventilated, both |
-| 5 | extubated | alive and admitted, `imv_status == 0` |
+| 5 | extubated | alive and admitted, `imv_status == 0`. **Transient, not absorbing** |
 | 6 | discharged alive | not `alive_admitted`, `died == FALSE` |
 | 7 | died | not `alive_admitted`, `died == TRUE` |
 
 **Defined by delivery route, not by a threshold**, so unlike a dose band there
 are no cut points to defend — which is the point, given what §10 Phase 4 found.
-States 5–7 are terminal and the script asserts they absorb.
+**Only `discharged alive` and `died` absorb.** `extubated` is transient and is
+kept that way (SG, 2026-09-09): measured over 60,685 extubated windows, 3.12%
+move on — **775 (1.28%) back to a ventilated state**, affecting 700 episodes
+(4.7%), and **1,116 (1.84%) out of the hospital**. Treating it as absorbing would
+suppress both. The second is the more damaging: extubation is the main route to
+discharge or death, so an absorbing `extubated` would leave the terminal strata
+materially understated. §10a already retains failed extubations in the cohort, so
+visible reintubation is consistent with the design rather than a contradiction of
+it.
 
 **Run on the WHOLE analytic cohort (14,897), not the landmark set.** The landmark
 conditions on being ventilated at T, so inside [0, T] nobody dies, is discharged,

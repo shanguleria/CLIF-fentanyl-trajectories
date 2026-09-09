@@ -506,8 +506,8 @@ print(transition_matrix_tbl, row.names = FALSE)
 
 # Terminal states must absorb; transition_pairs() drops rows starting in one, so
 # a terminal state appearing as an ORIGIN here would mean the definition is wrong.
-stopifnot("a terminal state must not originate a transition" =
-            !any(tp$state %in% STATE_TERMINAL))
+stopifnot("an absorbing state must not originate a transition" =
+            !any(tp$state %in% STATE_ABSORBING))
 cat("  terminal states verified absorbing\n")
 
 

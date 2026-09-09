@@ -247,7 +247,11 @@ predicted$from <- factor(as.character(predicted$from), levels = STATE_LEVELS)
 
 p_heat <- ggplot(predicted, aes(to, from, fill = probability)) +
   geom_tile(colour = "#fcfcfb", linewidth = 0.6) +
-  geom_text(aes(label = sprintf("%.2f", probability),
+  # "<0.01" rather than "0.00": several real cells sit near 1e-3 (you rarely leave
+  # hospital directly from a ventilated state) and printing them as zero reads as
+  # "impossible" when it means "small".
+  geom_text(aes(label = ifelse(probability < 0.005, "<0.01",
+                               sprintf("%.2f", probability)),
                 colour = probability > 0.5), size = 3.1, show.legend = FALSE) +
   scale_fill_gradient(low = "#f2f6fb", high = "#14427e", limits = c(0, 1)) +
   # a discrete y axis puts level 1 at the BOTTOM; reverse it so the matrix reads

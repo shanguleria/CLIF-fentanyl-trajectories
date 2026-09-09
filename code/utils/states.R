@@ -5,14 +5,21 @@
 # stop describing the figure. See docs/design_notes.md section 10 Phase 1.
 #
 # Seven mutually exclusive, exhaustive states per episode-window. Four describe
-# HOW fentanyl was delivered while ventilated; three are terminal and absorb.
+# HOW fentanyl was delivered while ventilated. `extubated` is transient (patients
+# are reintubated, or leave); only `discharged alive` and `died` absorb.
 # States are defined by the delivery ROUTE, not by a threshold on dose, so there
 # are no cut points to defend -- which is the point, given that Phase 3/4 found
 # dose level to be continuous and its latent classes a discretisation of it.
 
 STATE_LEVELS <- c("no fentanyl", "continuous only", "bolus only",
                   "continuous + bolus", "extubated", "discharged alive", "died")
-STATE_TERMINAL <- c("extubated", "discharged alive", "died")
+# ABSORBING states only. `extubated` is NOT one: 3.12% of extubated windows move
+# on -- 1.28% back to a ventilated fentanyl state (reintubation) and 1.84% out of
+# the hospital. Measured 2026-09-09 over 60,685 extubated windows. Treating it as
+# absorbing dropped every extubated-origin row from the transition model, which
+# removed reintubation and, worse, removed the extubated -> died / -> discharged
+# transitions where most hospital exits actually happen.
+STATE_ABSORBING <- c("discharged alive", "died")
 
 # Needs: alive_admitted, imv_status, inf_dose, bolus_dose, died
 derive_states <- function(d) {
@@ -39,14 +46,16 @@ derive_states <- function(d) {
 }
 
 # Consecutive (state at t, state at t+1) pairs, one row per episode-window pair.
-# Rows whose CURRENT state is terminal are dropped: nothing transitions out of
-# an absorbing state, and leaving them in would train the model on rows whose
-# outcome is deterministic.
+# Rows whose CURRENT state is ABSORBING are dropped: nothing transitions out of
+# one, and leaving them in would train the model on rows whose outcome is
+# deterministic. `extubated` is deliberately kept -- it is transient here, and
+# the extubated -> discharged / -> died / -> reintubated moves are the ones the
+# liberation story turns on.
 transition_pairs <- function(d, id = "encounter_block", time = "window_idx") {
   d <- d[order(d[[id]], d[[time]]), ]
   nxt <- ave(as.character(d$state), d[[id]], FUN = function(v) c(v[-1], NA))
   d$state_next <- factor(nxt, levels = STATE_LEVELS)
-  out <- d[!is.na(d$state_next) & !(d$state %in% STATE_TERMINAL), ]
+  out <- d[!is.na(d$state_next) & !(d$state %in% STATE_ABSORBING), ]
   droplevels(out, except = which(names(out) %in% c("state", "state_next")))
 }
 
