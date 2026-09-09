@@ -92,7 +92,8 @@ OWNED <- list(
   out_phi = c("transition_model.rds"),
   phase   = c("phase5_transition_matrix.csv", "phase5_transition_counts.csv",
               "phase5_model_coefficients.csv", "phase5_predicted_transitions.csv",
-              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv",
+              "phase5_predicted_transitions.png", "phase5_severity_gradient.png", "phase5_model_fit.csv", "phase5_complete_case_loss.csv",
+              "phase5_covariate_missingness.csv",
               "phase5_provenance.json"))
 n_cleared <- clear_owned_outputs(dirs, OWNED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
@@ -109,7 +110,10 @@ long <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
-                 "total_dose", "died", "age", "sex", "cci", "sofa_total", "nee")))
+                 "total_dose", "died",
+                 "age", "sex", "bmi_admission", "cci",
+                 "nee", "oxygenation", "crrt_status",
+                 "bun", "bicarbonate", "lactate")))
 
 stopifnot("window count on disk disagrees with the config grid" =
             length(unique(long$window_idx)) == EXTENT_H / WINDOW_H)
@@ -155,14 +159,52 @@ names(counts)[3] <- "n"
 # Reference destination is `no fentanyl` throughout -- observed from every origin,
 # and the natural comparator ("relative to fentanyl being stopped").
 
-COVS <- c("hours_in_state", "cumulative_dose", "window_start_hr",
-          "sofa_total", "nee", "age", "cci", "sex")
+# Covariate set fixed by SG 2026-09-09. Summary rules are Phase 0's and are
+# declared in covariates.json -- NEE max-of-summed-step-function, oxygenation min
+# (worst, with the Severinghaus S/F fallback), CRRT any-in-window, BUN max,
+# bicarbonate min, lactate max.
+#
+# IMV STATUS IS DELIBERATELY ABSENT. It is not an oversight: ventilation status
+# IS the state here, so imv_status is constant within every per-origin model
+# (1 for all four fentanyl states, 0 for extubated) and carries no information a
+# covariate could use. The information is retained by the state itself.
+#
+# SOFA is also absent. covariates.json records four verified defects in clifpy's
+# SOFA, all silent and all biasing severity downward; the explicit markers below
+# carry the severity signal instead.
+TIME_INVARIANT <- c("age", "sex", "bmi_admission", "cci")
+TIME_VARYING   <- c("nee", "oxygenation", "crrt_status",
+                    "bun", "bicarbonate", "lactate")
+HISTORY        <- c("hours_in_state", "cumulative_dose", "window_start_hr")
+COVS <- c(HISTORY, TIME_INVARIANT, TIME_VARYING)
 FORM <- as.formula(paste("state_next ~", paste(COVS, collapse = " + ")))
 REF  <- "no fentanyl"
 
 tp$state <- droplevels(tp$state)
-tp <- tp[stats::complete.cases(tp[, c("state", "state_next", COVS)]), ]
-ORIGINS <- levels(tp$state)
+
+# multinom drops incomplete rows silently. Report the loss PER ORIGIN, because it
+# is not uniform: labs are drawn less often once a patient is extubated, so
+# complete-case analysis preferentially discards extubated-origin rows -- the
+# very transitions the liberation story turns on.
+keep <- stats::complete.cases(tp[, c("state", "state_next", COVS)])
+cc <- do.call(rbind, lapply(levels(tp$state), function(s) {
+  i <- tp$state == s
+  data.frame(origin = s, n_rows = sum(i), n_complete = sum(i & keep),
+             pct_kept = round(100 * sum(i & keep) / sum(i), 1))
+}))
+cat("\nComplete-case loss by origin (multinom drops these silently)\n")
+print(cc, row.names = FALSE)
+cat(sprintf("  overall %s of %s rows (%.1f%%) enter the models\n",
+            format(sum(keep), big.mark = ","), format(nrow(tp), big.mark = ","),
+            100 * mean(keep)))
+missing_by_cov <- data.frame(
+  covariate = COVS,
+  pct_missing = round(100 * vapply(COVS, function(v) mean(is.na(tp[[v]])), numeric(1)), 2),
+  row.names = NULL)
+print(missing_by_cov, row.names = FALSE)
+
+tp <- tp[keep, ]
+ORIGINS <- levels(droplevels(tp$state))
 
 fit_origin <- function(d) {
   d$state_next <- droplevels(d$state_next)
@@ -259,25 +301,36 @@ coefs[c("estimate", "boot_se", "lower", "upper")] <-
 # a destination never seen from an origin is a structural zero, not a small
 # estimate.
 
-profile_at <- function(sofa, nee, label) {
-  data.frame(
-    label           = label,
-    hours_in_state  = median(tp$hours_in_state,  na.rm = TRUE),
-    cumulative_dose = median(tp$cumulative_dose, na.rm = TRUE),
-    window_start_hr = median(tp$window_start_hr, na.rm = TRUE),
-    sofa_total      = sofa,
-    nee             = nee,
-    age             = median(tp$age, na.rm = TRUE),
-    cci             = median(tp$cci, na.rm = TRUE),
-    sex             = names(sort(table(tp$sex), decreasing = TRUE))[1],
-    stringsAsFactors = FALSE)
+# Built from COVS so the profile can never drift from the model formula -- a
+# hand-written list here is how a new covariate produces "object not found" at
+# the prediction step, after the fits have already run.
+profile_at <- function(sofa, nee_val, label) {
+  vals <- lapply(COVS, function(v) {
+    x <- tp[[v]]
+    if (is.character(x) || is.factor(x)) names(sort(table(x), decreasing = TRUE))[1]
+    else stats::median(x, na.rm = TRUE)
+  })
+  names(vals) <- COVS
+  vals$sofa_total <- NULL
+  if ("oxygenation" %in% COVS) vals$oxygenation <- vals$oxygenation   # keep median
+  vals$nee <- nee_val
+  d <- as.data.frame(vals, stringsAsFactors = FALSE)
+  d$label <- label
+  d
 }
 
 qq <- function(x, p) as.numeric(quantile(x, p, na.rm = TRUE))
-PROFILES <- rbind(
-  profile_at(qq(tp$sofa_total, .10), qq(tp$nee, .10), "least sick (p10)"),
-  profile_at(qq(tp$sofa_total, .50), qq(tp$nee, .50), "median (p50)"),
-  profile_at(qq(tp$sofa_total, .90), qq(tp$nee, .90), "sickest (p90)"))
+# Severity is indexed by NEE and oxygenation, the two explicit markers, now that
+# SOFA is out of the model.
+sev <- function(p, label) {
+  d <- profile_at(NULL, qq(tp$nee, p), label)
+  d$oxygenation <- qq(tp$oxygenation, 1 - p)   # worse oxygenation = LOWER P/F
+  d$lactate     <- qq(tp$lactate, p)
+  d
+}
+PROFILES <- rbind(sev(.10, "least sick (p10)"),
+                  sev(.50, "median (p50)"),
+                  sev(.90, "sickest (p90)"))
 
 predict_all <- function(prof) {
   do.call(rbind, lapply(ORIGINS, function(s) {
@@ -369,8 +422,9 @@ p_grad <- ggplot(grad, aes(profile, probability, group = from, colour = from)) +
   guides(colour = guide_legend(nrow = 2)) +
   labs(title = "The same transitions across a severity gradient",
        subtitle = sprintf(
-         "SOFA and NEE at their p10, p50 and p90. Panels are the DESTINATION; colour the origin.\nSOFA p10/p50/p90 = %.0f / %.0f / %.0f.",
-         qq(tp$sofa_total, .10), qq(tp$sofa_total, .50), qq(tp$sofa_total, .90)),
+         "NEE, oxygenation and lactate at their p10, p50 and p90. Panels are the DESTINATION; colour the origin.\nNEE %.2f / %.2f / %.2f mcg/kg/min; P/F %.0f / %.0f / %.0f.",
+         qq(tp$nee,.10), qq(tp$nee,.50), qq(tp$nee,.90),
+         qq(tp$oxygenation,.90), qq(tp$oxygenation,.50), qq(tp$oxygenation,.10)),
        x = "Severity profile", y = sprintf("P(destination) in the next %dh", WINDOW_H),
        colour = NULL) +
   theme_minimal(base_size = 11) +
@@ -403,6 +457,8 @@ write_out(counts,    "phase5_transition_counts.csv")
 write_out(coefs,     "phase5_model_coefficients.csv")
 write_out(predicted_all, "phase5_predicted_transitions.csv")
 write_out(model_fit, "phase5_model_fit.csv")
+write_out(cc, "phase5_complete_case_loss.csv")
+write_out(missing_by_cov, "phase5_covariate_missingness.csv")
 
 # PHI: the fit carries fitted values per episode-window.
 saveRDS(list(fits = fits, formula = FORM, origins = ORIGINS,

@@ -864,9 +864,41 @@ strategy. Three measurements retired it:
 multinomial model per origin state** for the next delivery state:
 
 ```
-state(t+1) ~ state(t) + hours_in_state + cumulative_dose + window_start_hr
-             + sofa_total + nee + age + cci + sex
+state(t+1) ~ hours_in_state + cumulative_dose + window_start_hr        # history
+           + age + sex + bmi_admission + cci                          # time-invariant
+           + nee + oxygenation + crrt_status + bun + bicarbonate + lactate
 ```
+
+fitted separately within each origin state. Summary rules are Phase 0's, declared
+in `covariates.json`: NEE `max_of_summed_step_function`, oxygenation `min`
+(worst, Severinghaus S/F fallback), CRRT `any`, BUN `max`, bicarbonate `min`,
+lactate `max`.
+
+**`imv_status` is deliberately absent.** Ventilation status *is* the state here,
+so it is constant within every per-origin model — 1 for all four fentanyl states,
+0 for `extubated` — and carries nothing a covariate could use. The information is
+retained by the state itself. **SOFA is absent too**: `covariates.json` records
+four verified defects in clifpy's SOFA, all silent and all biasing severity
+downward, so the explicit markers carry the severity signal (§11 decision 6).
+
+**Complete-case restriction, and it is not uniform.** pCO2, INR and bilirubin
+were dropped from the set (SG) at 26–32% missing. The retained ten still leave
+**133,653 of 238,811 transitions (56.0%)**, and the loss falls unevenly:
+
+| Origin | rows | complete | kept |
+|---|---:|---:|---:|
+| no fentanyl | 89,607 | 51,128 | 57.1% |
+| continuous only | 65,544 | 45,918 | 70.1% |
+| bolus only | 14,359 | 10,161 | 70.8% |
+| continuous + bolus | 8,616 | 5,653 | 65.6% |
+| **extubated** | 60,685 | 20,793 | **34.3%** |
+
+Labs are drawn far less often once a patient is extubated, so complete-case
+analysis discards two thirds of the extubated-origin rows — the transitions the
+liberation story turns on. `multinom` does this silently, so the script prints
+the table above and writes it to `phase5_complete_case_loss.csv`. **Open
+decision:** whether to keep complete-case or switch to a missing-indicator
+specification that retains all 238,811 rows.
 
 on **238,630 transition pairs** from all 14,897 episodes, reference destination
 `no fentanyl`. Rows whose current state is *absorbing* are dropped; `extubated`
