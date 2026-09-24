@@ -60,6 +60,17 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
     f <- file.path(root, rel)
     if (file.exists(f)) { unlink(f); n <- n + 1L }
   }
+  # And a renumbered SCRIPT leaves the whole directory behind. Unlinking the
+  # files emptied it but left the folder standing in the shareable tree, which
+  # is a smaller version of the same problem: a reader finds an `03_states/`
+  # that nothing writes and cannot tell whether it matters. Remove a retired
+  # directory once it is empty -- never one that still holds anything, since
+  # that would delete a file nobody declared.
+  for (d in unique(dirname(file.path(root, retired)))) {
+    if (dir.exists(d) && !length(list.files(d, all.files = TRUE, no.. = TRUE))) {
+      unlink(d, recursive = TRUE)
+    }
+  }
   n
 }
 

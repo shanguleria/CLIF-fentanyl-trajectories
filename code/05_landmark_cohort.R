@@ -1,5 +1,5 @@
 # ==============================================================================
-# 04_landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
+# 05_landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
 #
 # Purpose : Restrict to episodes alive and ventilated at landmark T; report the landmark flow, failed-extubation counts, the [0,T] dose curve and the T sensitivity sweep; write the analytic table Phases 3-6 read.
 # Author  : Shan Guleria
@@ -60,10 +60,10 @@ T_SWEEP <- sort(unique(c(24, 48, LANDMARK)))
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "04_landmark")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "05_landmark")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[04_landmark_cohort] site=%s  clif=%s  data=%s",
+message(sprintf("[05_landmark_cohort] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -88,14 +88,20 @@ OWNED <- list(
 # 2026-09-23, when 02 split in two and took the 03 slot. Both the directory and
 # the prefix changed, so every old path is retired here -- otherwise the whole of
 # 03_landmark/ sits in the shareable tree forever, looking current.
-RETIRED <- file.path("output", "final_no_phi", "03_landmark",
-                     paste0("phase2_", c(
-                       "landmark_flow.csv", "landmark_flow.txt",
-                       "T_sensitivity.csv", "failed_extubation.csv",
-                       "dose_curve.csv", "dose_curve.png",
-                       "dependence.csv",
-                       "pooling_continuous.csv", "pooling_categorical.csv",
-                       "provenance.json")))
+# Renumbered again 04 -> 05 on 2026-09-24, when the exemplar took a slot ahead
+# of the states script. Both old folders are retired, each built with paste0 so
+# a name-level find-and-replace cannot reach into the list of old names -- the
+# exact failure recorded as lessons.md #13.
+RETIRED <- c(
+  file.path("output", "final_no_phi", paste0("03_", "landmark"),
+            paste0("phase2_", c(
+              "landmark_flow.csv", "landmark_flow.txt",
+              "T_sensitivity.csv", "failed_extubation.csv",
+              "dose_curve.csv", "dose_curve.png",
+              "dependence.csv",
+              "pooling_continuous.csv", "pooling_categorical.csv",
+              "provenance.json"))),
+  file.path("output", "final_no_phi", paste0("04_", "landmark"), OWNED$phase))
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -432,7 +438,7 @@ write_out(dep, "dependence.csv")
 write_out(pooling_continuous, "pooling_continuous.csv")
 write_out(pooling_categorical, "pooling_categorical.csv")
 
-write_captions(file.path(dirs$phase, "captions.md"), "04_landmark_cohort.R",
+write_captions(file.path(dirs$phase, "captions.md"), "05_landmark_cohort.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
@@ -446,8 +452,8 @@ cat("written: provenance.json\n")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/04_landmark_cohort.R"),
+    paste("Script :", "code/05_landmark_cohort.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "04_landmark_cohort_sessioninfo.txt")
+  here("logs", "05_landmark_cohort_sessioninfo.txt")
 )

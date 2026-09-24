@@ -417,7 +417,7 @@ def test_the_exemplar_selection_rule_is_declared_and_consumed():
     assert spec is not None, "covariates.json must declare an `exemplar` block"
 
     build = (REPO / "code" / "01_build_cohort.py").read_text()
-    figure = (REPO / "code" / "05_exemplar.R").read_text()
+    figure = (REPO / "code" / "03_exemplar.R").read_text()
 
     # Every declared key must be claimed by someone. A threshold nobody reads is
     # a policy declaration that is not a policy -- the failure mode this repo
@@ -448,9 +448,9 @@ def test_the_exemplar_selection_rule_is_declared_and_consumed():
 def test_the_exemplar_figure_breaks_the_step_at_the_locf_cap():
     """The panel must not assert a score persisted longer than the analytic
     table lets it. Both must read the same key rather than restate the number."""
-    figure = (REPO / "code" / "05_exemplar.R").read_text()
+    figure = (REPO / "code" / "03_exemplar.R").read_text()
     assert "COV$time_varying$rass$locf$cap_hours" in figure, (
-        "05_exemplar.R must read the step-breaking threshold from the same "
+        "03_exemplar.R must read the step-breaking threshold from the same "
         "covariates.json key Phase 0 caps LOCF with, never restate it")
     assert COV["time_varying"]["rass"]["locf"]["cap_hours"] == \
            COV["time_varying"]["nvps"]["locf"]["cap_hours"], (

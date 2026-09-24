@@ -2,7 +2,7 @@
 #
 # The palette line and the theme were copy-pasted into four scripts, which is
 # tolerable while one script draws figures and a problem once two do. Sourcing
-# this is what keeps a figure drawn in 03_delivery_states.R looking like one
+# this is what keeps a figure drawn in 04_delivery_states.R looking like one
 # drawn in 02_descriptive_cohort.R.
 #
 # Needs: ggplot2 attached by the caller.
@@ -50,7 +50,7 @@ house <- function(p) {
 # ONE palette per state definition, shared by every figure that draws it. The
 # prevalence plot, the alluvial and the per-patient raster must agree on colour
 # or a reader cannot move between them, and a per-figure palette is how they
-# stop agreeing -- these values lived in 03_delivery_states.R until 2026-09-24
+# stop agreeing -- these values lived in the delivery-states script until 2026-09-24
 # and had already drifted from the copy here on six of seven states.
 # Levels come from code/utils/states.R.
 #

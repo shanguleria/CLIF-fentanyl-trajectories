@@ -106,6 +106,14 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
         if f.exists():
             f.unlink()
             n += 1
+    # And a renumbered SCRIPT leaves the whole directory behind. Unlinking the
+    # files empties it but leaves the folder standing in the shareable tree,
+    # where a reader finds a directory nothing writes and cannot tell whether it
+    # matters. Remove a retired directory once it is empty -- never one that
+    # still holds anything, which would delete a file nobody declared.
+    for d in {(dirs["out_final"].parent.parent / rel).parent for rel in retired or []}:
+        if d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
     return n
 
 

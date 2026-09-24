@@ -111,7 +111,7 @@ a **landmark** — fix the origin at a chosen T, require survival and ventilatio
 to T for entry, and measure only forward from there.
 
 Everything before T is exposure history; everything after is
-outcome. `code/04_landmark_cohort.R` implements it, and T-sensitivity is reported
+outcome. `code/05_landmark_cohort.R` implements it, and T-sensitivity is reported
 alongside the primary because the choice of T is a judgement.
 
 The landmark is **available, not current**: the descriptive account comes first,

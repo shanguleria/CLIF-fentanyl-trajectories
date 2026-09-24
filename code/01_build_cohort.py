@@ -1719,7 +1719,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     series = series.sort_values(["series", "t_hr"]).reset_index(drop=True)
 
     # Asserted, not assumed. Same contract as the 100-episode raster in
-    # 03_delivery_states.R: relative hours only, no dates, no identifiers.
+    # 04_delivery_states.R: relative hours only, no dates, no identifiers.
     ident = {"encounter_block", "patient_id", "hospitalization_id", "anchor_dttm"}
     assert not (ident & set(series.columns)), "exemplar series carries an identifier"
     assert not any(pd.api.types.is_datetime64_any_dtype(series[c])

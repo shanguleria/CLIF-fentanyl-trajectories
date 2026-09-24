@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 
 # Steps 3-6 are TABLED as of 2026-09-23 and deliberately excluded; 07_outcomes is
 # an unconditional stop(). Run a tabled script by hand if you need it.
-$steps = @("02_descriptive_cohort","03_delivery_states","04_landmark_cohort","05_exemplar")
+$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_landmark_cohort")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"

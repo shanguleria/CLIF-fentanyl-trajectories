@@ -214,9 +214,9 @@ What each script writes:
 |---|---|
 | `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json` at the root of `final_no_phi/` |
 | `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
-| `03_delivery_states.R` | `03_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
-| `05_exemplar.R` | `05_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
-| `04_landmark_cohort.R` | `04_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| `03_exemplar.R` | `03_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
+| `04_delivery_states.R` | `04_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
+| `05_landmark_cohort.R` | `05_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
@@ -275,9 +275,9 @@ python3 code/check_config.py
 |---|---|---|---|
 | 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
 | 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1, retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
-| 2 | R | `code/03_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
-| 3 | R | `code/04_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
-| 4 | R | `code/05_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and NVPS. The episode is **drawn at random from those meeting the pre-specified rule** in `covariates.json` → `exemplar`, never chosen by inspection |
+| 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and NVPS. The episode is **drawn at random from those meeting the pre-specified rule** in `covariates.json` → `exemplar`, never chosen by inspection |
+| 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
+| 4 | R | `code/05_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
 
 These five steps are the current analysis and are exactly what the runners
 execute. The **tabled** trajectory-modelling scripts moved to `code/tabled/` on
@@ -305,9 +305,9 @@ CLIF-fentanyl-trajectories/
 │   ├── check_config.py           # preflight: is config.json usable?
 │   ├── 01_build_cohort.py        # build the analytic tables (Python / clifpy)
 │   ├── 02_descriptive_cohort.R   # cohort description + dose curves
-│   ├── 03_delivery_states.R      # delivery states: prevalence, transitions, figures
-│   ├── 04_landmark_cohort.R      # landmark T (available, not the current analysis)
-│   ├── 05_exemplar.R             # F1: one ventilation course in detail
+│   ├── 03_exemplar.R             # F1: one ventilation course in detail
+│   ├── 04_delivery_states.R      # delivery states: prevalence, transitions, figures
+│   ├── 05_landmark_cohort.R      # landmark T (available, not the current analysis)
 │   ├── tabled/                   # trajectory modelling, parked -- not in the runners
 │   │   ├── 04_gbmt_classes.R
 │   │   ├── 05_lcmm_classes.R

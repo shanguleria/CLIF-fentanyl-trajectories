@@ -1,12 +1,12 @@
 # ==============================================================================
-# 05_exemplar.R  --  F1, one ventilation course in detail
+# 03_exemplar.R  --  F1, one ventilation course in detail
 #
 # Purpose : A single patient's first 72h of ventilation at sub-hourly resolution -- fentanyl infusion rate, boluses, RASS and NVPS -- so that "continuous, then bolus, then off" reads as a person rather than as a marginal.
 # Author  : Shan Guleria
 # Created : 2026-09-24
 # Inputs  : output/intermediate_phi/exemplar_series.parquet + exemplar_meta.json
 #           (or a generated patient, see EXEMPLAR_SOURCE below)
-# Outputs : output/final_no_phi/05_exemplar/ : the files listed in OWNED
+# Outputs : output/final_no_phi/03_exemplar/ : the files listed in OWNED
 #
 # Modelled on Baker et al. Sci Rep 2020;10:10718 Figure 1, with four deliberate
 # departures -- see docs/references.md, the F1 entry, which is the binding spec:
@@ -81,19 +81,28 @@ prov <- provenance(config)
 
 OWNED <- list(phase = c("exemplar.png", "provenance.json", "captions.md"))
 
+# Renumbered 05 -> 03 on 2026-09-24, so the exemplar sits with the other
+# granularity exhibit (the raster, in 04) and ahead of the aggregates -- Baker's
+# Figure 1 is a proof-of-granularity exhibit BEFORE any aggregate. The old
+# folder is retired explicitly: a site that pulls this update would otherwise
+# keep a 05_exemplar/ nobody owns, full of files that look current. Built with
+# paste0 so a name-level find-and-replace cannot reach into it (lessons.md #13).
+RETIRED <- file.path("output", "final_no_phi", paste0("05_", "exemplar"),
+                     c("exemplar.png", "provenance.json", "captions.md"))
+
 if (SOURCE == "synthetic") {
   # Deliberately NOT under final_no_phi/: a generated figure must never be able
   # to reach the coordinating-centre upload set. Covered by .gitignore's bare
   # `output/`.
   dirs$phase <- file.path(dirname(dirs$out_final), "dev_synthetic")
   dir.create(dirs$phase, recursive = TRUE, showWarnings = FALSE)
-  message("[05_exemplar] SYNTHETIC source -- writing to output/dev_synthetic/")
+  message("[03_exemplar] SYNTHETIC source -- writing to output/dev_synthetic/")
 } else {
-  dirs$phase <- phase_dir(dirs, "05_exemplar")
+  dirs$phase <- phase_dir(dirs, "03_exemplar")
   manifest <- require_manifest(dirs, here())
-  message(sprintf("[05_exemplar] site=%s  reading Phase 0 outputs from code %s",
+  message(sprintf("[03_exemplar] site=%s  reading Phase 0 outputs from code %s",
                   config$site_name, manifest$code_version))
-  n_cleared <- clear_owned_outputs(dirs, OWNED, retired = character(0))
+  n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
   if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 }
 
@@ -123,7 +132,7 @@ meta   <- ex$meta
 
 # The de-identification is asserted here as well as at export, because this is
 # the script that turns the series into something a person looks at. Same
-# pattern as the 100-patient raster in 03_delivery_states.R.
+# pattern as the 100-patient raster in 04_delivery_states.R.
 stopifnot(
   "the exemplar frame must carry no identifier" =
     !any(c("encounter_block", "patient_id", "hospitalization_id") %in% names(series)),
@@ -367,7 +376,7 @@ write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
 cat("written: provenance.json\n")
 
-write_captions(file.path(dirs$phase, "captions.md"), "05_exemplar.R",
+write_captions(file.path(dirs$phase, "captions.md"), "03_exemplar.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
@@ -376,9 +385,9 @@ cat("written: captions.md\n")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/05_exemplar.R"),
+    paste("Script :", "code/03_exemplar.R"),
     paste("Source :", SOURCE),
     "",
     capture.output(sessionInfo())),
-  here("logs", "05_exemplar_sessioninfo.txt")
+  here("logs", "03_exemplar_sessioninfo.txt")
 )

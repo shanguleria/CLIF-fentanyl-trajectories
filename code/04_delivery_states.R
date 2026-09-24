@@ -1,5 +1,5 @@
 # ==============================================================================
-# 03_delivery_states.R  --  fentanyl delivery states: prevalence and transitions
+# 04_delivery_states.R  --  fentanyl delivery states: prevalence and transitions
 #
 # Purpose : The seven delivery states over the ventilation course -- prevalence per window, transitions window to window, and the figures that draw them. Run twice: delivery ROUTE and dose INTENSITY band.
 # Author  : Shan Guleria
@@ -7,7 +7,7 @@
 # Split   : 2026-09-23, out of 02_descriptive_trajectory.R -- one subject per
 #           script, so the figure work has somewhere to go.
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
-# Outputs : output/final_no_phi/03_states/ : the CSVs and figures listed in OWNED
+# Outputs : output/final_no_phi/04_states/ : the CSVs and figures listed in OWNED
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -76,10 +76,10 @@ RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "03_states")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "04_states")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[03_delivery_states] site=%s  clif=%s  data=%s",
+message(sprintf("[04_delivery_states] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -99,10 +99,14 @@ OWNED <- list(phase = c(
   "dose_state_prevalence.png", "dose_state_alluvial.png",
   "provenance.json", "captions.md"))
 
-# This script is new on 2026-09-23; it has no retired stems of its own. The
-# copies of these outputs that 02 used to write into 02_descriptive/ are retired
-# by that script, which still owns that folder.
-RETIRED <- character(0)
+# Renumbered 03 -> 04 on 2026-09-24 to make room for the exemplar ahead of it.
+# The old folder is retired explicitly, or a site that pulls this update keeps a
+# 03_states/ nobody owns whose contents still look current. Built with paste0 so
+# a name-level find-and-replace cannot reach into it (lessons.md #13).
+# The copies of these outputs that 02 used to write into 02_descriptive/ are
+# retired by that script, which still owns that folder.
+RETIRED <- file.path("output", "final_no_phi", paste0("03_", "states"),
+                     OWNED$phase)
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -256,7 +260,7 @@ print(pv_ar[pv_ar$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
 # Cross-script check. 02_descriptive_cohort.R:221 builds dose_summary on the
 # identical subset (`window_idx == w & ventilated`), so the three exposed states
 # must sum to its pct_receiving_any in every window. Precedent for a later
-# script checking an earlier one's shareable CSV: 04_landmark_cohort.R:228.
+# script checking an earlier one's shareable CSV: 05_landmark_cohort.R.
 ds_file <- file.path(dirs$out_final, "02_descriptive", "dose_summary.csv")
 if (file.exists(ds_file)) {
   ds <- read.csv(ds_file)
@@ -560,7 +564,7 @@ cat("written: provenance.json\n")
 # and the ordering rules survive in a form a manuscript can lift directly.
 # Every figure this script writes must appear; a panel whose provenance exists
 # only in the code is a panel nobody can caption later.
-write_captions(file.path(dirs$phase, "captions.md"), "03_delivery_states.R",
+write_captions(file.path(dirs$phase, "captions.md"), "04_delivery_states.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
@@ -570,8 +574,8 @@ cat("written: captions.md\n")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/03_delivery_states.R"),
+    paste("Script :", "code/04_delivery_states.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "03_delivery_states_sessioninfo.txt")
+  here("logs", "04_delivery_states_sessioninfo.txt")
 )
