@@ -213,10 +213,10 @@ What each script writes:
 | Script | Files |
 |---|---|
 | `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json` at the root of `final_no_phi/` |
-| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
+| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
 | `03_delivery_states.R` | `03_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
 | `05_exemplar.R` | `05_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
-| `04_landmark_cohort.R` | `04_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| `04_landmark_cohort.R` | `04_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),

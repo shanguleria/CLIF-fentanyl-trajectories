@@ -19,11 +19,19 @@ ink <- INK; muted <- MUTED; gridline <- GRIDLINE
 # The house theme. Horizontal gridlines only -- every figure here has a
 # continuous y and a time or categorical x, so vertical rules add ink without
 # adding information.
+#
+# LEGEND AT THE FOOT, in a box (SG, 2026-09-24). A legend on top is awkward and
+# nonstandard; on the right it would steal width from an x axis that is always
+# time, and on the exemplar it would collide with the three right-hand scales.
 house <- function(p) {
   p + theme_minimal(base_size = 12) +
     theme(plot.title = element_text(colour = INK, face = "bold"),
           plot.subtitle = element_text(colour = MUTED, margin = margin(b = 10)),
-          legend.position = "top",
+          legend.position = "bottom",
+          legend.background = element_rect(fill = PAPER, colour = INK,
+                                           linewidth = 0.3),
+          legend.margin = margin(t = 5, r = 8, b = 5, l = 8),
+          legend.box.margin = margin(t = 4),
           legend.text = element_text(colour = MUTED, size = 9),
           axis.title = element_text(colour = MUTED),
           axis.text = element_text(colour = MUTED),
@@ -178,6 +186,22 @@ stack_panels <- function(plots, heights = NULL) {
   on.exit(grDevices::dev.off(), add = TRUE)
 
   gs <- lapply(plots, ggplotGrob)
+
+  # A bottom legend belongs under the WHOLE stack, not between the first plot
+  # and whatever is stacked beneath it. On the prevalence figures that would
+  # push the risk table away from the axis ticks its columns are aligned to,
+  # which is the entire reason the panels share a width in the first place.
+  legend <- NULL
+  gs <- lapply(gs, function(g) {
+    i <- which(g$layout$name == "guide-box-bottom")
+    if (length(i) == 1L && !inherits(g$grobs[[i]], "zeroGrob")) {
+      if (is.null(legend)) legend <<- g$grobs[[i]]
+      g$grobs[[i]] <- grid::nullGrob()
+      g$heights[g$layout$t[i]] <- grid::unit(0, "cm")
+    }
+    g
+  })
+
   w  <- Reduce(grid::unit.pmax, lapply(gs, function(g) g$widths))
   gs <- lapply(seq_along(gs), function(i) {
     g <- gs[[i]]
@@ -188,7 +212,14 @@ stack_panels <- function(plots, heights = NULL) {
     }
     g
   })
-  Reduce(function(a, b) rbind(a, b, size = "first"), gs)
+  out <- Reduce(function(a, b) rbind(a, b, size = "first"), gs)
+  if (!is.null(legend)) {
+    out <- gtable::gtable_add_rows(out, grid::grobHeight(legend))
+    out <- gtable::gtable_add_grob(out, legend, t = nrow(out), b = nrow(out),
+                                   l = 1, r = ncol(out),
+                                   name = "guide-box-bottom")
+  }
+  out
 }
 
 # The risk-table case: the chart stays flexible, the table gets exactly the

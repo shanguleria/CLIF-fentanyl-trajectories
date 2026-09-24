@@ -80,9 +80,11 @@ not absorbing — patients are reintubated. A second, parallel definition cuts t
 same windows into declared **intensity bands**; both run over one cohort to
 triangulate. The definitions live once, in `code/utils/states.R`.
 
-**All five figures are drawn journal-style** — no title or subtitle on the
-panel. Each run writes its captions to `captions.md` beside the figures, with a
-guard that no figure may ship without one.
+**Every figure in the pipeline is drawn journal-style** — no title or subtitle
+on the panel, axis titles and a boxed legend at the foot. Each of scripts 02–05
+writes its captions to `captions.md` beside its figures, with a guard that no
+figure may ship without one. The single exception is the synthetic development
+render of F1, which carries a "NOT A PATIENT" stamp on its face.
 
 **How the F1 exemplar is selected** was the last open question here and is now
 closed. The criteria are declared in `config/covariates.json` → `exemplar`,

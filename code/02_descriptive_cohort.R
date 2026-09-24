@@ -100,7 +100,7 @@ OWNED <- list(phase = c(
   "pooling_continuous.csv", "pooling_categorical.csv",
   "provenance.json",
   "fentanyl_curves.png", "fentanyl_balanced_panels.png",
-  "sedative_curves.png"))
+  "sedative_curves.png", "captions.md"))
 
 # A rename leaves a stale twin that clear_owned_outputs no longer names. Two
 # rounds: the 2026-09-07 figure renames, then 2026-09-23 when the "phase1_"
@@ -479,12 +479,13 @@ p_fent <- house(
     scale_fill_manual(values = SERIES) +
     guides(fill = "none",
            colour = guide_legend(nrow = 2, override.aes = list(fill = NA))) +
-    labs(title = "Fentanyl dose over the first 72h of ventilation",
-         subtitle = paste0(
-           "Denominator is episodes STILL VENTILATED in each window.\n",
-           "The two medians diverge: exposure narrows to fewer episodes rather than falling within them."),
-         x = "Hours since first IMV episode", y = NULL, colour = NULL))
+    labs(x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
+register_caption("fentanyl_curves.png",
+  "Fentanyl dose over the first 72h of ventilation",
+  paste0("Denominator is episodes STILL VENTILATED in each window. The two ",
+         "medians diverge: exposure narrows to fewer episodes rather than ",
+         "falling within them."))
 ggsave(file.path(dirs$phase, "fentanyl_curves.png"), p_fent,
        width = 7.5, height = 7.6, dpi = 200)
 
@@ -523,13 +524,14 @@ p_panels <- house(
     facet_wrap(~ quantity, scales = "free_y", ncol = 1) +
     scale_colour_manual(values = pal) +
     guides(colour = guide_legend(nrow = 2)) +
-    labs(title = "Real dose change, or a changing mix of patients?",
-         subtitle = paste0(
-           "Panels freeze the denominator at a ventilation duration.\n",
-           "Mean and median shown together: over half of ventilated windows are exactly zero, so\n",
-           "the median falls onto the floor at h24 and every panel collapses onto one line."),
-         x = "Hours since first IMV episode", y = NULL, colour = NULL))
+    labs(x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
+register_caption("fentanyl_balanced_panels.png",
+  "Real dose change, or a changing mix of patients?",
+  paste0("Panels freeze the denominator at a ventilation duration. Mean and ",
+         "median are shown together: over half of ventilated windows are ",
+         "exactly zero, so the median falls onto the floor at h24 and every ",
+         "panel collapses onto one line."))
 ggsave(file.path(dirs$phase, "fentanyl_balanced_panels.png"), p_panels,
        width = 7.5, height = 9.2, dpi = 200)
 
@@ -567,13 +569,13 @@ p_sed <- house(
     geom_line(linewidth = 0.9) + geom_point(size = 1.2) +
     facet_grid(facet ~ statistic, scales = "free_y", switch = "y") +
     scale_colour_manual(values = DOSE_COLS) +
-    labs(title = "Companion sedatives",
-         subtitle = sprintf(
-           "Secondary to the fentanyl exposure. Infusions only.\nShare of ventilated windows with any drug:\n%s",
-           prev_txt),
-         x = "Hours since first IMV episode", y = NULL, colour = NULL) +
+    labs(x = "Hours since first IMV episode", y = NULL, colour = NULL) +
     theme(strip.placement = "outside", strip.text.y.left = element_text(angle = 90)))
 
+register_caption("sedative_curves.png", "Companion sedatives",
+  sprintf(paste0("Secondary to the fentanyl exposure. Infusions only. Share of ",
+                 "ventilated windows with any drug: %s"),
+          gsub("\n", "; ", trimws(prev_txt))))
 ggsave(file.path(dirs$phase, "sedative_curves.png"), p_sed,
        width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
 
@@ -597,6 +599,10 @@ pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)
 write_out(pooling_continuous, "pooling_continuous.csv")
 write_out(pooling_categorical, "pooling_categorical.csv")
+
+write_captions(file.path(dirs$phase, "captions.md"), "02_descriptive_cohort.R",
+               grep("\\.png$", OWNED$phase, value = TRUE), prov)
+cat("written: captions.md\n")
 
 write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)

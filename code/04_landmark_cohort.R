@@ -26,6 +26,7 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
+source(here("code", "utils", "figures.R"))
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -82,7 +83,7 @@ OWNED <- list(
                 "dose_curve.csv", "dose_curve.png",
                 "dependence.csv",
                 "pooling_continuous.csv", "pooling_categorical.csv",
-                "provenance.json"))
+                "provenance.json", "captions.md"))
 # This script was 03_landmark_cohort.R writing phase2_* into 03_landmark/ until
 # 2026-09-23, when 02 split in two and took the 03 slot. Both the directory and
 # the prefix changed, so every old path is retired here -- otherwise the whole of
@@ -322,21 +323,11 @@ writeLines(c(
 
 # ---- 12. Figure --------------------------------------------------------------
 
-ink <- "#0b0b0b"; muted <- "#898781"; gridline <- "#e1e0d9"
-house <- function(p) {
-  p + theme_minimal(base_size = 12) +
-    theme(plot.title = element_text(colour = ink, face = "bold"),
-          plot.subtitle = element_text(colour = muted, margin = margin(b = 10)),
-          legend.position = "top",
-          legend.text = element_text(colour = muted, size = 9),
-          axis.title = element_text(colour = muted),
-          axis.text = element_text(colour = muted),
-          panel.grid.minor = element_blank(),
-          panel.grid.major.x = element_blank(),
-          panel.grid.major.y = element_line(colour = gridline, linewidth = 0.4),
-          plot.background = element_rect(fill = "#fcfcfb", colour = NA),
-          strip.text = element_text(colour = ink, face = "bold"))
-}
+# house() and the palette come from code/utils/figures.R, sourced at the top.
+# This script carried its OWN copy until 2026-09-24 -- a verbatim duplicate that
+# had already stopped matching, since it never got the legend changes the shared
+# theme did. figures.R exists precisely so a figure drawn here looks like one
+# drawn in 02 or 03; a private copy is how that quietly stops being true.
 
 f <- curve[curve$drug == "fentanyl", ]
 fig <- rbind(
@@ -353,13 +344,15 @@ p_curve <- house(
     geom_line(linewidth = 1.0, colour = "#14427e") +
     geom_point(size = 1.5, colour = "#14427e") +
     facet_wrap(~ quantity, scales = "free_y", ncol = 1) +
-    labs(title = sprintf("Fentanyl over [0, %dh] in the landmark cohort", LANDMARK),
-         subtitle = sprintf(
-           "%s ventilation episodes alive and ventilated at T = %dh (%.1f%% of the intubated cohort).\nThis is the Phase 1 >=%dh balanced panel promoted to the analytic set, not new analysis.",
-           format(length(elig), big.mark = ","), LANDMARK,
-           100 * length(elig) / anchor_n, LANDMARK),
-         x = "Hours since first IMV episode", y = NULL))
+    labs(x = "Hours since first IMV episode", y = NULL))
 
+register_caption("dose_curve.png",
+  sprintf("Fentanyl over [0, %dh] in the landmark cohort", LANDMARK),
+  sprintf(paste0("%s ventilation episodes alive and ventilated at T = %dh ",
+                 "(%.1f%% of the intubated cohort). This is the Phase 1 >=%dh ",
+                 "balanced panel promoted to the analytic set, not new analysis."),
+          format(length(elig), big.mark = ","), LANDMARK,
+          100 * length(elig) / anchor_n, LANDMARK))
 ggsave(file.path(dirs$phase, "dose_curve.png"), p_curve,
        width = 7.5, height = 7.6, dpi = 200)
 
@@ -438,6 +431,10 @@ write_out(curve, "dose_curve.csv")
 write_out(dep, "dependence.csv")
 write_out(pooling_continuous, "pooling_continuous.csv")
 write_out(pooling_categorical, "pooling_categorical.csv")
+
+write_captions(file.path(dirs$phase, "captions.md"), "04_landmark_cohort.R",
+               grep("\\.png$", OWNED$phase, value = TRUE), prov)
+cat("written: captions.md\n")
 
 write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
