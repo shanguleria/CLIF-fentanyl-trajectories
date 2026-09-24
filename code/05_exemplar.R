@@ -135,117 +135,139 @@ exemplar_diagnostics(series, meta, CAP_H)
 
 
 # ---- 5. Figure ---------------------------------------------------------------
-# Four panels, one shared x axis, stacked with the same machinery the risk
-# tables use. Separate plots rather than facets because ggplot gives every
-# `scales = "free_y"` continuous facet the same height, and these four do not
-# want it: the infusion trace carries the most information and the bolus spikes
-# the least.
+# ONE panel, three y scales -- fentanyl on the left, RASS and NVPS on two right
+# spines -- mirroring Baker et al. Figure 1 (glucose left, insulin and D50
+# right). SG, 2026-09-24, choosing compaction over the four stacked panels this
+# script drew first. See docs/references.md, the F1 entry, which records what
+# that trades away.
+#
+# The assessments are given a RESERVED BAND in the upper part of the panel
+# rather than being stretched across its whole height. Baker's insulin and D50
+# separated from glucose by accident of magnitude; ours would not -- an ordinal
+# score mapped over 0-250 mcg would run straight through the infusion trace.
+# The band is a layout choice; the right-hand ticks still read true values.
 
-X <- list(scale_x_continuous(limits = c(0, EXTENT_H),
-                             breaks = seq(0, EXTENT_H, by = 12),
-                             expand = expansion(mult = 0.01)))
+FMAX <- max(250, ceiling(max(series$value[series$series %in% c("infusion", "bolus")],
+                             na.rm = TRUE) / 50) * 50)
+if (FMAX > 250) {
+  message(sprintf("  fentanyl axis extended to %g mcg: this episode exceeds the "
+                  , FMAX),
+          "nominal 250 ceiling, and clipping a dose would be a lie")
+}
+BAND <- c(0.58, 1.00) * (FMAX / 0.50)   # where the ordinal series live
+TOP  <- FMAX / 0.50
+
+# Ordinal value -> panel height, and back for the axis ticks. One pair of
+# functions per series so a scale can never drift from the axis that reads it.
+to_band   <- function(v, lo, hi) BAND[1] + (v - lo) / (hi - lo) * diff(BAND)
+from_band <- function(y, lo, hi) lo + (y - BAND[1]) / diff(BAND) * (hi - lo)
+RASS_LIM <- c(-5, 4)
+NVPS_LIM <- c(0, 10)
+
+SERIES_COL <- c(infusion = STATE_COLOURS[["continuous only"]],
+                bolus    = STATE_COLOURS[["bolus only"]],
+                rass     = STATE_COLOURS[["extubated"]],
+                nvps     = STATE_COLOURS[["discharged alive"]])
+# Shape carries identity too, so the four series are never colour-alone.
+SERIES_SHP <- c(infusion = NA, bolus = 18, rass = 16, nvps = 17)
+SERIES_LAB <- c(infusion = "Fentanyl infusion (mcg/hr)",
+                bolus    = "Fentanyl bolus (mcg)",
+                rass     = "RASS", nvps = "NVPS")
 
 # The traces STOP at extubation rather than running on at zero. A zero infusion
 # line past extubation would assert the patient was ventilated and off fentanyl,
-# when in fact they were not ventilated at all -- the same distinction the state
-# definitions make between `no fentanyl` and `extubated`. The empty span to the
-# right of the rule is the patient no longer being on the ventilator, and the x
-# axis still runs to 72h so this panel is comparable with F2-F5.
+# when they were not ventilated at all.
 END_HR <- if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr)) {
   min(meta$extubation_hr, EXTENT_H)
 } else EXTENT_H
 series <- series[series$t_hr <= END_HR, ]
 
-# Extubation, drawn on every panel so the eye carries it down the stack. After
-# it the patient is no longer ventilated, which is why the traces stop rather
-# than continue at zero.
+# Extubation. After it the patient is no longer ventilated, which is why the
+# traces stop rather than continue at zero. Labelled once -- an unlabelled rule
+# is a puzzle, and a reference-line label is data, not narration.
 vent_rule <- if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr)) {
   list(geom_vline(xintercept = meta$extubation_hr, colour = MUTED,
                   linetype = "22", linewidth = 0.4))
 } else list()
-
-# An unlabelled rule is a puzzle. Labelled once, on the top panel only, so the
-# eye carries it down the stack without the word repeating four times.
 vent_label <- if (length(vent_rule)) {
-  list(annotate("text", x = meta$extubation_hr, y = Inf, label = " extubated",
-                hjust = 0, vjust = 1.4, colour = MUTED, size = 2.6))
+  list(annotate("text", x = meta$extubation_hr, y = TOP, label = " extubated",
+                hjust = 0, vjust = 1.2, colour = MUTED, size = 2.6))
 } else list()
 
-panel <- function(p, ylab, bottom = FALSE) {
-  p <- house(p + X + vent_rule + labs(x = NULL, y = ylab)) +
-    theme(panel.grid.major.x = element_blank(),
-          plot.margin = margin(t = 2, r = 6, b = 2, l = 6))
-  if (bottom) {
-    p + labs(x = "Hours since first IMV episode")
-  } else {
-    p + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
-  }
-}
+inf  <- close_step(series[series$series == "infusion", ], END_HR)
+bol  <- series[series$series == "bolus", ]
+rass <- break_on_gap(series[series$series == "rass", ], CAP_H)
+nvps <- break_on_gap(series[series$series == "nvps", ], CAP_H)
+rass$y <- to_band(rass$value, RASS_LIM[1], RASS_LIM[2])
+nvps$y <- to_band(nvps$value, NVPS_LIM[1], NVPS_LIM[2])
 
-inf <- close_step(series[series$series == "infusion", ], END_HR)
-p_inf <- panel(
-  ggplot(inf, aes(t_hr, value)) +
-    # Square risers, closed to zero at both ends, so "off drug" is the trace
-    # sitting at baseline rather than the trace disappearing.
-    geom_step(direction = "hv", colour = STATE_COLOURS[["continuous only"]],
-              linewidth = 0.55) +
-    vent_label +
-    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))),
-  EXEMPLAR_LABELS[["infusion"]])
+p <- ggplot(mapping = aes(t_hr)) +
+  # A rule under the assessment band, so the reader sees that the upper region
+  # is a different quantity rather than more fentanyl.
+  geom_hline(yintercept = BAND[1] - 0.02 * TOP, colour = GRIDLINE, linewidth = 0.4) +
+  # Square risers, closed to zero at both ends: time off the drug is the trace
+  # sitting at baseline, not the trace disappearing.
+  geom_step(data = inf, aes(y = value, colour = "infusion"),
+            direction = "hv", linewidth = 0.55) +
+  # Instantaneous, never carried forward. Dose is read off POSITION. Overlapping
+  # administrations are left overplotted -- that staircase is real signal about
+  # how hard the patient was being chased.
+  geom_point(data = bol, aes(y = value, colour = "bolus", shape = "bolus"),
+             size = 1.9) +
+  # Points plus a step, never a straight line: interpolating an ordinal score
+  # asserts the patient passed through intermediate values nobody recorded.
+  geom_step(data = rass, aes(y = y, colour = "rass"), direction = "hv",
+            linewidth = 0.4, na.rm = TRUE) +
+  geom_point(data = rass, aes(y = y, colour = "rass", shape = "rass"),
+             size = 1.1, na.rm = TRUE) +
+  geom_step(data = nvps, aes(y = y, colour = "nvps"), direction = "hv",
+            linewidth = 0.4, linetype = "22", na.rm = TRUE) +
+  geom_point(data = nvps, aes(y = y, colour = "nvps", shape = "nvps"),
+             size = 1.1, na.rm = TRUE) +
+  scale_colour_manual(values = SERIES_COL, labels = SERIES_LAB,
+                      breaks = names(SERIES_LAB), name = NULL) +
+  scale_shape_manual(values = SERIES_SHP[!is.na(SERIES_SHP)],
+                     labels = SERIES_LAB[!is.na(SERIES_SHP)],
+                     breaks = names(SERIES_SHP)[!is.na(SERIES_SHP)], name = NULL) +
+  scale_x_continuous(limits = c(0, EXTENT_H), breaks = seq(0, EXTENT_H, by = 12),
+                     expand = expansion(mult = 0.01)) +
+  scale_y_continuous(
+    limits = c(0, TOP), expand = expansion(mult = c(0.01, 0.02)),
+    breaks = seq(0, FMAX, by = 50),
+    name = "Fentanyl: mcg/hr infused, mcg per bolus",
+    sec.axis = sec_axis(~ from_band(., RASS_LIM[1], RASS_LIM[2]), name = "RASS",
+                        breaks = seq(RASS_LIM[1], RASS_LIM[2], by = 1))) +
+  guides(colour = guide_legend(nrow = 2, byrow = TRUE, order = 1),
+         shape = "none") +
+  labs(x = "Hours since first IMV episode")
 
-bol <- series[series$series == "bolus", ]
-p_bol <- panel(
-  ggplot(bol, aes(t_hr, value)) +
-    # Spikes from zero plus a reserved marker at the tip. Dose is read off
-    # POSITION, never off marker size -- and near-simultaneous boluses are left
-    # overplotted, because that staircase is real signal about how hard the
-    # patient was being chased.
-    geom_segment(aes(xend = t_hr, yend = 0),
-                 colour = STATE_COLOURS[["bolus only"]], linewidth = 0.4) +
-    geom_point(shape = 18, size = 1.9,
-               colour = STATE_COLOURS[["bolus only"]]) +
-    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.12))),
-  EXEMPLAR_LABELS[["bolus"]])
+if (length(vent_rule)) p <- p + vent_rule + vent_label
 
-ordinal_panel <- function(name, breaks, limits, rule_at = NULL) {
-  d <- break_on_gap(series[series$series == name, ], CAP_H)
-  layers <- list()
-  if (!is.null(rule_at)) {
-    # MUTED and dashed, not GRIDLINE: drawn in the gridline colour it was
-    # indistinguishable from the gridlines and carried no meaning at all.
-    layers <- c(layers, list(geom_hline(yintercept = rule_at, colour = MUTED,
-                                        linetype = "22", linewidth = 0.4)))
-  }
-  ggplot(d, aes(t_hr, value)) + layers +
-    # Points plus a step, never a straight line between them: interpolating
-    # ordinal scores asserts the patient passed through intermediate values at
-    # times nobody recorded.
-    geom_step(direction = "hv", colour = INK, linewidth = 0.4, na.rm = TRUE) +
-    geom_point(colour = INK, size = 1.1, na.rm = TRUE) +
-    # The FULL ordinal range, always. Letting the axis shrink to the
-    # observed values would make "deeply sedated throughout" look like the
-    # normal spread of the scale, and would stop two exemplars being
-    # comparable at a glance.
-    scale_y_continuous(breaks = breaks, limits = limits)
-}
+p <- house(p) + theme(panel.grid.major.x = element_blank())
 
-p_rass <- panel(ordinal_panel("rass", seq(-5, 4, by = 1), c(-5, 4), rule_at = 0),
-                EXEMPLAR_LABELS[["rass"]])
-p_nvps <- panel(ordinal_panel("nvps", seq(0, 10, by = 2), c(0, 10)),
-                EXEMPLAR_LABELS[["nvps"]], bottom = TRUE)
+# The third scale. Borrowed from a bare plot over the identical panel range, so
+# its ticks land where NVPS actually is.
+donor <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) + geom_blank() +
+  scale_y_continuous(limits = c(0, TOP), expand = expansion(mult = c(0.01, 0.02)),
+                     breaks = to_band(seq(NVPS_LIM[1], NVPS_LIM[2], by = 2),
+                                      NVPS_LIM[1], NVPS_LIM[2]),
+                     labels = seq(NVPS_LIM[1], NVPS_LIM[2], by = 2),
+                     position = "right") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y.right = element_text(colour = MUTED),
+        axis.title = element_blank())
 
 if (SOURCE == "synthetic") {
   # The one sanctioned exception to journal style. A generated figure mistaken
   # for a result is the real hazard here, so it says so on its face.
-  p_inf <- p_inf + labs(title = "SYNTHETIC -- GENERATED DATA, NOT A PATIENT") +
+  p <- p + labs(title = "SYNTHETIC -- GENERATED DATA, NOT A PATIENT") +
     theme(plot.title = element_text(colour = STATE_COLOURS[["died"]],
                                     face = "bold", size = 10))
 }
 
-g <- stack_panels(list(p_inf, p_bol, p_rass, p_nvps),
-                  c(NA, 0.70, 1.30, 1.10))
+g <- add_third_axis(p, donor, title = "NVPS")
 ggsave(file.path(dirs$phase, "exemplar.png"), g,
-       width = 7.5, height = 6.0, dpi = 200)
+       width = 7.5, height = 4.6, dpi = 200)
 cat(sprintf("\nwritten: exemplar.png (%s)\n", SOURCE))
 
 
@@ -267,10 +289,17 @@ register_caption("exemplar.png",
                    "ends, so time off the drug is the trace at baseline rather ",
                    "than absent. Boluses are instantaneous and are not carried ",
                    "forward; near-simultaneous administrations are left ",
-                   "overplotted. RASS and NVPS are ordinal and are drawn as ",
-                   "points with a last-value-carried-forward step, broken ",
-                   "across any gap longer than the %gh cap rather than ",
-                   "asserting a score persisted. "), CAP_H),
+                   "overplotted. Infusion and bolus share the left axis, which ",
+                   "names both quantities because they are not the same one: ",
+                   "the infusion is a RATE in mcg/hr and each bolus an AMOUNT ",
+                   "in mcg, so a bolus plotted at a given height is not an ",
+                   "infusion of equal size. RASS and NVPS are ordinal, share no ",
+                   "scale with the fentanyl or with each other, and are drawn ",
+                   "in a reserved band in the upper panel against their own ",
+                   "right-hand axes; each is points with a ",
+                   "last-value-carried-forward step, broken across any gap ",
+                   "longer than the %gh cap rather than asserting a score ",
+                   "persisted. "), CAP_H),
     if (!is.null(crit) && !is.na(meta$n_eligible))
       sprintf(paste0("SELECTION: this episode was drawn at random, seeded at ",
                      "%s, from the %s episodes meeting pre-specified criteria ",

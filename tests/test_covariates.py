@@ -433,8 +433,7 @@ def test_the_exemplar_selection_rule_is_declared_and_consumed():
         "weighted score needs weights nobody can defend, and hand-picking "
         "reintroduces the bias the rule exists to remove")
     for k in ("require_extubated_by_hours", "min_continuous_hours",
-              "min_boluses", "min_off_fentanyl_gap_hours",
-              "min_rass_observations", "min_nvps_observations"):
+              "min_boluses", "min_rass_observations", "min_nvps_observations"):
         assert k in spec, f"exemplar rule is missing {k}"
         assert isinstance(spec[k], int) and spec[k] >= 0, (
             f"exemplar.{k} must be a non-negative integer, got {spec[k]!r}")

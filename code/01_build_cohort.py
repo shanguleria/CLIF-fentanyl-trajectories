@@ -1633,8 +1633,6 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         (f"continuous infusion >= {spec['min_continuous_hours']}h",
          f["cont_hours"] >= spec["min_continuous_hours"]),
         (f">= {spec['min_boluses']} boluses", f["n_bolus"] >= spec["min_boluses"]),
-        (f"off-fentanyl gap >= {spec['min_off_fentanyl_gap_hours']}h",
-         f["gap_hours"] >= spec["min_off_fentanyl_gap_hours"]),
         (f">= {spec['min_rass_observations']} RASS",
          f["RASS"] >= spec["min_rass_observations"]),
         (f">= {spec['min_nvps_observations']} NVPS",
@@ -1652,6 +1650,17 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     print(f"    {'ELIGIBLE':<48s} {n_eligible:>6,} of {anchor_n:,} episodes")
     counts.append({"criterion": "ELIGIBLE", "n_passing_alone": n_eligible,
                    "n_passing_cumulative": n_eligible})
+
+    # MEASURED, not filtered on. A >= 6h interruption was briefly a criterion and
+    # was removed (SG, 2026-09-24): it cut the pool by 90% and would have made
+    # the exemplar unrepresentative of how fentanyl is actually delivered here.
+    # The number is reported because it is a finding in its own right.
+    for g_h in (6, 12):
+        n_gap = int((f["gap_hours"] >= g_h).sum())
+        print(f"    (not a criterion) ever off fentanyl >= {g_h}h: "
+              f"{n_gap:,} of {anchor_n:,} episodes, {100 * n_gap / anchor_n:.1f}%")
+        counts.append({"criterion": f"NOT A CRITERION: off-fentanyl gap >= {g_h}h",
+                       "n_passing_alone": n_gap, "n_passing_cumulative": pd.NA})
     pd.DataFrame(counts).to_csv(dirs["phase"] / "exemplar_selection.csv", index=False)
 
     if not n_eligible:

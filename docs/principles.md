@@ -67,7 +67,7 @@ later. Nothing in the current analysis depends on it.
 
 | | Figure | Status |
 |---|---|---|
-| F1 | One example IMV course: continuous fentanyl, boluses, time off fentanyl, with documented RASS and NVPS throughout. Modelled on Baker et al. Figure 1 | **exists** — `exemplar` |
+| F1 | One example IMV course: continuous fentanyl, boluses, time off fentanyl, with documented RASS and NVPS throughout. Modelled on Baker et al. Figure 1 — **one panel, three y scales** | **exists** — `exemplar` |
 | F2 | States of 100 example patients as a per-patient raster, same states as the alluvial. Modelled on Iyer et al. Figure 1B; reads as panel A to F4 | **exists** — `state_raster` |
 | F3 | Prevalence of states over time | **exists** — `state_prevalence` |
 | F4 | Transitions between states | **exists** — `state_alluvial` |

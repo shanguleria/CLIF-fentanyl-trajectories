@@ -834,12 +834,11 @@
         "require_extubated_by_hours": 72,
         "min_continuous_hours": 12,
         "min_boluses": 2,
-        "min_off_fentanyl_gap_hours": 6,
         "min_rass_observations": 12,
         "min_nvps_observations": 12,
         "draw": "uniform_random_from_eligible",
         "_seed_source": "config.json model.seed. The same seed that draws the 100-episode raster in 03_delivery_states.R.",
-        "_thresholds_DECISION": "SG 2026-09-24. Each criterion exists to make the figure show something it claims to show: min_continuous_hours so there is a real infusion trace to step; min_boluses >= 2 so the near-simultaneous staircase can appear at all; min_off_fentanyl_gap_hours so 'time off fentanyl' is visible as the trace at baseline; the assessment minima so RASS and NVPS are documented throughout rather than in one corner. require_extubated_by_hours makes the panel show the whole arc to liberation instead of stopping at an arbitrary cutoff.",
+        "_thresholds_DECISION": "SG 2026-09-24. Each criterion exists to make the figure show something it claims to show: min_continuous_hours so there is a real infusion trace to step; min_boluses >= 2 so the near-simultaneous staircase can appear at all; the assessment minima so RASS and NVPS are documented throughout rather than in one corner. require_extubated_by_hours makes the panel show the whole arc to liberation instead of stopping at an arbitrary cutoff. A minimum off-fentanyl gap was tried and REMOVED (SG, 2026-09-24): at 6h it cut the eligible pool from 1,013 to 111 and was doing almost all the filtering, because only 8.0% of episodes ever have an interruption that long. Requiring one would have made the exemplar unrepresentative of how fentanyl is actually delivered here. The gap is still MEASURED and reported in the funnel, because that 8.0% is a finding the paper should state directly rather than bury in a figure's selection rule.",
         "_thresholds_ARE_TUNABLE": "These are a starting point, not a finding. 01_build_cohort.py prints the funnel -- how many episodes survive each criterion in turn -- so a threshold that empties the pool is visible immediately and can be loosened. Loosening is a protocol change: re-run and restate the rule in the caption.",
         "_deidentification": "The exported series carries relative hours only, no dates and no identifiers, asserted in code at export and again at draw. The chosen episode id is written to output/intermediate_phi/ and never to the shareable tree."
     },

@@ -180,24 +180,42 @@ not its subject.
   which is real signal about how hard a patient was being chased — do not jitter
   it away.
 
-  *What F1 must not take:* **the three overlaid y-axes.** Baker got away with it
-  because glucose, insulin units and dextrose mL are all 0–50 numbers on a 0–400
-  backdrop; our quantities do not cohere (rate 0–400 mcg/hr, boluses 25–100 mcg,
-  RASS **signed** −5…+4, NVPS 0–10). F1 uses **stacked facets on one shared x
-  axis** instead. Also: the shared `"units or units/hour"` axis is a unit error
-  papered over with an "or" — a rate and an amount must not share a numeric axis,
-  so bolus dose gets its own spike panel or a size/label encoding. And Baker
-  draws RASS-equivalents the wrong way for us: **straight-line interpolation
-  between ordinal assessments asserts the patient passed through intermediate
-  values at specific times.** RASS and NVPS get points plus
+  *What F1 takes after all, reversing this section's original advice* **(SG,
+  2026-09-24).** F1 was first built as four stacked panels on one shared x axis,
+  exactly as argued below. SG chose to compact it back toward Baker: **one panel,
+  three y scales** — fentanyl on the left, RASS and NVPS on two right spines.
+  What that knowingly trades away is recorded here rather than quietly dropped:
+
+  * The left axis now reads `"mcg/hr infused, mcg per bolus"`, which is the same
+    "or" this section objected to in Baker's `"units or units/hour"`. **A rate
+    and an amount still are not the same quantity**, and a bolus plotted at 100
+    mcg is not "the same size" as an infusion running at 100 mcg/hr. The axis
+    title names both quantities instead of hiding the difference behind a unit
+    that fits neither, and the two series carry different marks. For a
+    single-patient exemplar, whose job is qualitative — *this is what this person
+    got, and when* — that is judged an acceptable trade. It would not be
+    acceptable on any aggregate figure.
+  * RASS and NVPS do not share a scale with each other or with fentanyl, so they
+    are drawn in a **reserved band** in the upper part of the panel with their
+    own right-hand axes. Baker's insulin and D50 separated from glucose by
+    accident of magnitude; ours would not, and an ordinal score stretched over
+    0–250 mcg would run straight through the infusion trace.
+
+  *What F1 still does not take.* Baker's **straight-line interpolation between
+  ordinal assessments**, which asserts the patient passed through intermediate
+  values at specific times; and
+  his treatment of missingness as nothing at all. RASS and NVPS get points plus
   `geom_step(direction = "hv")` — last documented value carried forward, the same
-  semantics as the infusion step — on integer breaks, with a reference rule at
-  RASS 0. Because Baker shows missingness as nothing at all, F1 must **break the
-  step across gaps** beyond a stated threshold rather than assert a score
-  persisted; the 4 h LOCF cap on `rass`/`nvps` is the same decision in the panel.
+  semantics as the infusion step — on integer breaks, and the step **breaks
+  across gaps** beyond a stated threshold rather than asserting a score
+  persisted; the 4 h LOCF cap on `rass`/`nvps` is the same decision in the panel,
+  read from the same config key rather than restated.
   Finally, *"Representative ICU admission"* with **no stated selection rule** is
   the figure's weakest point and the one thing F1 must improve on: state how the
-  exemplar was chosen, and state the de-identification.
+  exemplar was chosen, and state the de-identification. **Done** — the criteria
+  live in `config/covariates.json` → `exemplar`, the episode is drawn at random
+  from those that qualify under `model.seed`, and the caption written by the run
+  carries the rule, the criteria, the N and the de-identification.
 
 - **Iyer S, Kennedy JN, Nauka PC, Senussi MH, Seymour CW.** Epidemiology of
   β-blocker use among critically ill patients during and after septic shock.

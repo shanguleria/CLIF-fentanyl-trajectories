@@ -235,3 +235,53 @@ write_captions <- function(path, script, figures, prov) {
     path)
   invisible(length(figures))
 }
+
+# ---- A third y axis ----------------------------------------------------------
+# ggplot gives a panel one secondary axis and no more, so a Baker-style panel
+# with three scales -- one left, two right -- cannot be built from scales alone.
+# This borrows a right-hand axis from a second plot drawn on the SAME panel range
+# and hangs it outside the first plot's existing right axis.
+#
+# The donor's y scale must span the identical range, or the borrowed ticks will
+# point at the wrong heights while looking perfectly plausible. `donor` is
+# expected to be a bare plot carrying nothing but that scale.
+add_third_axis <- function(p_main, donor, title = NULL) {
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  g  <- ggplotGrob(p_main)
+  gd <- ggplotGrob(donor)
+
+  ax <- gd$grobs[[which(gd$layout$name == "axis-r")]]
+  pos <- g$layout[g$layout$name == "axis-r", ]
+  # ggplot lays out an axis-r SLOT whether or not a secondary axis exists, and
+  # fills it with a zeroGrob when it does not -- so the slot's presence proves
+  # nothing. Check the grob itself, or a third axis silently hangs off an empty
+  # second one and the reader gets two scales where three are labelled.
+  stopifnot(
+    "the main plot has no right axis to hang a third scale beside" =
+      nrow(pos) == 1,
+    "the main plot's right axis is empty: give it a sec.axis first" =
+      !inherits(g$grobs[[which(g$layout$name == "axis-r")]], "zeroGrob"),
+    "the donor plot has no right axis to borrow" = !inherits(ax, "zeroGrob"))
+
+  # Insert OUTSIDE the existing right axis AND its title, so each scale is
+  # followed by its own label. Hanging it between the second axis and the second
+  # axis's title puts one axis's name next to the other axis's ticks, which is
+  # worse than having no title at all.
+  ttl <- g$layout[g$layout$name %in% c("ylab-r", "axis-r-title", "ylab-r-title"), ]
+  at <- if (nrow(ttl)) max(ttl$r) else max(pos$r)
+
+  g <- gtable::gtable_add_cols(g, grid::unit(3, "mm"), pos = at)
+  g <- gtable::gtable_add_cols(g, gd$widths[gd$layout$r[gd$layout$name == "axis-r"]],
+                               pos = at + 1)
+  g <- gtable::gtable_add_grob(g, ax, t = pos$t, b = pos$b, l = at + 2,
+                               name = "axis-r-third")
+  if (!is.null(title)) {
+    lab <- grid::textGrob(title, rot = -90, gp = grid::gpar(col = MUTED, fontsize = 9))
+    g <- gtable::gtable_add_cols(g, grid::unit(1.2, "lines"), pos = at + 2)
+    g <- gtable::gtable_add_grob(g, lab, t = pos$t, b = pos$b, l = at + 3,
+                                 name = "ylab-r-third")
+  }
+  g
+}
