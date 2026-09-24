@@ -1,0 +1,424 @@
+<title>Fentanyl Delivery on the Ventilator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+/* Palette inherited from the project's own figure system (code/utils/figures.R),
+   so this page and the figures it describes read as one object. */
+:root{
+  --paper:#fcfcfb; --ink:#0b0b0b; --muted:#6f6d68; --faint:#8d8b85;
+  --rule:#e1e0d9; --panel:#f5f4ef; --panel-2:#eeece5;
+  --continuous:#14427e;  /* continuous infusion */
+  --both:#4a8bd8;        /* continuous + bolus */
+  --bolus:#eb6834;       /* bolus */
+  --liberate:#09b3a6;    /* extubated */
+  --exit:#86667b;        /* discharged alive */
+  --died:#8c2f18;
+  --none:#d8d6cf;        /* no fentanyl */
+  --shadow:0 1px 2px rgba(11,11,11,.05);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#14140f; --ink:#f2f1ea; --muted:#a5a29a; --faint:#8d8a82;
+    --rule:#2f2e28; --panel:#1c1b16; --panel-2:#23221c;
+    --continuous:#5d95dc; --both:#7fb0e6; --bolus:#f0834f; --liberate:#2ec9bc;
+    --exit:#a98ba0; --died:#c4573a; --none:#4a4840;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#14140f; --ink:#f2f1ea; --muted:#a5a29a; --faint:#8d8a82;
+  --rule:#2f2e28; --panel:#1c1b16; --panel-2:#23221c;
+  --continuous:#5d95dc; --both:#7fb0e6; --bolus:#f0834f; --liberate:#2ec9bc;
+  --exit:#a98ba0; --died:#c4573a; --none:#4a4840;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:16px; line-height:1.62; margin:0;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:53rem; margin:0 auto; padding:3.5rem 1.5rem 5rem}
+.col{max-width:36rem}
+
+h1,h2,h3{font-family:Spectral,Georgia,serif; text-wrap:balance; margin:0}
+h1{font-size:2.55rem; line-height:1.1; font-weight:600; letter-spacing:-.015em}
+h2{font-size:1.5rem; font-weight:600; line-height:1.25; margin:0 0 .5rem}
+h3{font-size:1.06rem; font-weight:600; margin:0 0 .3rem}
+p{margin:0 0 1rem}
+a{color:var(--continuous)}
+
+.eyebrow{
+  font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:.7rem;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--faint);
+  margin:0 0 .9rem;
+}
+.lede{font-size:1.16rem; line-height:1.55; color:var(--muted); margin:1.1rem 0 0}
+.note{font-size:.88rem; color:var(--muted)}
+strong{font-weight:600}
+em.term{font-style:normal; font-family:"IBM Plex Mono",monospace; font-size:.9em}
+
+header{border-bottom:1px solid var(--rule); padding-bottom:2rem; margin-bottom:2.5rem}
+
+/* cohort figures — the one place big numbers are the point */
+.cohort{display:flex; flex-wrap:wrap; gap:0 2.6rem; margin-top:1.8rem}
+.cohort div{padding:.2rem 0}
+.cohort b{
+  display:block; font-family:"IBM Plex Mono",monospace; font-weight:500;
+  font-size:1.5rem; letter-spacing:-.02em; font-variant-numeric:tabular-nums;
+}
+.cohort span{font-size:.79rem; color:var(--faint); letter-spacing:.02em}
+
+section{margin:0 0 3.2rem}
+.sec-head{display:flex; align-items:baseline; gap:.75rem; margin-bottom:1.1rem}
+.sec-head .n{
+  font-family:"IBM Plex Mono",monospace; font-size:.74rem; color:var(--faint);
+  letter-spacing:.1em; padding-top:.35rem;
+}
+
+table{border-collapse:collapse; width:100%; font-size:.9rem; margin:.4rem 0 1rem}
+th,td{text-align:left; padding:.5rem .7rem .5rem 0; border-bottom:1px solid var(--rule); vertical-align:top}
+th{
+  font-family:"IBM Plex Mono",monospace; font-weight:500; font-size:.7rem;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--faint);
+  border-bottom-width:1px;
+}
+td.num,th.num{text-align:right; font-family:"IBM Plex Mono",monospace;
+  font-variant-numeric:tabular-nums; padding-right:0}
+.scroll{overflow-x:auto}
+
+/* the delivery-route strip: real shares, on the real clock */
+.strip{margin:1.2rem 0 .4rem; display:flex; flex-direction:column; gap:.55rem}
+.strip .row{display:grid; grid-template-columns:5.6rem 1fr; align-items:center; gap:.9rem}
+.strip .t{
+  font-family:"IBM Plex Mono",monospace; font-size:.78rem; color:var(--muted);
+  font-variant-numeric:tabular-nums; text-align:right;
+}
+.strip .t i{font-style:normal; color:var(--faint); font-size:.72rem}
+.bar{display:flex; height:1.45rem; border-radius:2px; overflow:hidden}
+.bar span{display:block}
+.legend{display:flex; flex-wrap:wrap; gap:.4rem 1.1rem; margin-top:.9rem; font-size:.78rem; color:var(--muted)}
+.legend i{display:inline-block; width:.62rem; height:.62rem; border-radius:1px; margin-right:.38rem; vertical-align:baseline}
+
+blockquote{
+  margin:1.4rem 0; padding:1rem 1.2rem; background:var(--panel);
+  border-left:2px solid var(--continuous); font-size:.94rem;
+}
+blockquote p:last-child{margin:0}
+
+.flag{border-left-color:var(--bolus)}
+.open{border-left-color:var(--exit)}
+
+ul{margin:0 0 1rem; padding-left:1.15rem}
+li{margin:0 0 .5rem}
+
+.decision{border-top:1px solid var(--rule); padding:1.05rem 0 .3rem}
+.decision:last-of-type{border-bottom:1px solid var(--rule); margin-bottom:1rem}
+.decision p{margin:0; font-size:.93rem; color:var(--muted); max-width:38rem}
+
+footer{border-top:1px solid var(--rule); margin-top:3rem; padding-top:1.2rem;
+  font-size:.8rem; color:var(--faint)}
+code{font-family:"IBM Plex Mono",monospace; font-size:.86em; background:var(--panel); padding:.1em .32em; border-radius:2px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">CLIF · fentanyl-trajectories · single centre</p>
+  <h1>Fentanyl delivery on the ventilator</h1>
+  <p class="lede">A descriptive account of how fentanyl is administered to mechanically
+  ventilated adults over the first 72 hours.</p>
+
+  <div class="cohort">
+    <div><b>14,897</b><span>ventilation episodes</span></div>
+    <div><b>166,814</b><span>hospitalisations screened</span></div>
+    <div><b>6,728</b><span>still ventilated at 72h</span></div>
+    <div><b>60</b><span>median age (46–70)</span></div>
+    <div><b>8</b><span>median SOFA (5–10)</span></div>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="n">01</span><h2>What exists now</h2></div>
+  <div class="col">
+    <p>Five figures, a Table 1, and a federated-pooling export based on CLIF v2.1.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Deliverable</th><th>What it shows</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><strong>F1</strong> exemplar</td><td>One ventilation course end to end: infusion rate, boluses, RASS and NVPS on one panel</td><td>built</td></tr>
+      <tr><td><strong>F2</strong> raster</td><td>100 episodes as one row each, delivery state per 4h cell</td><td>built</td></tr>
+      <tr><td><strong>F3</strong> prevalence</td><td>Delivery state over time, whole-cohort denominator</td><td>built</td></tr>
+      <tr><td><strong>F4</strong> alluvial</td><td>Transitions between states, window to window</td><td>built</td></tr>
+      <tr><td><strong>F5</strong> at-risk prevalence</td><td>The same states among patients <em>still ventilated</em></td><td>built</td></tr>
+      <tr><td>Table 1</td><td>Baseline characteristics</td><td>built — stratified on predominant fentanyl intensity</td></tr>
+      <tr><td>Titration analysis</td><td>Is a bolus given when the infusion is turned up?</td><td>built — descriptive phase</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">02</span><h2>What the data says</h2></div>
+
+  <h3>Most ventilated patients are not on fentanyl</h3>
+  <div class="col">
+    <p>Among patients <strong>still ventilated</strong>, the share receiving no fentanyl
+    at all rises from 37.8% at intubation to 64.5% by hour 68. The picture is one of
+    early analgesia that is withdrawn, not sustained.</p>
+  </div>
+
+  <div class="strip">
+    <div class="row"><div class="t">hour 0<br><i>n = 14,897</i></div>
+      <div class="bar">
+        <span style="width:37.8%;background:var(--none)"></span>
+        <span style="width:36.2%;background:var(--continuous)"></span>
+        <span style="width:15.4%;background:var(--bolus)"></span>
+        <span style="width:10.6%;background:var(--both)"></span>
+      </div></div>
+    <div class="row"><div class="t">hour 24<br><i>n = 10,999</i></div>
+      <div class="bar">
+        <span style="width:53.0%;background:var(--none)"></span>
+        <span style="width:36.6%;background:var(--continuous)"></span>
+        <span style="width:6.2%;background:var(--bolus)"></span>
+        <span style="width:4.2%;background:var(--both)"></span>
+      </div></div>
+    <div class="row"><div class="t">hour 48<br><i>n = 8,146</i></div>
+      <div class="bar">
+        <span style="width:61.2%;background:var(--none)"></span>
+        <span style="width:30.2%;background:var(--continuous)"></span>
+        <span style="width:5.0%;background:var(--bolus)"></span>
+        <span style="width:3.7%;background:var(--both)"></span>
+      </div></div>
+    <div class="row"><div class="t">hour 68<br><i>n = 6,728</i></div>
+      <div class="bar">
+        <span style="width:64.5%;background:var(--none)"></span>
+        <span style="width:25.8%;background:var(--continuous)"></span>
+        <span style="width:5.8%;background:var(--bolus)"></span>
+        <span style="width:3.8%;background:var(--both)"></span>
+      </div></div>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--none)"></i>no fentanyl</span>
+    <span><i style="background:var(--continuous)"></i>continuous only</span>
+    <span><i style="background:var(--bolus)"></i>bolus only</span>
+    <span><i style="background:var(--both)"></i>continuous + bolus</span>
+  </div>
+  <p class="note" style="margin-top:.7rem">Denominator is episodes still ventilated in
+  that window, so the bands are not diluted by patients who left.</p>
+
+  <h3 style="margin-top:2.2rem">Exposure narrows; it does not taper</h3>
+  <div class="col">
+    <p>This is the finding we did not expect. The share receiving any fentanyl falls
+    steadily, and so does the mean across all ventilated patients — but among those
+    <em>still receiving it</em>, the median dose <strong>rises</strong>. Fentanyl is
+    stopped in most patients and escalated in the rest.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Hour since intubation</th><th class="num">0</th><th class="num">24</th><th class="num">48</th><th class="num">68</th></tr></thead>
+    <tbody>
+      <tr><td>Still ventilated</td><td class="num">14,897</td><td class="num">10,999</td><td class="num">8,146</td><td class="num">6,728</td></tr>
+      <tr><td>Receiving any fentanyl</td><td class="num">62.2%</td><td class="num">47.0%</td><td class="num">38.9%</td><td class="num">35.5%</td></tr>
+      <tr><td>Mean mcg/hr, all ventilated</td><td class="num">44.5</td><td class="num">43.0</td><td class="num">37.3</td><td class="num">32.3</td></tr>
+      <tr><td><strong>Median mcg/hr, receivers only</strong></td><td class="num"><strong>50</strong></td><td class="num"><strong>75</strong></td><td class="num"><strong>85</strong></td><td class="num"><strong>75</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 style="margin-top:2.2rem">Continuous infusion is sticky; bolus-only is not</h3>
+  <div class="col">
+    <p>Over a single 4-hour step, a patient on a continuous infusion is very likely to
+    still be on one. Bolus-containing states are transient — they are a passage, not a
+    strategy.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>State at hour t</th><th class="num">Still in it at t+4h</th><th class="num">Windows at risk</th></tr></thead>
+    <tbody>
+      <tr><td>No fentanyl</td><td class="num">83.8%</td><td class="num">91,033</td></tr>
+      <tr><td>Continuous only</td><td class="num">82.0%</td><td class="num">64,118</td></tr>
+      <tr><td>Bolus only</td><td class="num">40.4%</td><td class="num">14,607</td></tr>
+      <tr><td>Continuous + bolus</td><td class="num">26.3%</td><td class="num">8,368</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>At equal illness severity, fentanyl intensity tracks age and sex</h3>
+  <div class="col">
+    <p>Table 1 is now stratified on <strong>predominant fentanyl intensity</strong> —
+    over an episode's at-risk time the patient is in exactly one declared band at all
+    times, and the band holding the most time labels the episode. A declared rule, not a
+    latent one, and an <em>ordered</em> one, so the p-value is a trend test rather than
+    an omnibus one.</p>
+    <p>The gradient is steep, and it is not a severity gradient. <strong>SOFA is flat
+    across all four strata</strong> (8, 8, 8, 7; p = 0.40) and so is the vasopressor
+    requirement (p = 0.29). What moves is who the patient is: the high-intensity stratum
+    is <strong>14 years younger</strong> than the zero stratum and nine points more male,
+    and it receives twice the propofol alongside the fentanyl.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Predominant band</th><th class="num">n</th><th class="num">Age</th>
+      <th class="num">Female</th><th class="num">SOFA</th><th class="num">NEE</th>
+      <th class="num">Propofol</th><th class="num">P/F</th></tr></thead>
+    <tbody>
+      <tr><td>zero</td><td class="num">7,761</td><td class="num">63</td><td class="num">43.2%</td>
+        <td class="num">8</td><td class="num">0.0</td><td class="num">12.5</td><td class="num">198</td></tr>
+      <tr><td>≤200 mcg / 4h</td><td class="num">3,105</td><td class="num">62</td><td class="num">42.2%</td>
+        <td class="num">8</td><td class="num">0.0</td><td class="num">17.5</td><td class="num">208</td></tr>
+      <tr><td>≤400 mcg / 4h</td><td class="num">1,631</td><td class="num">57</td><td class="num">34.3%</td>
+        <td class="num">8</td><td class="num">0.0</td><td class="num">22.5</td><td class="num">189</td></tr>
+      <tr><td>&gt;400 mcg / 4h</td><td class="num">2,400</td><td class="num">49</td><td class="num">33.8%</td>
+        <td class="num">7</td><td class="num">0.0</td><td class="num">26.2</td><td class="num">164</td></tr>
+      <tr><td><i>trend p</i></td><td class="num">—</td><td class="num">&lt;0.001</td><td class="num">&lt;0.001</td>
+        <td class="num">0.399</td><td class="num">0.295</td><td class="num">&lt;0.001</td><td class="num">&lt;0.001</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Medians. NEE = norepinephrine equivalent, mcg/kg/min; propofol in
+  mcg/kg/min; both at the first window. Sex and race are tested for heterogeneity
+  (chi-square), every ordered row for trend (Spearman).</p>
+
+  <div class="decision flag">
+    <h3>Two artifacts reported, not argued away</h3>
+    <p>This is <strong>not a trajectory</strong>: modal time ignores order, and only
+    41.5% of episodes end in the band they began in, so "started high and weaned" and
+    "stayed medium throughout" can share a label. Table 1 therefore carries two extra
+    rows — <em>modal share</em>, how decisive each label is (median 0.8, but 0.6 in the
+    medium band), and <em>at-risk hours</em>, which expose a duration confound: a short
+    course cannot accumulate zero windows, so the low band skews short (32h vs 68h).</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">03</span><h2>Titration practice</h2></div>
+  <div class="col">
+    <p>Pharmacologically, turning an infusion up reaches the new steady state over four
+    to five half-lives; a bolus given at the same moment gets there in minutes. So: when
+    the rate goes up, does a bolus go with it?</p>
+    <p>Rate <em>decreases</em> are carried as a negative control. A bolus at a
+    downtitration has no pharmacologic rationale, so its pairing rate is the floor for
+    coincidence — the increase figures should be read against it, not against zero.</p>
+    <p><strong>The unit of analysis is the event, not the patient.</strong> One episode
+    contributes several rate changes, so the percentages below are the share of
+    <em>rate-change events</em> paired with a bolus. The encounter-level view is in the
+    paragraph beneath, and the two answer different questions.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Event</th><th class="num">Events</th><th class="num">Episodes</th><th class="num">Events per episode</th><th class="num">Bolus within ±30 min</th></tr></thead>
+    <tbody>
+      <tr><td>Initiation (0 → on)</td><td class="num">8,005</td><td class="num">5,003</td><td class="num">1.60</td><td class="num">10.5%</td></tr>
+      <tr><td>Uptitration</td><td class="num">16,058</td><td class="num">6,052</td><td class="num">2.65</td><td class="num">15.0%</td></tr>
+      <tr><td>Downtitration <span class="note">— negative control</span></td><td class="num">12,764</td><td class="num">5,445</td><td class="num">2.34</td><td class="num">3.4%</td></tr>
+      <tr><td><strong>Any increase</strong></td><td class="num"><strong>24,063</strong></td><td class="num"><strong>7,407</strong></td><td class="num"><strong>3.25</strong></td><td class="num"><strong>13.5%</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <blockquote>
+    <p>Uptitrations pair <strong>4.4× more often</strong> than downtitrations — and the
+    ratio is largest at the <em>narrowest</em> window: 9.1× at ±5 min, 4.4× at ±30,
+    3.1× at ±60. Coincidence accumulates as the window widens, so a gap already present
+    at five minutes is real practice rather than background bolus frequency.</p>
+  </blockquote>
+
+  <div class="col">
+    <p>But the practice is <strong>uncommon</strong>, and this is where the
+    encounter-level view matters. Of the 7,407 episodes contributing at least one rate
+    increase, median per-encounter adherence is <strong>zero</strong>, and among the
+    5,390 with two or more increases <strong>69.7% never once pair a bolus with
+    one</strong> (75.8% within the first 24 hours). Whether that is a quality gap or a
+    reasonable clinical choice is a question for the group, not for the data.</p>
+    <p class="note">One caveat to carry into any inferential follow-up: events are
+    clustered within patients (3.25 increases per episode), so an event-level
+    percentage has no valid confidence interval without accounting for that clustering.
+    The descriptive figures above are presented as counts for exactly that reason.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">04</span><h2>A correction worth knowing about</h2></div>
+  <div class="col">
+    <p>While preparing the titration work we found that the hourly exposure grid took
+    the <strong>maximum</strong> rate charted in each hour rather than the <strong>last</strong>,
+    which is what the protocol specified. The two agree on a single record and on an
+    uptitration, and diverge wherever the rate falls inside an hour — so a charted
+    <em class="term">stop</em> was invisible whenever anything else was charted in the
+    same hour.</p>
+  </div>
+
+  <blockquote class="flag">
+    <p>The error was <strong>always upward</strong>: 9,312 hourly cells affected (4.0%),
+    median 50 mcg/hr, touching <strong>35.0% of episodes</strong> at least once. Fixed,
+    pinned with nine regression tests, and every shareable number re-derived and diffed.</p>
+  </blockquote>
+
+  <div class="col">
+    <p>The practical consequence is modest but real, and it moved numbers we had already
+    looked at: mean fentanyl at hour 0 went from 47.1 to 44.5 mcg/hr, and the declared
+    intensity bands from 50.8/21.3/12.5/15.5% to 51.6/21.4/12.2/14.8%. Cohort
+    construction was untouched — the STROBE flow, retention and missingness tables are
+    byte-identical before and after — so this is a change to exposure measurement only.
+    <strong>Any figure circulated before this point should be discarded.</strong></p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">05</span><h2>Open for the group</h2></div>
+  <div class="col">
+    <p>Five decisions we have deliberately not made alone. The first three change what
+    the paper claims; the last two change its scope.</p>
+  </div>
+
+  <div class="decision">
+    <h3>Are compassionate extubations in our cohort?</h3>
+    <p>Of 7,026 episodes extubated within 72 hours, <strong>1,081 (15.4%) did not
+    survive the hospitalisation</strong>. Escalating fentanyl into a terminal extubation
+    is a different process from analgesia during ventilation, and our
+    <em class="term">continuous → extubated</em> transition currently pools the two.
+    This is a change to the study population, not a figure tweak.</p>
+  </div>
+
+  <div class="decision">
+    <h3>Do the dose-intensity figures stay?</h3>
+    <p>A second state definition cuts the same windows into declared intensity bands
+    (0 / ≤200 / ≤400 / &gt;400 mcg per 4h window). It triangulates the route-based story
+    but is not among the five planned figures. Main text, supplement, or cut.</p>
+  </div>
+
+  <div class="decision">
+    <h3>Does the exemplar read?</h3>
+    <p>F1 shows one real de-identified patient, drawn at random from the 224 episodes
+    meeting pre-specified criteria — never chosen by inspection. If it reads badly the
+    fix is to change the <em>rule</em> and re-draw, not to pick a different patient.</p>
+  </div>
+
+  <div class="decision">
+    <h3>Do we pursue titration outcomes?</h3>
+    <p>The obvious next question is whether pairing boluses with uptitration is
+    associated with lower cumulative dose or faster liberation. Two traps make that
+    harder than it looks: adherence and cumulative dose are partly tautological when
+    measured over the same window, and an episode-long exposure against time-to-extubation
+    is immortal-time bias. Per-encounter adherence is already emitted within a 24-hour
+    landmark so a defensible analysis is possible — but it is a second paper's worth of work.</p>
+  </div>
+</section>
+
+<footer>
+  Single centre, CLIF 2.1.0. All figures and tables regenerate from
+  <code>./run_pipeline.sh</code>; every shareable output carries a provenance block with
+  the site, code version and definition version. Numbers here are current as of the
+  most recent full pipeline run.
+</footer>
+
+</div>

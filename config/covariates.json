@@ -827,6 +827,20 @@
         "no_variable_drop_threshold": "No variable is dropped for excess missingness. A variable both frequently missing and poorly predicted by the others is as likely an extract or mapping problem as genuine clinical non-measurement, and that is a finding rather than a reason to discard it.",
         "imputation": "OUT OF SCOPE for Phase 0. 01_build_cohort.py writes NA and reports it; nothing here imputes. Where imputation is later added it must (a) restrict predictors to the target's own window or EARLIER, (b) clamp predictions to the observed range of the target, and (c) never see the outcome or the trajectory class."
     },
+    "predominant_intensity": {
+        "_role": "Table 1 stratification. Over an episode's AT-RISK time -- intubation to extubation or the end of the granular window, i.e. every ventilated window -- the patient is in exactly one declared intensity band at all times, so one band holds more time than the others. That band labels the episode.",
+        "_why_this_and_not_route": "SG 2026-09-24. The same rule on delivery ROUTE was measured first and rejected: it put 93.5% of episodes into two classes and left `continuous + bolus` with n = 124, too few for a stable column. The intensity bands split the same cohort 57.2 / 19.0 / 10.0 / 13.9%, four usable strata, and they are ORDERED, so a Table 1 row reads as a gradient and the test can be a trend test rather than an omnibus one.",
+        "_why_it_is_legitimate": "This is a DECLARED rule, not a latent one -- the same ground on which the dose bands themselves survived after gbmt was tabled. It asserts nothing about subpopulations existing; it only labels an episode by where it spent its time. The bands come from exposure.dose_states, so the stratification and the state figures cannot drift apart.",
+        "_NOT_A_TRAJECTORY": "Modal time ignores ORDER. Measured 2026-09-24: only 44.9% of episodes end in the state they began in, so 'started high and weaned' and 'stayed medium throughout' can share a label. Call this PREDOMINANT INTENSITY in text and never a trajectory or a class -- that claim is exactly what the latent-class work could not support.",
+        "variable": "window_mcg",
+        "bands_from": "exposure.dose_states",
+        "at_risk": "ventilated windows only",
+        "tie_break": "higher",
+        "_tie_break_why": "7.3% of episodes have two bands tied on time. Ties resolve toward the HIGHER band, so a tie is never settled in the direction of less exposure. Declared rather than left to sort order, which would make the label depend on how the levels happen to be listed.",
+        "report_modal_share": true,
+        "report_at_risk_hours": true,
+        "_report_why": "Two artifacts must stay visible rather than being argued away. Modal share (median 0.75, IQR 0.57-0.93) says how decisive the label is -- a coin-flip label is not a stratum. At-risk hours expose a duration confound: the `low` band has a median of 32h against 60-72h for the others, because a short course cannot accumulate zero windows. Both ship as Table 1 rows."
+    },
     "titration": {
         "_role": "Bolus co-administration at an infusion rate change, for code/05_titration.R. PROTOCOL: two sites pairing on different windows produce numbers that cannot be pooled.",
         "_question": "When the fentanyl infusion rate is increased, how often is a bolus given within the window? A rate change alone approaches the new steady state over roughly four to five half-lives; a bolus at the moment of uptitration gets there in minutes. A unit that reliably pairs the two is titrating more efficiently.",

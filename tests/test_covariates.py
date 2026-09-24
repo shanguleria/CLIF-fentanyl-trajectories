@@ -501,6 +501,53 @@ def test_the_titration_analysis_never_reads_the_hourly_grid():
             f"timestamps would mean the grid leaked in")
 
 
+def test_the_table1_stratification_is_declared_and_ordered():
+    """Table 1 is stratified on predominant fentanyl intensity. Three things
+    must hold or the strata mean something other than what the text will claim.
+    """
+    spec = COV.get("predominant_intensity")
+    assert spec is not None, "covariates.json must declare predominant_intensity"
+
+    # 1. it reuses the SAME bands the state figures use, so the two cannot drift
+    assert spec["bands_from"] == "exposure.dose_states"
+    assert spec["variable"] == COV["exposure"]["dose_states"]["variable"], (
+        "the stratification must be cut on the same variable as the bands")
+
+    # 2. the tie-break is declared, not left to sort order. 7.3% of episodes tie.
+    assert spec["tie_break"] in ("higher", "lower"), (
+        "a tie resolved by whatever order the levels happen to be in is not a rule")
+
+    # 3. both artifacts stay visible as Table 1 rows
+    assert spec["report_modal_share"] is True, (
+        "modal share says how decisive each label is; a coin-flip label is not a stratum")
+    assert spec["report_at_risk_hours"] is True, (
+        "at-risk hours expose the duration confound -- a short course cannot "
+        "accumulate zero windows")
+
+    build = (REPO / "code" / "02_descriptive_cohort.R").read_text()
+    states = (REPO / "code" / "utils" / "states.R").read_text()
+    live = {k for k in spec if not k.startswith("_")}
+    unread = {k for k in live if k not in build and k not in states}
+    assert not unread, (
+        f"predominant_intensity keys declared but read by nothing: {sorted(unread)}")
+
+
+def test_the_stratification_is_never_called_a_trajectory():
+    """Modal time ignores order -- only 44.9% of episodes end in the state they
+    began in. Calling these strata trajectories or latent classes is exactly the
+    claim the tabled gbmt work could not support, so the words are banned from
+    the code that builds them."""
+    for rel in ("code/utils/states.R", "code/02_descriptive_cohort.R"):
+        src = (REPO / rel).read_text()
+        for line in src.splitlines():
+            low = line.lower()
+            if "predominant" not in low and "modal" not in low:
+                continue
+            if line.strip().startswith("#"):
+                continue          # comments may discuss why it is NOT one
+            assert "trajectory" not in low and "latent class" not in low, (
+                f"{rel} names the stratification a trajectory: {line.strip()[:70]}")
+
 if __name__ == "__main__":
     import sys, traceback
 

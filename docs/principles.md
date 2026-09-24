@@ -139,6 +139,32 @@ appears at wide windows is bolus frequency, not practice. And the analysis uses
 **raw charted timestamps, never the hourly grid**, whose 1h binning would move a
 rate change away from the bolus that accompanied it.
 
+## 5c. How Table 1 is stratified
+
+**Predominant fentanyl intensity** (SG, 2026-09-24), replacing landmark-eligible
+vs not. That split was a leftover from the modelling design: "eligible vs not"
+is "survived ventilated to 72h vs not", a severity contrast rather than a
+delivery contrast, and its p-value invited reading as a finding.
+
+Over an episode's at-risk time — every ventilated window — the patient is in
+exactly one declared intensity band at all times, so one band holds more time
+than the others. That band labels the episode. A **declared** rule, not a latent
+one: the same ground on which the bands themselves survived after gbmt was
+tabled. It asserts nothing about subpopulations existing; it only labels.
+
+The same rule on delivery **route** was measured first and rejected — it left
+93.5% of episodes in two classes and `continuous + bolus` with n = 124. The
+intensity bands split 52 / 21 / 11 / 16%, four usable strata, and being
+**ordered** they permit a trend test rather than an omnibus one.
+
+**It is not a trajectory and must not be called one.** Modal time ignores order:
+only 41.5% of episodes end in the band they began in
+(`validation/modal_state_probe.py`), so "started high and
+weaned" and "stayed medium throughout" can share a label. Two artifacts are
+reported as Table 1 rows rather than argued away — modal share, which says how
+decisive each label is, and at-risk hours, which expose a duration confound
+(a short course cannot accumulate zero windows, so `low` skews short).
+
 ## 6. Open decisions
 
 - **The tracheostomy rule.** Identification is specified; the rule is not. It

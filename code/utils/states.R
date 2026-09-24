@@ -186,3 +186,60 @@ dose_state_levels <- function(labels = DOSE_LABELS) {
 # Both definitions share the terminal states, so STATE_ABSORBING governs both.
 stopifnot("the two definitions must share their absorbing states" =
             all(STATE_ABSORBING %in% dose_state_levels()))
+
+# ---- Predominant intensity, for stratification --------------------------------
+# Over an episode's AT-RISK time -- every ventilated window -- the patient is in
+# exactly one declared intensity band at all times, so one band holds more time
+# than the others. That band labels the episode.
+#
+# A DECLARED rule, not a latent one: the same ground on which the bands
+# themselves survived after gbmt was tabled. It asserts nothing about
+# subpopulations existing, it only labels.
+#
+# NOT A TRAJECTORY, and must never be called one. Modal time ignores ORDER --
+# only 44.9% of episodes end in the state they began in (measured 2026-09-24),
+# so "started high and weaned" and "stayed medium throughout" can share a label.
+#
+# Returns one row per episode: the band (an ORDERED factor, so a trend test is
+# available), the share of at-risk time in it, whether that share was tied, and
+# the at-risk duration. The last two exist because both carry artifacts that must
+# stay visible -- a coin-flip label is not a stratum, and a short course cannot
+# accumulate zero windows.
+predominant_band <- function(d, cuts, labels = DOSE_LABELS, window_h = 4,
+                             tie_break = c("higher", "lower")) {
+  tie_break <- match.arg(tie_break)
+  need <- c("encounter_block", "imv_status", "window_mcg")
+  missing <- setdiff(need, names(d))
+  if (length(missing)) {
+    stop("predominant_band needs columns the frame does not carry: ",
+         paste(missing, collapse = ", "), call. = FALSE)
+  }
+  stopifnot("one cut fewer than the positive bands" =
+              length(cuts) == length(labels) - 2L)
+
+  vent <- d[!is.na(d$imv_status) & d$imv_status == 1, ]
+  stopifnot("no ventilated windows to classify" = nrow(vent) > 0)
+  band <- cut(vent$window_mcg, breaks = c(-Inf, 0, cuts, Inf), labels = labels,
+              right = TRUE, ordered_result = TRUE)
+
+  tab <- table(vent$encounter_block, band)
+  counts <- as.matrix(tab)
+  at_risk <- rowSums(counts)
+
+  # Ties resolve toward the HIGHER band, so a tie is never settled in the
+  # direction of less exposure. max.col's "last" takes the rightmost maximum,
+  # and the columns are in ascending band order.
+  idx <- max.col(counts, ties.method = if (tie_break == "higher") "last" else "first")
+  top <- counts[cbind(seq_len(nrow(counts)), idx)]
+  # tied = at least two bands share the maximum
+  n_at_max <- rowSums(counts == top)
+
+  data.frame(
+    encounter_block = rownames(counts),
+    band = factor(labels[idx], levels = labels, ordered = TRUE),
+    modal_share = round(top / at_risk, 3),
+    tied = n_at_max > 1L,
+    at_risk_windows = as.integer(at_risk),
+    at_risk_hours = as.integer(at_risk) * window_h,
+    row.names = NULL, stringsAsFactors = FALSE)
+}

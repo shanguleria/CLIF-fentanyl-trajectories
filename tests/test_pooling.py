@@ -71,30 +71,42 @@ def test_sd_is_recoverable_from_the_two_sums():
         assert err < TOL, f"{f.name}: reconstructed sd disagrees by {err}"
 
 
-def test_two_strata_pool_back_to_the_overall_row():
-    """The whole point, demonstrated on real numbers: eligible and not-eligible
-    are disjoint, so pooling them as if they were two sites must reproduce the
-    overall row exactly."""
+def test_the_strata_pool_back_to_the_overall_row():
+    """The whole point, demonstrated on real numbers: the Table 1 strata are
+    disjoint and exhaustive, so pooling them as if they were separate sites must
+    reproduce the overall row exactly.
+
+    Deliberately agnostic to WHICH strata they are and HOW MANY. Table 1 was
+    stratified on landmark eligibility (two strata) until 2026-09-24 and on
+    predominant fentanyl intensity (four) after; a test that hardcodes the names
+    fails on a change of stratification rather than on a change of arithmetic,
+    which is not what it is for.
+    """
     d = _skip_if_absent(CONT)
     if d is None:
         return
     base = d[d.scope == "baseline"]
     checked = 0
     for var, g in base.groupby("variable"):
-        s = {r.stratum: r for r in g.itertuples()}
-        if not {"overall", "eligible", "not_eligible"} <= set(s):
+        rows = {r.stratum: r for r in g.itertuples()}
+        o = rows.pop("overall", None)
+        parts = list(rows.values())
+        if o is None or len(parts) < 2:
             continue
-        a, b, o = s["eligible"], s["not_eligible"], s["overall"]
-        if any(math.isnan(x) for x in (a.sum, b.sum, o.mean)) or a.n + b.n == 0:
+        if any(math.isnan(x.sum) or math.isnan(x.sum_sq) for x in parts) \
+                or math.isnan(o.mean):
             continue
-        n = a.n + b.n
-        assert n == o.n, f"{var}: strata sum to {n}, overall says {o.n}"
-        assert abs((a.sum + b.sum) / n - o.mean) < TOL, f"{var}: pooled mean differs"
-        q = a.sum_sq + b.sum_sq
-        pooled_sd = math.sqrt(max((q - (a.sum + b.sum) ** 2 / n) / (n - 1), 0.0))
+        n = sum(x.n for x in parts)
+        if n == 0 or n != o.n:
+            # a stratum suppressed for a small cell cannot be pooled back
+            continue
+        tot = sum(x.sum for x in parts)
+        assert abs(tot / n - o.mean) < TOL, f"{var}: pooled mean differs"
+        q = sum(x.sum_sq for x in parts)
+        pooled_sd = math.sqrt(max((q - tot ** 2 / n) / (n - 1), 0.0))
         assert abs(pooled_sd - o.sd) < TOL, f"{var}: pooled sd differs"
         checked += 1
-    assert checked >= 5, f"only {checked} variables had all three strata"
+    assert checked >= 5, f"only {checked} variables were poolable"
 
 
 def test_small_cells_are_suppressed_not_published():

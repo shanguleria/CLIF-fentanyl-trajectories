@@ -178,25 +178,40 @@ paired_within <- function(events, boluses, minutes) {
 ev$paired <- paired_within(ev, bol, WIN_MIN)
 ev$on_hour <- (ev$t_hr %% 1) == 0      # the charting-precision stratum
 
+# The unit of analysis is the EVENT, not the encounter: one episode contributes
+# several rate changes, so n_events far exceeds the number of patients and the
+# percentages are event-level. n_episodes travels beside it so a reader can see
+# the clustering rather than having to infer it -- and so nobody reads a
+# percentage of events as a percentage of patients.
 summarise_pairing <- function(d, by) {
   do.call(rbind, lapply(split(d, d[[by]], drop = TRUE), function(x) {
     if (!nrow(x)) return(NULL)
-    data.frame(group = as.character(x[[by]][1]), n_events = nrow(x),
+    data.frame(group = as.character(x[[by]][1]),
+               n_events = nrow(x),
+               n_episodes = length(unique(x$encounter_block)),
+               events_per_episode = round(nrow(x) / length(unique(x$encounter_block)), 2),
                n_paired = sum(x$paired),
                pct_paired = round(100 * mean(x$paired), 1))
   }))
 }
 
 coad <- summarise_pairing(ev, "kind")
+inc <- ev[ev$kind != "downtitration", ]
 coad <- rbind(
   coad,
-  data.frame(group = "any increase", n_events = sum(ev$kind != "downtitration"),
-             n_paired = sum(ev$paired & ev$kind != "downtitration"),
-             pct_paired = round(100 * mean(ev$paired[ev$kind != "downtitration"]), 1)))
+  data.frame(group = "any increase", n_events = nrow(inc),
+             n_episodes = length(unique(inc$encounter_block)),
+             events_per_episode = round(nrow(inc) / length(unique(inc$encounter_block)), 2),
+             n_paired = sum(inc$paired),
+             pct_paired = round(100 * mean(inc$paired), 1)))
 coad$window_minutes <- WIN_MIN
 
 cat(sprintf("\nBolus within +/-%g min of the event\n", WIN_MIN))
-print(coad[, c("group", "n_events", "n_paired", "pct_paired")], row.names = FALSE)
+print(coad[, c("group", "n_events", "n_episodes", "events_per_episode",
+               "n_paired", "pct_paired")], row.names = FALSE)
+cat(sprintf("  percentages are EVENT-level; %s episodes contribute the %s increases\n",
+            format(length(unique(inc$encounter_block)), big.mark = ","),
+            format(nrow(inc), big.mark = ",")))
 
 # The contrast that answers "is this deliberate?": pairing against window width,
 # for uptitrations AND downtitrations. If the uptitration curve rises faster at
@@ -303,6 +318,7 @@ print(adh_dist, row.names = FALSE)
 
 register_caption("coadministration.png",
   "Bolus co-administration at a fentanyl infusion rate change",
+  paste(
   sprintf(paste0("Share of rate changes accompanied by at least one fentanyl ",
                  "bolus within +/-%g minutes, on raw charted timestamps rather ",
                  "than the hourly grid. A change must be at least %g mcg/hr to ",
@@ -313,25 +329,37 @@ register_caption("coadministration.png",
                  "floor for coincidental pairing and the increase rates should ",
                  "be read against it, not against zero. %s"),
           WIN_MIN, MIN_DELTA,
-          if (VENT_ONLY) "Restricted to ventilated windows." else ""))
+          if (VENT_ONLY) "Restricted to ventilated windows." else ""),
+    sprintf(paste0("THE DENOMINATOR IS EVENTS, NOT PATIENTS: %s episodes ",
+                   "contribute the %s increases, a mean of %.2f each, so these ",
+                   "percentages are not the share of patients and carry no valid ",
+                   "confidence interval without accounting for clustering within ",
+                   "episode."),
+            format(length(unique(inc$encounter_block)), big.mark = ","),
+            format(nrow(inc), big.mark = ","),
+            nrow(inc) / length(unique(inc$encounter_block)))))
 
 p_coad <- house(
   ggplot(coad[coad$group %in% EVENT_LEVELS, ],
          aes(factor(group, levels = EVENT_LEVELS), pct_paired,
              fill = factor(group, levels = EVENT_LEVELS))) +
     geom_col(width = 0.62) +
-    geom_text(aes(label = sprintf("%.1f%%\n(%s)", pct_paired,
+    geom_text(aes(label = sprintf("%.1f%%\n%s events", pct_paired,
                                   format(n_events, big.mark = ","))),
               vjust = -0.25, size = 3, colour = INK) +
+    # No legend: the x axis already names each bar, so a legend would only
+    # repeat it. Identity is never carried by colour alone here.
     scale_fill_manual(values = c(initiation = STATE_COLOURS[["continuous only"]],
                                  uptitration = STATE_COLOURS[["bolus only"]],
                                  downtitration = STATE_COLOURS[["discharged alive"]]),
-                      labels = c(initiation = "Initiation (0 -> on)",
-                                 uptitration = "Uptitration",
-                                 downtitration = "Downtitration (negative control)"),
-                      name = NULL) +
+                      guide = "none") +
+    scale_x_discrete(labels = c(initiation = "Initiation", uptitration = "Uptitration",
+                                downtitration = "Downtitration")) +
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.18))) +
-    labs(x = NULL, y = sprintf("%% with a bolus within +/-%g min", WIN_MIN)))
+    # The denominator is EVENTS, not patients -- one episode contributes several
+    # rate changes. Naming it on the axis is where a reader is certain to look
+    # before quoting the number.
+    labs(x = NULL, y = sprintf("%% of Events Paired with Bolus (+/-%g min)", WIN_MIN)))
 ggsave(file.path(dirs$phase, "coadministration.png"), p_coad,
        width = 7.5, height = 4.4, dpi = 200)
 
@@ -354,14 +382,13 @@ p_sens <- house(
     scale_colour_manual(values = c(initiation = STATE_COLOURS[["continuous only"]],
                                    uptitration = STATE_COLOURS[["bolus only"]],
                                    downtitration = STATE_COLOURS[["discharged alive"]]),
-                        labels = c(initiation = "Initiation (0 -> on)",
-                                   uptitration = "Uptitration",
-                                   downtitration = "Downtitration (negative control)"),
+                        labels = c(initiation = "Initiation", uptitration = "Uptitration",
+                                   downtitration = "Downtitration"),
                         name = NULL) +
     scale_x_continuous(breaks = WIN_SENS) +
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
     labs(x = "Pairing window, +/- minutes",
-         y = "% of rate changes with a bolus"))
+         y = "% of rate-change EVENTS with a bolus"))
 ggsave(file.path(dirs$phase, "window_sensitivity.png"), p_sens,
        width = 7.5, height = 4.4, dpi = 200)
 

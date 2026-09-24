@@ -27,6 +27,7 @@ for (p in pkgs) {
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
 source(here("code", "utils", "figures.R"))
+source(here("code", "utils", "states.R"))   # predominant_band(), for Table 1
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -335,13 +336,36 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
 # strata headers. Rendering to HTML is a separate step.
 
 base <- long[long$window_idx == 0, ]
-base$landmark_eligible <- base$encounter_block %in% elig
-grp <- ifelse(base$landmark_eligible, "eligible", "not_eligible")
+
+# STRATIFIED ON PREDOMINANT FENTANYL INTENSITY (SG, 2026-09-24), replacing
+# landmark-eligible vs not. That split was a leftover from the modelling design:
+# "eligible vs not" is "survived ventilated to 72h vs not", a severity contrast
+# rather than a delivery contrast, and its p-value invited reading as a finding.
+#
+# The bands are ORDERED, so the test below is a trend test, not an omnibus one.
+# The same rule on delivery ROUTE was measured first and rejected -- it left
+# `continuous + bolus` with n = 124.
+PI_SPEC <- COV$predominant_intensity
+stopifnot("covariates.json must declare predominant_intensity" = !is.null(PI_SPEC),
+          "the stratification must use the declared dose bands" =
+            identical(PI_SPEC$bands_from, "exposure.dose_states"),
+          "the stratification variable must be the one the bands are cut on" =
+            identical(PI_SPEC$variable, DS_SPEC$variable))
+pi_class <- predominant_band(long, DOSE_CUTS, DOSE_LAB, window_h = WINDOW_H,
+                             tie_break = PI_SPEC$tie_break)
+base <- merge(base, pi_class, by = "encounter_block", all.x = TRUE)
+stopifnot("every analytic block must receive a predominant band" =
+            !any(is.na(base$band)))
+
+grp     <- base$band
+STRATA  <- levels(grp)
+cat(sprintf("\nTable 1 stratified on predominant intensity (%s ties broken %s)\n",
+            format(sum(base$tied), big.mark = ","), PI_SPEC$tie_break))
+print(table(grp))
 
 hdr <- function(label, n) sprintf("%s (N = %s)", label, format(n, big.mark = ","))
 COLS <- c(hdr("Overall", nrow(base)),
-          hdr("Landmark-eligible", sum(grp == "eligible")),
-          hdr("Not eligible", sum(grp == "not_eligible")))
+          vapply(STRATA, function(st) hdr(st, sum(grp == st)), character(1)))
 
 fmt_p <- function(p) {
   if (is.na(p)) return("--")
@@ -361,18 +385,24 @@ fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
 # sum_sq into POOL, because a median cannot be pooled across sites and a display
 # string cannot be pooled at all.
 
+# The strata are ORDERED, so the question is whether a characteristic trends
+# across increasing fentanyl intensity -- not whether any two differ. Spearman
+# rho against the band index is a trend test and is in base R; an omnibus
+# Kruskal-Wallis would answer a weaker question and is easier to over-read.
 row_continuous <- function(label, v, unit = NA_character_) {
-  for (st in c("overall", "eligible", "not_eligible")) {
+  for (st in c("overall", STRATA)) {
     x <- if (st == "overall") v else v[grp == st]
     POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x, MIN_CELL)
   }
-  p <- tryCatch(stats::wilcox.test(v[grp == "eligible"], v[grp == "not_eligible"])$p.value,
+  p <- tryCatch(stats::cor.test(as.integer(grp), v, method = "spearman",
+                                exact = FALSE)$p.value,
                 error = function(e) NA_real_)
-  data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
-             overall = fmt_iqr(v),
-             eligible = fmt_iqr(v[grp == "eligible"]),
-             not_eligible = fmt_iqr(v[grp == "not_eligible"]),
-             p_value = fmt_p(p), stringsAsFactors = FALSE)
+  out <- data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
+                    overall = fmt_iqr(v), stringsAsFactors = FALSE)
+  for (st in STRATA) out[[st]] <- fmt_iqr(v[grp == st])
+  out$p_value <- fmt_p(p)
+  out$test <- "trend (Spearman)"
+  out
 }
 
 row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
@@ -388,14 +418,19 @@ row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
     tryCatch(stats::chisq.test(tab[keep, , drop = FALSE])$p.value,
              error = function(e) NA_real_) else NA_real_
   head <- data.frame(characteristic = sprintf("__%s__, n (%%)", label),
-                     overall = "", eligible = "", not_eligible = "",
-                     p_value = fmt_p(p), stringsAsFactors = FALSE)
-  body <- do.call(rbind, lapply(lv, function(l) data.frame(
-    characteristic = paste0("    ", l),
-    overall = fmt_pct(sum(v == l), length(v)),
-    eligible = fmt_pct(sum(v == l & grp == "eligible"), sum(grp == "eligible")),
-    not_eligible = fmt_pct(sum(v == l & grp == "not_eligible"), sum(grp == "not_eligible")),
-    p_value = "", stringsAsFactors = FALSE)))
+                     overall = "", stringsAsFactors = FALSE)
+  for (st in STRATA) head[[st]] <- ""
+  head$p_value <- fmt_p(p)
+  head$test <- "heterogeneity (chi-square)"
+  body <- do.call(rbind, lapply(lv, function(l) {
+    r <- data.frame(characteristic = paste0("    ", l),
+                    overall = fmt_pct(sum(v == l), length(v)),
+                    stringsAsFactors = FALSE)
+    for (st in STRATA) r[[st]] <- fmt_pct(sum(v == l & grp == st), sum(grp == st))
+    r$p_value <- ""
+    r$test <- ""
+    r
+  }))
   rbind(head, body)
 }
 
@@ -417,13 +452,27 @@ baseline <- rbind(
             paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
     base[[DRUGS[[d]]]], UNITS[[d]]))),
   row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours"),
-  row_continuous("IMV episodes per block", base$n_imv_episodes, "count")
+  row_continuous("IMV episodes per block", base$n_imv_episodes, "count"),
+  # Not baseline characteristics -- properties of the stratification itself,
+  # reported so its two artifacts stay visible rather than being argued away.
+  # At-risk hours expose a duration confound (a short course cannot accumulate
+  # zero windows); modal share says how decisive each label is. Both are gated
+  # on the config flags so the declaration governs rather than decorates.
+  if (isTRUE(PI_SPEC$report_at_risk_hours))
+    row_continuous("At-risk time on the ventilator, hours",
+                   base$at_risk_hours, "hours"),
+  if (isTRUE(PI_SPEC$report_modal_share))
+    row_continuous("Share of at-risk time in the assigned band",
+                   base$modal_share, "proportion")
 )
-names(baseline) <- c("Characteristic", COLS, "p-value")
+# The strata are ordered, so most rows carry a TREND test; categorical rows can
+# only carry heterogeneity. Naming the test per row is the only way a reader can
+# tell which question a given p-value answered.
+names(baseline) <- c("Characteristic", COLS, "p-value", "test")
 
 stopifnot(
-  "the two strata must partition the cohort" =
-    sum(grp == "eligible") + sum(grp == "not_eligible") == nrow(base),
+  "the strata must partition the cohort" = sum(table(grp)) == nrow(base),
+  "every stratum must be non-empty" = all(table(grp) > 0),
   "window 0 must hold every analytic block exactly once" =
     nrow(base) == anchor_n
 )
