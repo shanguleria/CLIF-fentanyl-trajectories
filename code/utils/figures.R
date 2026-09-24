@@ -245,7 +245,7 @@ write_captions <- function(path, script, figures, prov) {
 # The donor's y scale must span the identical range, or the borrowed ticks will
 # point at the wrong heights while looking perfectly plausible. `donor` is
 # expected to be a bare plot carrying nothing but that scale.
-add_third_axis <- function(p_main, donor, title = NULL) {
+add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
   grDevices::pdf(NULL)
   on.exit(grDevices::dev.off(), add = TRUE)
 
@@ -278,7 +278,8 @@ add_third_axis <- function(p_main, donor, title = NULL) {
   g <- gtable::gtable_add_grob(g, ax, t = pos$t, b = pos$b, l = at + 2,
                                name = "axis-r-third")
   if (!is.null(title)) {
-    lab <- grid::textGrob(title, rot = -90, gp = grid::gpar(col = MUTED, fontsize = 9))
+    lab <- grid::textGrob(title, rot = -90,
+                          gp = grid::gpar(col = MUTED, fontsize = title_size))
     g <- gtable::gtable_add_cols(g, grid::unit(1.2, "lines"), pos = at + 2)
     g <- gtable::gtable_add_grob(g, lab, t = pos$t, b = pos$b, l = at + 3,
                                  name = "ylab-r-third")

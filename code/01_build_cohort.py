@@ -1564,6 +1564,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     w = w.assign(_vent=(w["imv_status"].notna() & (w["imv_status"] == 1)))
     g = w.groupby("encounter_block", sort=False)
     ever_vent = g["_vent"].any()
+    # Block-level death, from discharge_category -- it already covers Expired
+    # AND Hospice, so both forms of comfort care are caught.
+    died_block = g["died"].any()
     # first window that is alive-admitted and NOT ventilated, after ventilation
     def _extub_window(d):
         v = d["_vent"].to_numpy()
@@ -1615,9 +1618,10 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
 
     f = (pd.DataFrame(index=pd.Index(sorted(long["encounter_block"].unique()),
                                      name="encounter_block"))
-         .join(extub_w).join(fent).join(n_bolus).join(dens[["RASS", "NVPS"]]))
+         .join(extub_w).join(fent).join(n_bolus).join(dens[["RASS", "NVPS"]])
+         .join(died_block.rename("died")))
     f = f.fillna({"cont_hours": 0, "gap_hours": 0, "n_bolus": 0,
-                  "RASS": 0, "NVPS": 0})
+                  "RASS": 0, "NVPS": 0, "died": False})
 
     # ---- the funnel. Printed so a threshold that empties the pool is visible --
     # immediately, and loosening it is a protocol change rather than a surprise.
@@ -1630,6 +1634,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         (f"extubated by {spec['require_extubated_by_hours']}h, no reintubation",
          f["extub_window"].notna()
          & (extub_hr_col <= spec["require_extubated_by_hours"]).fillna(False)),
+        ("survived the hospitalisation (excludes comfort care)",
+         ~f["died"].astype(bool)) if spec.get("require_survived_hospitalization")
+        else ("survival not required", pd.Series(True, index=f.index)),
         (f"continuous infusion >= {spec['min_continuous_hours']}h",
          f["cont_hours"] >= spec["min_continuous_hours"]),
         (f">= {spec['min_boluses']} boluses", f["n_bolus"] >= spec["min_boluses"]),
@@ -1655,6 +1662,12 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     # was removed (SG, 2026-09-24): it cut the pool by 90% and would have made
     # the exemplar unrepresentative of how fentanyl is actually delivered here.
     # The number is reported because it is a finding in its own right.
+    for n_b in (2, 6, 10, 20):
+        n_hit = int((f["n_bolus"] >= n_b).sum())
+        print(f"    (not a criterion) >= {n_b:>2d} boluses: {n_hit:,} of "
+              f"{anchor_n:,} episodes, {100 * n_hit / anchor_n:.1f}%")
+        counts.append({"criterion": f"NOT A CRITERION: >= {n_b} boluses",
+                       "n_passing_alone": n_hit, "n_passing_cumulative": pd.NA})
     for g_h in (6, 12):
         n_gap = int((f["gap_hours"] >= g_h).sum())
         print(f"    (not a criterion) ever off fentanyl >= {g_h}h: "
@@ -1668,7 +1681,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
               "thresholds in covariates.json `exemplar` and re-run.")
         return
 
-    rng = np.random.default_rng(CONFIG["model"]["seed"])
+    rng = np.random.default_rng(spec["draw_seed"])
     # NOT str(): encounter_block is numeric at this site, and coercing the
     # drawn key to text made every downstream .loc and == miss.
     chosen = f.index[keep][rng.integers(n_eligible)]
@@ -1681,7 +1694,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     fine = float(fine.iloc[0]) if len(fine) and pd.notna(fine.iloc[0]) else np.nan
     if np.isfinite(fine) and extub_hr <= fine <= extub_hr + WINDOW_H:
         extub_hr = fine
-    print(f"  drawn at random (seed {CONFIG['model']['seed']}) from {n_eligible:,}; "
+    print(f"  drawn at random (seed {spec['draw_seed']}) from {n_eligible:,}; "
           f"extubated at {extub_hr:.1f}h")
 
     # ---- the series, de-identified at construction ---------------------------
@@ -1720,7 +1733,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         json.dump({"extent_h": EXTENT_H, "window_h": WINDOW_H,
                    "extubation_hr": extub_hr, "n_eligible": n_eligible,
                    "criteria": {k: v for k, v in spec.items()
-                                if not k.startswith("_") and k != "draw"}},
+                                if not k.startswith("_")
+                                and k not in ("draw", "draw_seed")}},
+
                   fh, indent=2)
     # The chosen id stays on the PHI side so the site can reproduce the figure;
     # it never reaches the shareable tree, where only the rule and the N appear.
