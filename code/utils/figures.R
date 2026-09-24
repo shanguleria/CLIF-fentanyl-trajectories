@@ -8,6 +8,10 @@
 # Needs: ggplot2 attached by the caller.
 
 INK      <- "#0b0b0b"
+# Retained for MARKS that must recede -- a reference rule, an axis spine -- but
+# no longer used for any text. SG, 2026-09-24: every label reads black, because
+# grey type on a near-white ground costs legibility for nothing, and these
+# figures are for print.
 MUTED    <- "#898781"
 GRIDLINE <- "#e1e0d9"
 PAPER    <- "#fcfcfb"
@@ -26,15 +30,15 @@ ink <- INK; muted <- MUTED; gridline <- GRIDLINE
 house <- function(p) {
   p + theme_minimal(base_size = 12) +
     theme(plot.title = element_text(colour = INK, face = "bold"),
-          plot.subtitle = element_text(colour = MUTED, margin = margin(b = 10)),
+          plot.subtitle = element_text(colour = INK, margin = margin(b = 10)),
           legend.position = "bottom",
           legend.background = element_rect(fill = PAPER, colour = INK,
                                            linewidth = 0.3),
           legend.margin = margin(t = 5, r = 8, b = 5, l = 8),
           legend.box.margin = margin(t = 4),
-          legend.text = element_text(colour = MUTED, size = 9),
-          axis.title = element_text(colour = MUTED),
-          axis.text = element_text(colour = MUTED),
+          legend.text = element_text(colour = INK, size = 9),
+          axis.title = element_text(colour = INK),
+          axis.text = element_text(colour = INK),
           panel.grid.minor = element_blank(),
           panel.grid.major.x = element_blank(),
           panel.grid.major.y = element_line(colour = GRIDLINE, linewidth = 0.4),
@@ -310,7 +314,7 @@ add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
                                name = "axis-r-third")
   if (!is.null(title)) {
     lab <- grid::textGrob(title, rot = -90,
-                          gp = grid::gpar(col = MUTED, fontsize = title_size))
+                          gp = grid::gpar(col = INK, fontsize = title_size))
     g <- gtable::gtable_add_cols(g, grid::unit(1.2, "lines"), pos = at + 2)
     g <- gtable::gtable_add_grob(g, lab, t = pos$t, b = pos$b, l = at + 3,
                                  name = "ylab-r-third")

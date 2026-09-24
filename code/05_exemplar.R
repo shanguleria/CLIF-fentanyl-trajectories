@@ -196,7 +196,7 @@ vent_rule <- if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr)) {
 } else list()
 vent_label <- if (length(vent_rule)) {
   list(annotate("text", x = meta$extubation_hr, y = TOP, label = " extubated",
-                hjust = 0, vjust = 1.2, colour = MUTED, size = 2.6))
+                hjust = 0, vjust = 1.2, colour = INK, size = 2.6))
 } else list()
 
 inf  <- close_step(series[series$series == "infusion", ], END_HR)
@@ -251,13 +251,13 @@ if (length(vent_rule)) p <- p + vent_rule + vent_label
 # Three scales need three visible spines with tick marks, or a reader cannot
 # tell which axis a trace belongs to. The SPINE and TICKS take the series
 # colour -- they are marks, and a mark is what may carry identity -- while every
-# label stays in muted ink at the shared axis-text size.
+# label reads black at the shared axis-text size.
 AXIS_PT <- 8.8   # theme_minimal(base_size = 12)'s axis.text size
 p <- house(p) +
   theme(panel.grid.major.x = element_blank(),
         axis.text            = element_text(size = AXIS_PT),
-        axis.line.y.left     = element_line(colour = MUTED, linewidth = 0.4),
-        axis.ticks.y.left    = element_line(colour = MUTED, linewidth = 0.4),
+        axis.line.y.left     = element_line(colour = INK, linewidth = 0.4),
+        axis.ticks.y.left    = element_line(colour = INK, linewidth = 0.4),
         axis.line.y.right    = element_line(colour = SERIES_COL[["rass"]],
                                             linewidth = 0.4),
         axis.ticks.y.right   = element_line(colour = SERIES_COL[["rass"]],
@@ -277,7 +277,7 @@ donor <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) + geom_blank() +
                      position = "right") +
   theme_minimal(base_size = 12) +
   theme(axis.title        = element_blank(),
-        axis.text.y.right = element_text(colour = MUTED, size = AXIS_PT),
+        axis.text.y.right = element_text(colour = INK, size = AXIS_PT),
         axis.line.y.right = element_line(colour = SERIES_COL[["nvps"]],
                                          linewidth = 0.4),
         axis.ticks.y.right = element_line(colour = SERIES_COL[["nvps"]],
