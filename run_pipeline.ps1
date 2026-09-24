@@ -39,7 +39,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 # deliberately excluded. They carry no step number: the number line is this list.
 # outcomes.R is
 # an unconditional stop(). Run a tabled script by hand if you need it.
-$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_landmark_cohort")
+$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_titration","06_landmark_cohort")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"

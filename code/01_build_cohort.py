@@ -95,7 +95,8 @@ OWNED = {
                 "time_to_event.parquet", "time_to_event.csv",
                 "hospital_intervals.parquet",
                 "exemplar_series.parquet", "exemplar_meta.json",
-                "exemplar_id.txt"],
+                "exemplar_id.txt",
+                "titration_rate_events.parquet", "titration_bolus_events.parquet"],
     "out_final": ["manifest.json"],
     "phase": ["strobe.csv", "strobe.txt", "strobe.png",
               "provenance.json", "exemplar_selection.csv"],
@@ -515,12 +516,18 @@ def _hourly_scaffold(cohort: pd.DataFrame) -> pd.DataFrame:
     return s[s["cell_dttm"] < s["followup_end_dttm"]].copy()
 
 
-def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
-                  cats: list[str], rate_fn) -> pd.DataFrame:
-    """Hourly grid of infusion rate for `cats`. Config: exposure.infusion.
+def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
+                     cats: list[str], rate_fn) -> pd.DataFrame:
+    """Individual charted infusion records: exact admin_dttm, converted rate.
 
-    rate_fn maps the charted (dose, unit, weight) to the target rate; fentanyl
-    uses _to_mcg_hr, the sedatives go through the dose_units table.
+    Split out of infusion_grid() on 2026-09-24 so the titration analysis can
+    reach the per-record grain the hourly binning throws away -- the same split
+    _bolus_events() got, and for the same reason. ONE copy of the unit
+    conversion, the outlier clip and the stop / not_administered zeroing lives
+    here; a second copy is how two places start disagreeing about a dose.
+
+    Returns every in-window record with a convertible rate, carrying `hr` for
+    the grid and `admin_dttm` for anything that needs real time.
     """
     m = t["mac"][t["mac"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
@@ -559,6 +566,17 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
         print(f"  infusion: {n_nan:,} of {int(in_window.sum()):,} in-window record(s) "
               f"carry no convertible rate and are dropped")
     m = m[in_window & m["rate"].notna()]
+    return m
+
+
+def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
+                  cats: list[str], rate_fn) -> pd.DataFrame:
+    """Hourly grid of infusion rate for `cats`. Config: exposure.infusion.
+
+    rate_fn maps the charted (dose, unit, weight) to the target rate; fentanyl
+    uses _to_mcg_hr, the sedatives go through the dose_units table.
+    """
+    m = _infusion_events(t, mapping, cohort, cats, rate_fn)
 
     # THE LAST charted rate in the hour, which means sorting on TIME. Until
     # 2026-09-24 the sort key was ["encounter_block", "hr", "rate"] -- no time
@@ -1776,6 +1794,70 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
           f"{series['series'].nunique()} series")
 
 
+def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
+                     bolus_events: pd.DataFrame, dirs: dict) -> None:
+    """Export raw fentanyl rate-change and bolus events on a relative clock.
+
+    For code/05_titration.R, which asks how often an infusion uptitration is
+    accompanied by a bolus. Two things are deliberate here:
+
+    RAW EVENTS, NOT THE HOURLY GRID. The grid bins to whole hours, which would
+    move a rate change up to an hour away from the bolus that accompanied it and
+    make a 30-minute pairing window meaningless. These are the charted
+    timestamps. (Charting precision was measured 2026-09-24: only 15.7% of
+    dose_change/start records land exactly on :00, so titration events are
+    charted to roughly the nearest 5 minutes.)
+
+    NO DERIVATION. The threshold and the pairing window are analysis parameters,
+    so classifying events happens in the R script. Keeping raw events here means
+    a window sensitivity curve costs nothing and never needs a Phase 0 re-run.
+    """
+    spec = COV.get("titration")
+    if spec is None:
+        raise SystemExit("config/covariates.json declares no `titration` block")
+
+    cats = CONFIG["medications"]["opioid_infusion_categories"]
+    ev = _infusion_events(t, mapping, cohort, cats, _to_mcg_hr)
+
+    rate = pd.DataFrame({
+        "encounter_block": ev["encounter_block"].to_numpy(),
+        "t_hr": ((ev["admin_dttm"] - ev["anchor_dttm"]).dt.total_seconds() / 3600.0).to_numpy(),
+        "rate": ev["rate"].astype(float).to_numpy(),
+        "action": ev.get("mar_action_category", pd.Series(index=ev.index, dtype=object))
+                    .astype("string").str.lower().fillna("<null>").to_numpy(),
+        "not_given": (ev.get("mar_action_group", pd.Series(index=ev.index, dtype=object))
+                        .astype("string").str.lower() == "not_administered").to_numpy(),
+    })
+    bol = pd.DataFrame({
+        "encounter_block": bolus_events["encounter_block"].to_numpy(),
+        "t_hr": ((bolus_events["admin_dttm"] - bolus_events["anchor_dttm"])
+                 .dt.total_seconds() / 3600.0).to_numpy(),
+        "mcg": bolus_events["mcg"].astype(float).to_numpy(),
+    })
+    for f in (rate, bol):
+        f.sort_values(["encounter_block", "t_hr"], kind="stable", inplace=True)
+        f.reset_index(drop=True, inplace=True)
+
+    # A relative clock, and nothing else. Same contract as exemplar_export().
+    for name, f in (("rate", rate), ("bolus", bol)):
+        assert not any(pd.api.types.is_datetime64_any_dtype(f[c]) for c in f.columns), \
+            f"titration {name} events carry a datetime"
+        assert f["t_hr"].min() >= 0 and f["t_hr"].max() <= EXTENT_H, \
+            f"titration {name} events fall outside [0, {EXTENT_H}]"
+    # If every timestamp were a whole number the grid would have leaked in.
+    frac = float((rate["t_hr"] % 1 != 0).mean())
+    assert frac > 0.5, (
+        f"only {100 * frac:.1f}% of rate events have a sub-hourly timestamp -- "
+        f"these look binned, not charted")
+
+    out = dirs["out_phi"]
+    rate.to_parquet(out / "titration_rate_events.parquet", index=False)
+    bol.to_parquet(out / "titration_bolus_events.parquet", index=False)
+    print(f"  titration: {len(rate):,} rate record(s) and {len(bol):,} bolus record(s) "
+          f"across {rate['encounter_block'].nunique():,} episodes "
+          f"({100 * frac:.1f}% sub-hourly timestamps)")
+
+
 def main() -> None:
     dirs = site_dirs(REPO)
     dirs["phase"] = phase_dir(dirs, PHASE_DIR)
@@ -1930,6 +2012,7 @@ def main() -> None:
     # not a core table: a fault in the exemplar selection must not cost the whole
     # Phase 0 rebuild, which is exactly what it did on 2026-09-24.
     exemplar_export(cohort, long, grid, bolus_events, t, dirs)
+    titration_export(cohort, t, mapping, bolus_events, dirs)
     diag = dirs["diagnostics"]
     per_variable.to_csv(diag / "missingness.csv", index=False)
     if len(per_pattern):

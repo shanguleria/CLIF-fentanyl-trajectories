@@ -260,7 +260,7 @@ print(pv_ar[pv_ar$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
 # Cross-script check. 02_descriptive_cohort.R:221 builds dose_summary on the
 # identical subset (`window_idx == w & ventilated`), so the three exposed states
 # must sum to its pct_receiving_any in every window. Precedent for a later
-# script checking an earlier one's shareable CSV: 05_landmark_cohort.R.
+# script checking an earlier one's shareable CSV: 06_landmark_cohort.R.
 ds_file <- file.path(dirs$out_final, "02_descriptive", "dose_summary.csv")
 if (file.exists(ds_file)) {
   ds <- read.csv(ds_file)

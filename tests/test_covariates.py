@@ -458,6 +458,49 @@ def test_the_exemplar_figure_breaks_the_step_at_the_locf_cap():
         "gap lengths for no stated reason")
 
 
+def test_the_titration_rule_is_declared_and_consumed():
+    """Pairing a bolus to a rate change is protocol: two sites using different
+    windows or thresholds produce numbers that cannot be pooled. Every declared
+    key must reach the code that applies it -- the same check that caught
+    `require_extubated_by_hours` declared and never read."""
+    spec = COV.get("titration")
+    assert spec is not None, "covariates.json must declare a `titration` block"
+
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    figure = (REPO / "code" / "05_titration.R").read_text()
+    live = {k for k in spec if not k.startswith("_")}
+    unread = {k for k in live if k not in build and k not in figure}
+    assert not unread, (
+        f"titration keys declared but read by nothing: {sorted(unread)}")
+
+    assert spec["min_rate_change_mcg_hr"] > 0
+    assert spec["bolus_window_minutes"] in spec["window_sensitivity_minutes"], (
+        "the primary window must appear in the sensitivity list, or the curve "
+        "cannot be read against the headline number")
+    assert spec["adherence_landmark_hours"] < COV["windows"]["granular"]["extent_hours"], (
+        "adherence must be measurable strictly inside the observation window, "
+        "or it is not an exposure measured before outcome accrual")
+
+
+def test_the_titration_analysis_never_reads_the_hourly_grid():
+    """The grid bins to whole hours. A rate change moved up to an hour from the
+    bolus that accompanied it makes a 30-minute pairing window meaningless, so
+    this analysis must use raw charted timestamps -- and must say so loudly
+    enough that a future edit cannot quietly reintroduce the grid."""
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    figure = (REPO / "code" / "05_titration.R").read_text()
+    assert "_infusion_events(" in build, (
+        "titration_export must build events from _infusion_events(), the "
+        "per-record frame, not from infusion_grid()")
+    assert "titration_rate_events.parquet" in figure
+    assert "infusion_grid" not in figure, (
+        "05_titration.R must never touch the hourly grid")
+    for src, name in ((build, "01_build_cohort.py"), (figure, "05_titration.R")):
+        assert "%% 1" in src or "% 1 != 0" in src, (
+            f"{name} must assert its timestamps are sub-hourly; whole-hour "
+            f"timestamps would mean the grid leaked in")
+
+
 if __name__ == "__main__":
     import sys, traceback
 

@@ -22,10 +22,11 @@ OUT = REPO / "output" / "final_no_phi"
 CONT = OUT / "02_descriptive" / "pooling_continuous.csv"
 CAT = OUT / "02_descriptive" / "pooling_categorical.csv"
 # Phases 1 and 2 share one pooling contract, so both are held to it.
-# 05_landmark since the 2026-09-24 renumber, when the exemplar took a slot ahead
-# of the states script. This test is what caught the stale path.
-ALL_CONT = [CONT, OUT / "05_landmark" / "pooling_continuous.csv"]
-ALL_CAT = [CAT, OUT / "05_landmark" / "pooling_categorical.csv"]
+# 06_landmark since the 2026-09-24 renumbers, as the exemplar and then the
+# titration analysis each took a slot ahead of it. This test caught the stale
+# path the first time and is the reason it is worth keeping accurate.
+ALL_CONT = [CONT, OUT / "06_landmark" / "pooling_continuous.csv"]
+ALL_CAT = [CAT, OUT / "06_landmark" / "pooling_categorical.csv"]
 TOL = 1e-5          # the exports are rounded to 6 decimals
 
 

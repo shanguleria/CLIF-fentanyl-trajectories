@@ -113,11 +113,31 @@ a **landmark** — fix the origin at a chosen T, require survival and ventilatio
 to T for entry, and measure only forward from there.
 
 Everything before T is exposure history; everything after is
-outcome. `code/05_landmark_cohort.R` implements it, and T-sensitivity is reported
+outcome. `code/06_landmark_cohort.R` implements it, and T-sensitivity is reported
 alongside the primary because the choice of T is a judgement.
 
 The landmark is **available, not current**: the descriptive account comes first,
 and returning to it is deliberate future work.
+
+## 5b. Titration practice
+
+A question adjacent to the five figures, added 2026-09-24: **when the fentanyl
+infusion rate is increased, is a bolus given with it?** A rate change alone
+approaches the new steady state over roughly four to five half-lives; a bolus at
+the moment of uptitration gets there in minutes.
+
+Descriptive for now — `code/05_titration.R`. Associations between adherence and
+average rate, cumulative dose or time to extubation are deferred, and the
+per-encounter adherence is emitted within a 24h landmark as well as overall so
+that work needs no rebuild.
+
+Three things make the number interpretable rather than decorative. **Rate
+decreases are a negative control**: a bolus at a downtitration has no
+pharmacologic rationale, so its pairing rate is the floor for coincidence.
+**The window is varied from 5 to 60 minutes**, because a pairing that only
+appears at wide windows is bolus frequency, not practice. And the analysis uses
+**raw charted timestamps, never the hourly grid**, whose 1h binning would move a
+rate change away from the bolus that accompanied it.
 
 ## 6. Open decisions
 
