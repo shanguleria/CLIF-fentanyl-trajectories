@@ -63,6 +63,31 @@ transition_pairs <- function(d, id = "encounter_block", time = "window_idx") {
   droplevels(out, except = which(names(out) %in% c("state", "state_next")))
 }
 
+# State prevalence per window, as a percentage of the rows PASSED IN. The
+# denominator is therefore the caller's choice of at-risk set, and the two that
+# matter differ by more than half the cohort at 72h:
+#   prevalence_by_window(long)                  -- all episodes; the bands shrink
+#     as patients are extubated, discharged or die, which is the liberation view.
+#   prevalence_by_window(long[long$ventilated,]) -- still ventilated only; the
+#     bands answer "of the patients still on the vent, what are they getting?"
+# One function rather than two so the two figures can never drift in their
+# handling, which is why states.R exists at all.
+prevalence_by_window <- function(d) {
+  lv <- levels(d$state)
+  do.call(rbind, lapply(sort(unique(d$window_idx)), function(w) {
+    x <- d[d$window_idx == w, ]
+    tb <- table(x$state)[lv]
+    data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
+               # A FACTOR, carrying the source level order. As a character
+               # column ggplot re-sorts it alphabetically, which stacked the
+               # area charts in a different order from the alluvial drawn off
+               # the same states -- the two figures then disagree about which
+               # band is which. Fixed 2026-09-24.
+               state = factor(lv, levels = lv), n = as.integer(tb),
+               pct = round(100 * as.numeric(tb) / nrow(x), 2))
+  }))
+}
+
 # Row-percent transition matrix, with the at-risk count per origin state.
 transition_matrix <- function(d) {
   lv <- levels(d$state)

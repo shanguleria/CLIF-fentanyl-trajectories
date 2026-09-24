@@ -214,7 +214,7 @@ What each script writes:
 |---|---|
 | `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, plus `manifest.json` at the root of `final_no_phi/` |
 | `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
-| `03_delivery_states.R` | `03_states/` — `state_{prevalence,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,alluvial}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json` |
+| `03_delivery_states.R` | `03_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
 | `04_landmark_cohort.R` | `04_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `pooling_*.csv` files exist for **federated pooling**: they carry
@@ -274,7 +274,7 @@ python3 code/check_config.py
 |---|---|---|---|
 | 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
 | 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1, retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
-| 2 | R | `code/03_delivery_states.R` | The seven delivery states: prevalence per window, transitions, and the state figures. Run twice — delivery **route** and dose **intensity band** |
+| 2 | R | `code/03_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
 | 3 | R | `code/04_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
 
 These four steps are the current analysis and are exactly what the runners
