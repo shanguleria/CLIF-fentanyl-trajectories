@@ -174,6 +174,10 @@ SERIES_COL <- c(infusion = STATE_COLOURS[["continuous only"]],
 # colour-alone -- and the fentanyl step stays the only solid line, so it reads as
 # the primary quantity even where the ordinal traces cross it.
 SERIES_SHP <- c(infusion = NA, bolus = 18, rass = 16, nvps = 17)
+# Boluses are drawn markedly larger than the assessment points: they are the
+# thing the figure is least able to show any other way -- an instantaneous event
+# with no line to trace it -- so they have to carry on their own.
+SERIES_SZ  <- c(infusion = 1.2, bolus = 3.0, rass = 1.2, nvps = 1.2)
 SERIES_LTY <- c(infusion = "solid", bolus = "blank", rass = "13", nvps = "42")
 SERIES_LAB <- c(infusion = "Fentanyl infusion (mcg/hr)",
                 bolus    = "Fentanyl bolus (mcg)",
@@ -214,18 +218,26 @@ p <- ggplot(mapping = aes(t_hr)) +
   # Instantaneous, never carried forward. Dose is read off POSITION. Overlapping
   # administrations are left overplotted -- that staircase is real signal about
   # how hard the patient was being chased.
+  # A PAPER halo behind each bolus, so that at this size a run of
+  # near-simultaneous administrations still reads as separate marks rather than
+  # one blob. The staircase is real signal and must stay countable; the halo is
+  # the surface gap that keeps overlapping marks legible. Drawn as its own layer
+  # with no colour mapping, so it stays out of the legend.
+  geom_point(data = bol, aes(y = value), colour = PAPER,
+             shape = SERIES_SHP[["bolus"]], size = SERIES_SZ[["bolus"]] + 1.2,
+             show.legend = FALSE) +
   geom_point(data = bol, aes(y = value, colour = "bolus"),
-             shape = SERIES_SHP[["bolus"]], size = 1.9) +
+             shape = SERIES_SHP[["bolus"]], size = SERIES_SZ[["bolus"]]) +
   # Points plus a step, never a straight line: interpolating an ordinal score
   # asserts the patient passed through intermediate values nobody recorded.
   geom_step(data = rass, aes(y = y, colour = "rass"), direction = "hv",
             linewidth = 0.45, linetype = SERIES_LTY[["rass"]], na.rm = TRUE) +
   geom_point(data = rass, aes(y = y, colour = "rass"),
-             shape = SERIES_SHP[["rass"]], size = 1.2, na.rm = TRUE) +
+             shape = SERIES_SHP[["rass"]], size = SERIES_SZ[["rass"]], na.rm = TRUE) +
   geom_step(data = nvps, aes(y = y, colour = "nvps"), direction = "hv",
             linewidth = 0.45, linetype = SERIES_LTY[["nvps"]], na.rm = TRUE) +
   geom_point(data = nvps, aes(y = y, colour = "nvps"),
-             shape = SERIES_SHP[["nvps"]], size = 1.2, na.rm = TRUE) +
+             shape = SERIES_SHP[["nvps"]], size = SERIES_SZ[["nvps"]], na.rm = TRUE) +
   scale_colour_manual(values = SERIES_COL, labels = SERIES_LAB,
                       breaks = names(SERIES_LAB), name = NULL) +
   scale_x_continuous(limits = c(0, EXTENT_H), breaks = seq(0, EXTENT_H, by = 12),
@@ -243,7 +255,8 @@ p <- ggplot(mapping = aes(t_hr)) +
   guides(colour = guide_legend(
     nrow = 2, byrow = TRUE,
     override.aes = list(linetype = unname(SERIES_LTY[names(SERIES_LAB)]),
-                        shape    = unname(SERIES_SHP[names(SERIES_LAB)])))) +
+                        shape    = unname(SERIES_SHP[names(SERIES_LAB)]),
+                        size     = unname(SERIES_SZ[names(SERIES_LAB)])))) +
   labs(x = "Hours since first IMV episode")
 
 if (length(vent_rule)) p <- p + vent_rule + vent_label
