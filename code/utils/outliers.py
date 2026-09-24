@@ -3,7 +3,7 @@
 Medication bounds are two-layered: apply_med_raw() runs before clifpy's unit
 conversion and keys on the charted unit; apply_med_converted() runs after. A
 missing config raises; a category with no bound is reported, never skipped
-silently. Rationale: design_notes.md §11.
+silently.
 """
 from __future__ import annotations
 

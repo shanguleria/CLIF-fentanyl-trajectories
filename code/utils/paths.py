@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-MANIFEST = "phase0_manifest.json"
+MANIFEST = "manifest.json"
 
 # Written into intermediate_phi/ at runtime so it survives `git clean -fdx`.
 PHI_LABEL = """# intermediate_phi

@@ -36,7 +36,7 @@
 # nnet and MASS ship with R; nothing to install.
 
 pkgs <- c("here", "jsonlite", "arrow", "ggplot2", "nnet")
-library(splines)   # ships with R; ns() for the clock terms in section 6
+library(splines)   # ships with R; ns() for the clock terms in section 6 below
 for (p in pkgs) {
   if (!requireNamespace(p, quietly = TRUE)) {
     install.packages(p, repos = "https://cloud.r-project.org")
@@ -114,8 +114,8 @@ OWNED <- list(
               "phase5_provenance.json"))
 # A stem removed from the writer leaves a stale twin the owned list no longer
 # names, so clear_owned_outputs walks past it forever. phase5_complete_case_loss
-# was written while the missing-indicator decision was still open (design notes
-# section 10) and orphaned when it closed.
+# was written while the missing-indicator decision was still open, and
+# orphaned when it closed.
 RETIRED <- file.path("output", "final_no_phi", "06_transitions",
                      "phase5_complete_case_loss.csv")
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
@@ -141,7 +141,7 @@ long <- as.data.frame(read_parquet(
 stopifnot("window count on disk disagrees with the config grid" =
             length(unique(long$window_idx)) == EXTENT_H / WINDOW_H)
 
-# States are derived INSIDE run_definition (section 11) -- each definition needs
+# States are derived INSIDE run_definition (section 11 below) -- each needs
 # its own. add_history is definition-dependent too: hours_in_state counts a run
 # of the CURRENT state, so it must be recomputed per definition.
 
@@ -274,7 +274,7 @@ COVS  <- c(COVS, FLAGS)
 # The three clock terms enter as NATURAL SPLINES, not linear.
 #
 # WHY, measured 2026-09-09: with window_start_hr linear, the case-mix-adjusted
-# hazard curve in section 10b is a straight line in logit space and cannot bend.
+# hazard curve in section 10b below is a straight line in logit space and cannot bend.
 # The observed hazard of `no fentanyl` -> `bolus only` FALLS from 0.133 at hour 0
 # to 0.049 at hour 64; the linear-time adjusted curve ROSE across the same span.
 # That contradiction was misspecification, not a case-mix story, and it would
@@ -352,7 +352,7 @@ cat("  coefficients -- read n_transitions alongside them.\n")
 # ---- 8. Cluster bootstrap ----------------------------------------------------
 # Resample PATIENTS with replacement and refit ALL FIVE models per replicate.
 # 17 transitions from one episode are correlated and 932 of 13,627 patients
-# contribute more than one episode (section 11), so naive multinom standard
+# contribute more than one episode, so naive multinom standard
 # errors are too narrow. sandwich has no estfun method for multinom.
 
 flat <- function(fl) unlist(lapply(names(fl), function(s) {

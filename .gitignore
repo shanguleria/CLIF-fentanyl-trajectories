@@ -29,6 +29,19 @@ venv/
 # ---- OS ----
 .DS_Store
 
+# ---- one-off validation probes: local, never committed ----
+# Scratch experiments that answer a question once and are not part of the
+# pipeline. Anything a run depends on belongs in code/, and anything that must
+# keep being true belongs in tests/ -- which IS tracked, because both runners'
+# preflight invokes it.
+validation/
+
+# ---- reference material: local reading copies, never committed ----
+# Publisher PDFs and working notes. A bare `references/` like `output/` above:
+# git does not descend into an excluded directory. Nothing in the repo may depend
+# on a file here -- see docs/references.md for the citations themselves.
+references/
+
 # ---- site config (contains local paths) ----
 config/config.json
 

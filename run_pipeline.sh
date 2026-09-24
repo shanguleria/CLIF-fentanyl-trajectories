@@ -57,8 +57,12 @@ echo
 echo "== Phase 0: build cohort (Python) =="
 "$PY" code/01_build_cohort.py
 
-for s in 02_descriptive_trajectory 03_landmark_cohort 04_gbmt_classes \
-         05_lcmm_classes 06_transition_model 07_outcomes; do
+# Steps 3-6 (04_gbmt_classes, 05_lcmm_classes, 06_transition_model, 07_outcomes)
+# are TABLED as of 2026-09-23 and are deliberately not run here. 07_outcomes is an
+# unconditional stop(), so with `set -e` its presence in this list made the whole
+# pipeline exit non-zero every time -- the documented one-command build could not
+# succeed. Run a tabled script by hand if you need it: Rscript code/04_gbmt_classes.R
+for s in 02_descriptive_cohort 03_delivery_states 04_landmark_cohort; do
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done

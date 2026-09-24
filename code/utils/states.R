@@ -2,7 +2,7 @@
 #
 # ONE definition, in one place. Phase 1 draws the alluvial and Phase 5 models the
 # transitions; if each restated the rule they would drift, and the model would
-# stop describing the figure. See docs/design_notes.md section 10 Phase 1.
+# stop describing the figure.
 #
 # Seven mutually exclusive, exhaustive states per episode-window. Four describe
 # HOW fentanyl was delivered while ventilated. `extubated` is transient (patients

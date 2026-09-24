@@ -88,9 +88,9 @@ provenance <- function(config) {
 # Fail loudly if the tables on disk were not produced by this code and config.
 # Mirrors require_manifest() in paths.py; the two must agree.
 require_manifest <- function(dirs, root) {
-  f <- file.path(dirs$out_final, "phase0_manifest.json")
+  f <- file.path(dirs$out_final, "manifest.json")
   if (!file.exists(f)) {
-    stop("phase0_manifest.json is absent, so Phase 0 either never completed or ",
+    stop("manifest.json is absent, so Phase 0 either never completed or ",
          "was cleared. Re-run code/01_build_cohort.py; do not read the parquet ",
          "files that may still be on disk.", call. = FALSE)
   }

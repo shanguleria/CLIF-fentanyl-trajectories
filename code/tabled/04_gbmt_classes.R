@@ -1,7 +1,7 @@
 # ==============================================================================
 # 04_gbmt_classes.R  --  Phase 3 -- gbmt classes on combined dose
 #
-# Purpose : Group-based trajectory model on total fentanyl dose among episodes that received ANY fentanyl in [0, T]; sweep ng and select by the full criterion conjunction (design notes section 7).
+# Purpose : Group-based trajectory model on total fentanyl dose among episodes that received ANY fentanyl in [0, T]; sweep ng and select by the full criterion conjunction.
 # Author  : Shan Guleria
 # Created : 2026-09-07
 # Inputs  : output/intermediate_phi/landmark_cohort.parquet
@@ -11,7 +11,6 @@
 # fentanyl while intubated in [0, T]. Episodes with zero dose in every window
 # are a named stratum, not a class -- see config model.min_exposed_windows.
 #
-# Spec: docs/design_notes.md section 10.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).

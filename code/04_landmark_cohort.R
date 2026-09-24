@@ -1,13 +1,12 @@
 # ==============================================================================
-# 03_landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
+# 04_landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
 #
 # Purpose : Restrict to episodes alive and ventilated at landmark T; report the landmark flow, failed-extubation counts, the [0,T] dose curve and the T sensitivity sweep; write the analytic table Phases 3-6 read.
 # Author  : Shan Guleria
 # Created : 2026-09-05
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
-# Outputs : output/intermediate_phi/landmark_cohort.parquet; output/final_no_phi/phase2_*
+# Outputs : output/intermediate_phi/landmark_cohort.parquet; output/final_no_phi/04_landmark/
 #
-# Spec: docs/design_notes.md section 10 (Phase 2), section 8, section 10a.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -60,10 +59,10 @@ T_SWEEP <- sort(unique(c(24, 48, LANDMARK)))
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "03_landmark")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "04_landmark")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[03_landmark_cohort] site=%s  clif=%s  data=%s",
+message(sprintf("[04_landmark_cohort] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -74,14 +73,29 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(
-  out_phi = c("landmark_cohort.parquet", "landmark_cohort.csv"),
-  phase = c("phase2_landmark_flow.csv", "phase2_landmark_flow.txt",
-                "phase2_T_sensitivity.csv", "phase2_failed_extubation.csv",
-                "phase2_dose_curve.csv", "phase2_dose_curve.png",
-                "phase2_dependence.csv",
-                "phase2_pooling_continuous.csv", "phase2_pooling_categorical.csv",
-                "phase2_provenance.json"))
-n_cleared <- clear_owned_outputs(dirs, OWNED)
+  # landmark_cohort.csv was dropped from the writer but left here until
+  # 2026-09-23. A declared output nothing writes is the same defect as a
+  # declared config key nothing reads.
+  out_phi = c("landmark_cohort.parquet"),
+  phase = c("landmark_flow.csv", "landmark_flow.txt",
+                "T_sensitivity.csv", "failed_extubation.csv",
+                "dose_curve.csv", "dose_curve.png",
+                "dependence.csv",
+                "pooling_continuous.csv", "pooling_categorical.csv",
+                "provenance.json"))
+# This script was 03_landmark_cohort.R writing phase2_* into 03_landmark/ until
+# 2026-09-23, when 02 split in two and took the 03 slot. Both the directory and
+# the prefix changed, so every old path is retired here -- otherwise the whole of
+# 03_landmark/ sits in the shareable tree forever, looking current.
+RETIRED <- file.path("output", "final_no_phi", "03_landmark",
+                     paste0("phase2_", c(
+                       "landmark_flow.csv", "landmark_flow.txt",
+                       "T_sensitivity.csv", "failed_extubation.csv",
+                       "dose_curve.csv", "dose_curve.png",
+                       "dependence.csv",
+                       "pooling_continuous.csv", "pooling_categorical.csv",
+                       "provenance.json")))
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
@@ -165,7 +179,7 @@ cat("  Section 10a keeps them: cohort membership is 'ventilated at T', which\n")
 cat("  needs no look-ahead. The counts above are the required disclosure.\n")
 
 
-# ---- 8. T sensitivity (section 8 requires this reported with the primary) -----
+# ---- 8. T sensitivity (reported alongside the primary) -----------------------
 
 sens <- do.call(rbind, lapply(T_SWEEP, function(t_hours) {
   ids <- eligible_at(t_hours)
@@ -190,7 +204,7 @@ sens <- do.call(rbind, lapply(T_SWEEP, function(t_hours) {
     pct_windows_zero_dose = round(100 * mean(d == 0), 1))
 }))
 
-cat("\nT sensitivity (section 8)\n")
+cat("\nT sensitivity\n")
 print(sens, row.names = FALSE)
 
 
@@ -205,7 +219,7 @@ lm_long <- long[long$encounter_block %in% elig & long$window_start_hr < LANDMARK
 # panel at all -- freezing the denominator is its whole point -- and (b) what
 # gbmt requires, since an unbalanced panel silently caps the polynomial degree at
 # (shortest unit's windows - 1). A transiently extubated window carries dose 0 by
-# section 10a(a), which is the settled treatment, not missingness. The
+# the extubated-gap rule, which is the settled treatment, not missingness. The
 # ventilated-only counts ride alongside so the difference stays visible.
 curve <- do.call(rbind, lapply(names(DRUGS), function(drug) {
   col <- DRUGS[[drug]]
@@ -226,7 +240,7 @@ curve <- do.call(rbind, lapply(names(DRUGS), function(drug) {
 }))
 
 # Phase 1's output, not this script's -- read it from ITS folder.
-p1 <- file.path(phase_dir(dirs, "02_descriptive"), "phase1_balanced_panels.csv")
+p1 <- file.path(phase_dir(dirs, "02_descriptive"), "balanced_panels.csv")
 if (file.exists(p1)) {
   bp <- read.csv(p1)
   bp <- bp[bp$panel_hours == LANDMARK, ]
@@ -281,7 +295,7 @@ flow <- data.frame(
   n = c(anchor_n, length(elig), length(elig)),
   excluded = c(NA, anchor_n - length(elig), 0),
   reason = c(NA, sprintf("extubated, died or discharged before T = %dh", LANDMARK),
-             "none -- failed extubations are retained (section 10a)"),
+             "none -- failed extubations are retained"),
   stringsAsFactors = FALSE)
 
 cat("\nLandmark flow\n")
@@ -303,7 +317,7 @@ writeLines(c(
   sprintf("Estimand: conditional on being alive and mechanically ventilated at T = %dh.",
           LANDMARK),
   "The unit is the ventilation episode, not the patient."),
-  file.path(dirs$phase, "phase2_landmark_flow.txt"))
+  file.path(dirs$phase, "landmark_flow.txt"))
 
 
 # ---- 12. Figure --------------------------------------------------------------
@@ -346,7 +360,7 @@ p_curve <- house(
            100 * length(elig) / anchor_n, LANDMARK),
          x = "Hours since first IMV episode", y = NULL))
 
-ggsave(file.path(dirs$phase, "phase2_dose_curve.png"), p_curve,
+ggsave(file.path(dirs$phase, "dose_curve.png"), p_curve,
        width = 7.5, height = 7.6, dpi = 200)
 
 
@@ -417,17 +431,17 @@ write_out <- function(x, name) {
   cat(sprintf("written: %s\n", name))
 }
 
-write_out(flow, "phase2_landmark_flow.csv")
-write_out(sens, "phase2_T_sensitivity.csv")
-write_out(failed, "phase2_failed_extubation.csv")
-write_out(curve, "phase2_dose_curve.csv")
-write_out(dep, "phase2_dependence.csv")
-write_out(pooling_continuous, "phase2_pooling_continuous.csv")
-write_out(pooling_categorical, "phase2_pooling_categorical.csv")
+write_out(flow, "landmark_flow.csv")
+write_out(sens, "T_sensitivity.csv")
+write_out(failed, "failed_extubation.csv")
+write_out(curve, "dose_curve.csv")
+write_out(dep, "dependence.csv")
+write_out(pooling_continuous, "pooling_continuous.csv")
+write_out(pooling_categorical, "pooling_categorical.csv")
 
-write_json(prov, file.path(dirs$phase, "phase2_provenance.json"),
+write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
-cat("written: phase2_provenance.json\n")
+cat("written: provenance.json\n")
 
 
 # ---- 16. Provenance ----------------------------------------------------------
@@ -435,8 +449,8 @@ cat("written: phase2_provenance.json\n")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/03_landmark_cohort.R"),
+    paste("Script :", "code/04_landmark_cohort.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "03_landmark_cohort_sessioninfo.txt")
+  here("logs", "04_landmark_cohort_sessioninfo.txt")
 )

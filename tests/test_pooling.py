@@ -19,11 +19,11 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "output" / "final_no_phi"
 # out_final is subdivided by the script that produced each file (2026-09-08).
-CONT = OUT / "02_descriptive" / "phase1_pooling_continuous.csv"
-CAT = OUT / "02_descriptive" / "phase1_pooling_categorical.csv"
+CONT = OUT / "02_descriptive" / "pooling_continuous.csv"
+CAT = OUT / "02_descriptive" / "pooling_categorical.csv"
 # Phases 1 and 2 share one pooling contract, so both are held to it.
-ALL_CONT = [CONT, OUT / "03_landmark" / "phase2_pooling_continuous.csv"]
-ALL_CAT = [CAT, OUT / "03_landmark" / "phase2_pooling_categorical.csv"]
+ALL_CONT = [CONT, OUT / "04_landmark" / "pooling_continuous.csv"]
+ALL_CAT = [CAT, OUT / "04_landmark" / "pooling_categorical.csv"]
 TOL = 1e-5          # the exports are rounded to 6 decimals
 
 

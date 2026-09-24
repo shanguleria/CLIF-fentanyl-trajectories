@@ -98,9 +98,9 @@ def test_nothing_under_output_is_committable():
     set reaches the coordinating centre by upload, not by git."""
     for path in ("output/intermediate_phi/trajectory_long.parquet",
                  "output/intermediate_phi/x.rds",
-                 "output/final_no_phi/phase0_strobe.csv",
-                 "output/final_no_phi/phase0_strobe.png",
-                 "output/final_no_phi/diagnostics/phase0_missingness.csv",
+                 "output/final_no_phi/01_cohort/strobe.csv",
+                 "output/final_no_phi/01_cohort/strobe.png",
+                 "output/final_no_phi/01_cohort/diagnostics/missingness.csv",
                  "output/some_new_dir/anything.txt"):
         rc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO).returncode
         assert rc == 0, f"{path} is COMMITTABLE; nothing under output/ may be tracked"

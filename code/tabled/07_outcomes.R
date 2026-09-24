@@ -7,7 +7,6 @@
 # Inputs  : class assignments + output/intermediate_phi/time_to_event.parquet
 # Outputs : output/final_no_phi/ : CIF curves, cause-specific and Fine-Gray models
 #
-# Spec: docs/design_notes.md section 10.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -49,7 +48,7 @@ message(sprintf("[07_outcomes] site=%s  clif=%s  data=%s",
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 
-stop("07_outcomes not yet implemented -- see docs/design_notes.md")
+stop("07_outcomes not yet implemented")
 
 
 # ---- 5. Provenance -----------------------------------------------------------

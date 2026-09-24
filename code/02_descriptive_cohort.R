@@ -1,19 +1,18 @@
 # ==============================================================================
-# 02_descriptive_trajectory.R  --  Phase 1 -- cohort dose curves + balanced panels
+# 02_descriptive_cohort.R  --  cohort description: who, how long, how much fentanyl
 #
-# Purpose : Whole-cohort dose trajectory over the granular grid, with balanced-panel overlays to separate real dose change from cohort composition change, plus the retention table that chooses the landmark T and the zero fraction that chooses the model family.
+# Purpose : Whole-cohort dose trajectory over the granular grid with balanced-panel overlays, the retention table that supplies the at-risk denominator, Table 1, and the federated-pooling exports.
 # Author  : Shan Guleria
 # Created : 2026-09-05
+# Split   : 2026-09-23, out of 02_descriptive_trajectory.R -- one subject per
+#           script, so the figure work has somewhere to go.
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
-# Outputs : output/final_no_phi/ : phase1_*.csv, phase1_*.png, phase1_provenance.json
-#
-# Spec: docs/design_notes.md section 10.
+# Outputs : output/final_no_phi/02_descriptive/ : the CSVs and figures listed in OWNED
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
 # Do not use rm(list = ls()) -- it does not unload packages or reset options,
 # so it only gives the appearance of a clean slate.
-
 
 # ---- 1. Packages -------------------------------------------------------------
 
@@ -27,7 +26,7 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
-source(here("code", "utils", "states.R"))
+source(here("code", "utils", "figures.R"))
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -67,7 +66,7 @@ SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 MIN_CELL <- config$reporting$small_cell_min_den
 
 # Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
-# phase1_pooling_categorical.csv. Map lives in covariates.json, not here.
+# pooling_categorical.csv. Map lives in covariates.json, not here.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 
 POOL <- list()
@@ -82,7 +81,7 @@ dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "02_descriptive")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[02_descriptive_trajectory] site=%s  clif=%s  data=%s",
+message(sprintf("[02_descriptive_cohort] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -95,24 +94,41 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(phase = c(
-  "phase1_baseline_characteristics.csv", "phase1_retention.csv",
-  "phase1_dose_summary.csv", "phase1_dose_distribution.csv",
-  "phase1_balanced_panels.csv", "phase1_zero_fraction.csv",
-  "phase1_imv_episodes.csv", "phase1_choosing_T.csv",
-  "phase1_pooling_continuous.csv", "phase1_pooling_categorical.csv",
-  "phase1_provenance.json",
-  "phase1_fentanyl_curves.png", "phase1_fentanyl_balanced_panels.png",
-  "phase1_fentanyl_distribution.png", "phase1_sedative_curves.png",
-  "phase1_state_prevalence.csv", "phase1_state_transitions.csv",
-  "phase1_state_alluvial.png", "phase1_state_prevalence.png",
-  "phase1_dose_state_prevalence.csv", "phase1_dose_state_transitions.csv",
-  "phase1_dose_state_alluvial.png", "phase1_dose_state_prevalence.png"))
+  "baseline_characteristics.csv", "retention.csv",
+  "dose_summary.csv", "balanced_panels.csv",
+  "imv_encounter_duration.csv",
+  "pooling_continuous.csv", "pooling_categorical.csv",
+  "provenance.json",
+  "fentanyl_curves.png", "fentanyl_balanced_panels.png",
+  "sedative_curves.png"))
 
-# Figures renamed 2026-09-07 when fentanyl became the primary view. A rename
-# leaves a stale twin the owned list no longer names.
-RETIRED <- file.path("output", "final_no_phi",
-                     c("phase1_dose_curves.png", "phase1_pct_receiving.png",
-                       "phase1_dose_distribution.png", "phase1_balanced_panels.png"))
+# A rename leaves a stale twin that clear_owned_outputs no longer names. Two
+# rounds: the 2026-09-07 figure renames, then 2026-09-23 when the "phase1_"
+# prefix went and 02 was split in two -- the delivery-state outputs moved to
+# 03_states/, so their old copies in this folder are retired here.
+RETIRED <- c(
+  file.path("output", "final_no_phi",
+            paste0("phase1_", c("dose_curves.png", "pct_receiving.png",
+                                "dose_distribution.png", "balanced_panels.png"))),
+  file.path("output", "final_no_phi", "02_descriptive",
+            paste0("phase1_", c(
+              "baseline_characteristics.csv", "retention.csv",
+              "dose_summary.csv", "dose_distribution.csv",
+              "balanced_panels.csv", "zero_fraction.csv",
+              "imv_episodes.csv", "choosing_T.csv",
+              "pooling_continuous.csv", "pooling_categorical.csv",
+              "provenance.json",
+              "fentanyl_curves.png", "fentanyl_balanced_panels.png",
+              "fentanyl_distribution.png", "sedative_curves.png",
+              "state_prevalence.csv", "state_transitions.csv",
+              "state_alluvial.png", "state_prevalence.png",
+              "dose_state_prevalence.csv", "dose_state_transitions.csv",
+              "dose_state_alluvial.png", "dose_state_prevalence.png"))),
+  file.path("output", "final_no_phi", "02_descriptive",
+            c("state_prevalence.csv", "state_transitions.csv",
+              "dose_state_prevalence.csv", "dose_state_transitions.csv",
+              "state_prevalence.png", "state_alluvial.png",
+              "dose_state_prevalence.png", "dose_state_alluvial.png")))
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -128,7 +144,7 @@ long <- as.data.frame(read_parquet(
                  "age", "sex", "race", "cci", "bmi_admission", "weight_kg",
                  "sofa_total", "nee", "oxygenation", "lactate",
                  "first_imv_episode_hours", "n_imv_episodes",
-                 "died")))          # terminal states, section 12b
+                 "died")))          # terminal states, section 12b below
 
 tte <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "time_to_event.parquet"),
@@ -143,7 +159,7 @@ stopifnot(
 )
 
 # The Phase 1 denominator is VENTILATED, not alive_admitted. The two differ by
-# more than half the cohort by 72h; design_notes.md section 10 works the example.
+# more than half the cohort by 72h.
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 stopifnot(
   "a window cannot be ventilated without being alive and admitted" =
@@ -179,21 +195,8 @@ retention <- do.call(rbind, lapply(sort(unique(long$window_idx)), function(w) {
              pct_of_anchor_cohort = round(100 * sum(x$ventilated) / anchor_n, 1))
 }))
 
-# Section 8's "Choosing T" tabulation: state at each candidate landmark, which is
-# the window whose span ENDS at that hour.
-choosing_T <- do.call(rbind, lapply(c(12, 24, 48, 72), function(h) {
-  w <- h / WINDOW_H - 1
-  if (!(w %in% retention$window_idx)) return(NULL)
-  r <- retention[retention$window_idx == w, ]
-  data.frame(T_hours = h, n_ventilated = r$n_ventilated,
-             pct_of_intubated_cohort = r$pct_of_anchor_cohort,
-             windows_available = h / WINDOW_H)
-}))
-
 cat("\nRetention (at-risk = still ventilated)\n")
 print(retention, row.names = FALSE)
-cat("\nChoosing T (design_notes.md section 8)\n")
-print(choosing_T, row.names = FALSE)
 
 
 # ---- 7. Dose summaries -------------------------------------------------------
@@ -257,28 +260,6 @@ print(dose_summary[dose_summary$drug == "fentanyl" &
                      "pct_receiving_any")], row.names = FALSE)
 
 
-# ---- 8. Distribution shape ---------------------------------------------------
-# The zero fraction says how much of the mass sits at zero; it says nothing about
-# whether the rest is skewed or multimodal, which is the other half of the
-# gbmt-vs-crimCV question.
-
-dose_distribution <- do.call(rbind, lapply(names(DRUGS), function(drug) {
-  v <- long[[DRUGS[[drug]]]][long$ventilated]
-  v <- v[!is.na(v)]
-  nz <- v[v > 0]
-  probs <- seq(0.1, 0.9, by = 0.1)
-  rbind(
-    data.frame(drug = drug, unit = UNITS[[drug]], population = "all_ventilated",
-               n = length(v), decile = probs * 10,
-               value = round(unname(quantile(v, probs)), 3)),
-    if (length(nz)) data.frame(
-      drug = drug, unit = UNITS[[drug]], population = "non_zero_only",
-      n = length(nz), decile = probs * 10,
-      value = round(unname(quantile(nz, probs)), 3))
-  )
-}))
-
-
 # ---- 9. Balanced panels ------------------------------------------------------
 # The all-ventilated curve answers a different question at every timepoint,
 # because its denominator keeps changing. A frozen denominator makes movement
@@ -315,30 +296,6 @@ for (h in PANELS) {
 }
 
 
-# ---- 10. Zero fraction -------------------------------------------------------
-# Governs gbmt (continuous) versus crimCV (zero-inflated Poisson), section 9.
-# The number that decides it is the LANDMARK-cohort one: that is the population
-# Phases 2-6 actually model.
-
-zero_fraction <- do.call(rbind, lapply(names(DRUGS), function(drug) {
-  col <- DRUGS[[drug]]
-  do.call(rbind, lapply(list(
-    list("whole_cohort", rep(TRUE, nrow(long))),
-    list("landmark_cohort", long$encounter_block %in% elig)
-  ), function(p) {
-    v <- long[[col]][long$ventilated & p[[2]]]
-    v <- v[!is.na(v)]
-    data.frame(drug = drug, unit = UNITS[[drug]], population = p[[1]],
-               n_ventilated_windows = length(v),
-               n_zero = sum(v == 0),
-               pct_zero = round(100 * mean(v == 0), 1))
-  }))
-}))
-
-cat("\nZero fraction of dose across ventilated windows\n")
-print(zero_fraction, row.names = FALSE)
-
-
 # ---- 11. IMV episodes --------------------------------------------------------
 
 blocks <- long[!duplicated(long$encounter_block),
@@ -356,14 +313,14 @@ q_row <- function(v, name, unit) {
 }
 
 per_patient <- table(blocks$patient_id)
-imv_episodes <- rbind(
+imv_encounter_duration <- rbind(
   q_row(blocks$first_imv_episode_hours, "first_imv_episode_hours", "hours"),
   q_row(blocks$n_imv_episodes, "n_imv_episodes_per_block", "count"),
   q_row(as.numeric(per_patient), "blocks_per_patient", "count")
 )
 
-cat("\nVentilation episodes\n")
-print(imv_episodes, row.names = FALSE)
+cat("\nVentilation episode duration and encounter structure\n")
+print(imv_encounter_duration, row.names = FALSE)
 cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
             format(sum(per_patient > 1), big.mark = ","),
             format(length(per_patient), big.mark = ","),
@@ -373,7 +330,7 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
 # ---- 12. Baseline characteristics --------------------------------------------
 # Strata are MUTUALLY EXCLUSIVE (eligible vs not) so the p-value is meaningful;
 # a whole-cohort column against its own subset would not be. This doubles as the
-# included-versus-excluded disclosure section 8 requires.
+# included-versus-excluded disclosure.
 # Shape is gtsummary-like: __bold__ parent labels, indented sub-levels, N in the
 # strata headers. Rendering to HTML is a separate step.
 
@@ -475,93 +432,10 @@ cat("\nBaseline characteristics\n")
 print(baseline, row.names = FALSE)
 
 
-# ---- 12b. Delivery states and transitions ------------------------------------
-# A different description of the same 72h: not "what shape is the dose curve"
-# but "what state is the episode in, and where does it go next".
-#
-# Seven states. Four describe HOW fentanyl was delivered while the patient was
-# ventilated; three are terminal. Because they are defined by which route was
-# used rather than by a threshold on a continuum, there are no cut points to
-# defend -- which is the whole point after the Phase 3/4 finding that dose level
-# is continuous and its classes were a discretisation of it (design notes
-# section 10, Phase 4).
-#
-# WHOLE ANALYTIC COHORT, not the landmark set. The landmark conditions on being
-# ventilated at T, so inside [0, T] nobody dies, is discharged or is
-# permanently extubated -- the three terminal states would be empty by
-# construction, and the liberation pathway is exactly what makes this figure
-# worth drawing. 8,169 of 14,897 episodes leave before 72h, median at 24h.
-
-# TWO definitions, same machinery. The first describes HOW fentanyl was
-# delivered (route); the second HOW MUCH (intensity band on window_mcg). Lyons
-# et al. fit two multistate models on one cohort for the same reason -- AKI
-# stage, then AKI x IMV -- and called it triangulation. Everything below is
-# written once and run twice, so the two can never drift apart in their handling.
-
-state_summary <- function(d, tag) {
-  lv <- levels(d$state)
-  prevalence <- do.call(rbind, lapply(sort(unique(d$window_idx)), function(w) {
-    x <- d[d$window_idx == w, ]
-    tb <- table(x$state)[lv]
-    data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
-               state = lv, n = as.integer(tb),
-               pct = round(100 * as.numeric(tb) / nrow(x), 2))
-  }))
-  tp <- transition_pairs(d)
-  # Terminal states must absorb; transition_pairs() drops rows starting in one,
-  # so a terminal state appearing as an ORIGIN means the definition is wrong.
-  stopifnot("an absorbing state must not originate a transition" =
-              !any(tp$state %in% STATE_ABSORBING))
-
-  cat(sprintf("\n%s states, %% of the analytic cohort\n", tag))
-  pv <- reshape(prevalence[, c("window_start_hr", "state", "pct")],
-                idvar = "window_start_hr", timevar = "state", direction = "wide")
-  names(pv) <- sub("^pct\\.", "", names(pv))
-  print(pv[pv$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
-
-  tmx <- transition_matrix(tp)
-  cat(sprintf("\n%s transition matrix (row = t, col = t+1, row %%)\n", tag))
-  print(tmx, row.names = FALSE)
-  cat("  terminal states verified absorbing\n")
-
-  list(prevalence = prevalence, matrix = tmx, data = d)
-}
-
-long  <- derive_states(long)                              # route definition
-route <- state_summary(long, "Delivery")
-
-# The intensity definition. derive_dose_states() overwrites `state`, so it runs
-# on a COPY -- `long` keeps the route states for the rest of the script.
-dose <- state_summary(
-  derive_dose_states(long, DOSE_CUTS, DOSE_LAB),
-  sprintf("Intensity (0 / <=%s / <=%s / >%s mcg per %dh window)",
-          DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2], WINDOW_H))
-
-state_prevalence      <- route$prevalence
-transition_matrix_tbl <- route$matrix
-
-
 # ---- 13. Figures -------------------------------------------------------------
 
-ink <- "#0b0b0b"; muted <- "#898781"; gridline <- "#e1e0d9"
-
-house <- function(p) {
-  p + theme_minimal(base_size = 12) +
-    theme(plot.title = element_text(colour = ink, face = "bold"),
-          plot.subtitle = element_text(colour = muted, margin = margin(b = 10)),
-          legend.position = "top",
-          legend.text = element_text(colour = muted, size = 9),
-          axis.title = element_text(colour = muted),
-          axis.text = element_text(colour = muted),
-          panel.grid.minor = element_blank(),
-          panel.grid.major.x = element_blank(),
-          panel.grid.major.y = element_line(colour = gridline, linewidth = 0.4),
-          plot.background = element_rect(fill = "#fcfcfb", colour = NA),
-          strip.text = element_text(colour = ink, face = "bold"))
-}
-
-# FENTANYL IS THE STUDY. It gets the primary figures; propofol and midazolam are
-# companions and share one secondary figure.
+# FENTANYL IS THE STUDY. It gets the primary figures; propofol, midazolam and
+# dexmedetomidine are companions and share one secondary figure.
 FENT_U <- UNITS[["fentanyl"]]
 DOSE_COLS <- c("All ventilated, zeros included" = "#14427e",
                "Receivers only" = "#4a8bd8")
@@ -570,7 +444,7 @@ curves <- dose_summary
 curves$series <- ifelse(curves$denominator == "all_ventilated",
                         "All ventilated, zeros included", "Receivers only")
 
-# --- Primary figure: fentanyl, all three curves of section 10 -----------------
+# --- Primary figure: fentanyl, all three dose curves -------------------------
 # Two stacked FACETS rather than a secondary axis: a dose and a proportion are
 # different quantities, and sec_axis applies ONE transform to every facet, which
 # draws the proportion against the wrong scale wherever the scales are free.
@@ -611,7 +485,7 @@ p_fent <- house(
            "The two medians diverge: exposure narrows to fewer episodes rather than falling within them."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$phase, "phase1_fentanyl_curves.png"), p_fent,
+ggsave(file.path(dirs$phase, "fentanyl_curves.png"), p_fent,
        width = 7.5, height = 7.6, dpi = 200)
 
 # --- Primary figure: fentanyl balanced panels --------------------------------
@@ -656,31 +530,8 @@ p_panels <- house(
            "the median falls onto the floor at h24 and every panel collapses onto one line."),
          x = "Hours since first IMV episode", y = NULL, colour = NULL))
 
-ggsave(file.path(dirs$phase, "phase1_fentanyl_balanced_panels.png"), p_panels,
+ggsave(file.path(dirs$phase, "fentanyl_balanced_panels.png"), p_panels,
        width = 7.5, height = 9.2, dpi = 200)
-
-# --- Primary figure: fentanyl distribution -----------------------------------
-# The zero spike is excluded because it is a different kind of observation from
-# the continuous part, and it is what decides crimCV. Tail clipped at p99.5 --
-# otherwise a handful of extreme windows stretch the axis and the shape that
-# matters occupies a tenth of the panel.
-fent <- long$total_dose[long$ventilated & !is.na(long$total_dose)]
-nz <- fent[fent > 0]
-zero_pct <- 100 * mean(fent == 0)
-clip <- unname(quantile(nz, 0.995))
-n_clipped <- sum(nz > clip)
-
-p_dist <- house(
-  ggplot(data.frame(dose = nz[nz <= clip]), aes(dose)) +
-    geom_histogram(bins = 60, fill = "#14427e", colour = NA) +
-    labs(title = "Fentanyl dose distribution across ventilated windows",
-         subtitle = sprintf(
-           "Non-zero windows only; %.1f%% of ventilated windows are exactly zero.\nTail clipped at p99.5 = %.0f %s (%s windows above it).",
-           zero_pct, clip, FENT_U, trimws(format(n_clipped, big.mark = ","))),
-         x = sprintf("Dose (%s)", FENT_U), y = "Windows"))
-
-ggsave(file.path(dirs$phase, "phase1_fentanyl_distribution.png"), p_dist,
-       width = 7.5, height = 4.8, dpi = 200)
 
 # --- Secondary figure: the companion sedatives -------------------------------
 # Separate units per drug, so free_y and a label carrying the unit.
@@ -691,10 +542,12 @@ sed$facet <- factor(sprintf("%s (%s)", sed$drug, sed$unit),
                     levels = sprintf("%s (%s)", SEDATIVES, UNITS[SEDATIVES]))
 
 # Prevalence per drug, so the caption states which of these are actually used
-# here rather than naming one by hand.
-zf_w <- zero_fraction[zero_fraction$population == "whole_cohort", ]
-prev <- vapply(SEDATIVES, function(d)
-  100 - zf_w$pct_zero[zf_w$drug == d], numeric(1))
+# here rather than naming one by hand. Computed locally: the zero-fraction table
+# this used to read is gone, being exactly recoverable from dose_summary.
+prev <- vapply(SEDATIVES, function(d) {
+  v <- long[[DRUGS[[d]]]][long$ventilated]
+  100 * mean(v > 0, na.rm = TRUE)
+}, numeric(1))
 prev_txt <- paste(sprintf("%s %.1f%%", SEDATIVES, prev), collapse = ", ")
 # Wrap by hand: ggplot does not wrap a subtitle, it clips it at the canvas edge.
 prev_txt <- paste(strwrap(prev_txt, width = 66), collapse = "\n")
@@ -721,87 +574,11 @@ p_sed <- house(
          x = "Hours since first IMV episode", y = NULL, colour = NULL) +
     theme(strip.placement = "outside", strip.text.y.left = element_text(angle = 90)))
 
-ggsave(file.path(dirs$phase, "phase1_sedative_curves.png"), p_sed,
+ggsave(file.path(dirs$phase, "sedative_curves.png"), p_sed,
        width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
 
 
-# --- Delivery-state figures ---------------------------------------------------
-# Alluvial: every episode is a ribbon, its width the number of episodes moving
-# between states. Ribbons entering a terminal state never leave it, so
-# liberation and death are visible as the flow drains out of the fentanyl states.
-
-STATE_PAL <- c(
-  "no fentanyl"        = "#d8d6cf",
-  "continuous only"    = "#14427e",
-  "bolus only"         = "#eb6834",
-  "continuous + bolus" = "#4a8bd8",
-  "extubated"          = "#7fb069",
-  "discharged alive"   = "#a8c8ee",
-  "died"               = "#8c2f18")
-
-# A sequential ramp for intensity, because the bands are ORDERED: a reader
-# should be able to see escalation as a colour gradient. The route palette above
-# is categorical, because routes are not ordered.
-DOSE_PAL <- setNames(
-  c("#e8e6df", "#a8c8ee", "#4a8bd8", "#14427e", "#7fb069", "#a8c8ee", "#8c2f18"),
-  dose_state_levels(DOSE_LAB))
-DOSE_PAL[["discharged alive"]] <- "#c9a227"     # must not collide with `low`
-
-# Alluvial at every second window keeps the ribbons legible; 18 axes is a smear.
-# The x axis MUST be discrete: with a continuous x, ggalluvial draws the strata
-# but no flows at all, because it cannot tell which axes are adjacent.
-draw_states <- function(res, pal, tag, title_flow, title_area, sub_area) {
-  d <- res$data
-  alv <- d[d$window_idx %% 2 == 0,
-           c("encounter_block", "window_start_hr", "state")]
-  alv$hr <- factor(alv$window_start_hr)
-  stopifnot("alluvial data must be in lodes form" =
-              is_lodes_form(alv, key = hr, value = state,
-                            id = encounter_block, silent = TRUE))
-
-  p_alluvial <- house(
-    ggplot(alv, aes(x = hr, stratum = state, alluvium = encounter_block,
-                    fill = state)) +
-      geom_flow(alpha = 0.55, width = 0.42) +
-      geom_stratum(width = 0.42, colour = "#fcfcfb", linewidth = 0.25) +
-      scale_fill_manual(values = pal, drop = FALSE) +
-      guides(fill = guide_legend(nrow = 2)) +
-      labs(title = title_flow,
-           subtitle = sprintf(
-             "All %s ventilation episodes from the first IMV episode. Terminal states absorb.\nShown every %dh for legibility; the underlying grid is %dh.",
-             format(anchor_n, big.mark = ","), 2 * WINDOW_H, WINDOW_H),
-           x = "Hours since first IMV episode", y = "Ventilation episodes",
-           fill = NULL))
-  ggsave(file.path(dirs$phase, sprintf("phase1_%salluvial.png", tag)),
-         p_alluvial, width = 9.0, height = 5.8, dpi = 200)
-
-  p_states <- house(
-    ggplot(res$prevalence, aes(window_start_hr, pct, fill = state)) +
-      geom_area(colour = "#fcfcfb", linewidth = 0.2) +
-      scale_fill_manual(values = pal, drop = FALSE) +
-      scale_x_continuous(breaks = seq(0, EXTENT_H, by = 12)) +
-      guides(fill = guide_legend(nrow = 2)) +
-      labs(title = title_area, subtitle = sub_area,
-           x = "Hours since first IMV episode", y = "% of episodes", fill = NULL))
-  ggsave(file.path(dirs$phase, sprintf("phase1_%sprevalence.png", tag)),
-         p_states, width = 7.5, height = 4.8, dpi = 200)
-}
-
-draw_states(route, STATE_PAL, "state_",
-  "How fentanyl is delivered, and how episodes leave",
-  "Delivery state over the first 72h of ventilation",
-  sprintf("%s ventilation episodes; states are mutually exclusive and exhaustive.",
-          format(anchor_n, big.mark = ",")))
-
-draw_states(dose, DOSE_PAL, "dose_state_",
-  "How much fentanyl, and how episodes leave",
-  "Fentanyl intensity over the first 72h of ventilation",
-  sprintf("%s episodes. Bands are mcg delivered per %dh window: 0 / <=%s / <=%s / >%s.",
-          format(anchor_n, big.mark = ","), WINDOW_H,
-          DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2]))
-
-
-# ---- 14. Write ---------------------------------------------------------------
+# ---- Write -------------------------------------------------------------------
 
 write_out <- function(x, name) {
   f <- file.path(dirs$phase, name)
@@ -810,36 +587,29 @@ write_out <- function(x, name) {
 }
 
 cat("\n")
-write_out(baseline, "phase1_baseline_characteristics.csv")
-write_out(retention, "phase1_retention.csv")
-write_out(choosing_T, "phase1_choosing_T.csv")
-write_out(dose_summary, "phase1_dose_summary.csv")
-write_out(dose_distribution, "phase1_dose_distribution.csv")
-write_out(balanced_panels, "phase1_balanced_panels.csv")
-write_out(zero_fraction, "phase1_zero_fraction.csv")
-write_out(imv_episodes, "phase1_imv_episodes.csv")
-write_out(state_prevalence, "phase1_state_prevalence.csv")
-write_out(transition_matrix_tbl, "phase1_state_transitions.csv")
-write_out(dose$prevalence, "phase1_dose_state_prevalence.csv")
-write_out(dose$matrix,     "phase1_dose_state_transitions.csv")
+write_out(baseline, "baseline_characteristics.csv")
+write_out(retention, "retention.csv")
+write_out(dose_summary, "dose_summary.csv")
+write_out(balanced_panels, "balanced_panels.csv")
+write_out(imv_encounter_duration, "imv_encounter_duration.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)
-write_out(pooling_continuous, "phase1_pooling_continuous.csv")
-write_out(pooling_categorical, "phase1_pooling_categorical.csv")
+write_out(pooling_continuous, "pooling_continuous.csv")
+write_out(pooling_categorical, "pooling_categorical.csv")
 
-write_json(prov, file.path(dirs$phase, "phase1_provenance.json"),
+write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
-cat("written: phase1_provenance.json\n")
+cat("written: provenance.json\n")
 
 
-# ---- 15. Provenance ----------------------------------------------------------
+# ---- Provenance --------------------------------------------------------------
 # Which package versions produced these numbers?
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/02_descriptive_trajectory.R"),
+    paste("Script :", "code/02_descriptive_cohort.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "02_descriptive_trajectory_sessioninfo.txt")
+  here("logs", "02_descriptive_cohort_sessioninfo.txt")
 )

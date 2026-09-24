@@ -1,7 +1,7 @@
 # ==============================================================================
 # 05_lcmm_classes.R  --  Phase 4 -- lcmm classes on the same data, ARI vs Phase 3
 #
-# Purpose : Latent-class mixed model on total fentanyl dose over the identical landmark panel Phase 3 used; sweep ng, evaluate by the section 7 conjunction, and compare the partition to gbmt by adjusted Rand index.
+# Purpose : Latent-class mixed model on total fentanyl dose over the identical landmark panel Phase 3 used; sweep ng, evaluate by the same criterion conjunction, and compare the partition to gbmt by adjusted Rand index.
 # Author  : Shan Guleria
 # Created : 2026-09-08
 # Inputs  : output/intermediate_phi/landmark_cohort.parquet, gbmt_group_assignments.csv

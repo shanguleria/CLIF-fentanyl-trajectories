@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.1.0",
+    "definition_version": "0.3.0",
     "_date": "2026-09-05",
     "_purpose": "PROTOCOL ONLY. Every value here is identical at every site; anything that legitimately differs by site belongs in config/config.json. This file is the definition_version stamped onto every shareable output, so any change is a protocol amendment that bumps the version. It is TRACKED IN GIT, unlike config/config.json, precisely because a protocol that cannot be shared or version-stamped is not a protocol.",
     "_protocol_test": "The test for whether a value belongs here: if two sites set this differently, is the pooled result still meaningful? If no, it is protocol. (Adopted from CRRT-dose-lmtp/CLAUDE.md:212-213.)",
@@ -17,7 +17,7 @@
             "n_windows": 14,
             "_role": "Phase 1 descriptive view only.",
             "_STATUS": "DECLARED BUT NOT PRODUCED. DECIDED SG 2026-09-07: deferred, not dropped. No code reads these three keys and no table is built on this grid. Phase 0's exposure path is bounded at the GRANULAR extent by module constants (01_build_cohort.py EXTENT_H, N_WINDOWS), so this view cannot be re-windowed from trajectory_long -- extending the horizon means re-running the hourly waterfall, not re-aggregating a finished table.",
-            "_STATUS_why_deferred": "It is descriptive only and gates nothing. Landmark T is chosen from the Phase 1 retention table, and design_notes.md section 8's 'Choosing T' tabulation tops out at 72h while arguing for the SHORTEST T that still captures meaningful variation -- so a 7-day view would not change that decision. Recorded here rather than deleted so that a later 7-day descriptive question finds the parameters already agreed.",
+            "_STATUS_why_deferred": "It is descriptive only and gates nothing. Landmark T is chosen from the Phase 1 retention table, and the 'Choosing T' tabulation tops out at 72h while arguing for the SHORTEST T that still captures meaningful variation -- so a 7-day view would not change that decision. Recorded here rather than deleted so that a later 7-day descriptive question finds the parameters already agreed.",
             "_STATUS_before_building_it": "Parameterise window_grid, _hourly_scaffold, infusion_grid, bolus_doses and window_exposure on (width, extent, n_windows) instead of the module constants, emit a second slim table (keys, alive_admitted, imv_status, the dose columns -- no covariates at 12h resolution), add it to OWNED and to the manifest, and re-run Phase 0."
         },
         "interval_convention": "half-open, [start, end)",
@@ -87,7 +87,7 @@
             "_role_why": "SG, 2026-09-05: collected so baseline characteristics can be reported, whether or not it enters any model. Entering it as a covariate is a separate decision that has not been made; it is declared here with role stated so nobody adds it to a formula on the assumption it was already agreed.",
             "missing": "'Unknown' is a permissible CLIF category, not a missing value, and must be reported as its own row rather than folded into missing. A null race_category is separately missing; report the two counts distinctly.",
             "reporting_collapse": {
-                "_why": "SG 2026-09-07: Table 1 reports Black / White / Other rather than all seven CLIF categories, which otherwise produces four cells under 3%. Declared here rather than hardcoded in the R so it is a protocol decision a site can see. The FULL seven-category distribution is still emitted at full granularity in phase1_pooling_categorical.csv, so nothing is lost -- only the display is collapsed.",
+                "_why": "SG 2026-09-07: Table 1 reports Black / White / Other rather than all seven CLIF categories, which otherwise produces four cells under 3%. Declared here rather than hardcoded in the R so it is a protocol decision a site can see. The FULL seven-category distribution is still emitted at full granularity in pooling_categorical.csv, so nothing is lost -- only the display is collapsed.",
                 "_unknown_stays_separate": "Unknown is NOT folded into Other. It is a permissible CLIF category meaning the question was asked and not answered, not a small race group, and at UCMC it is 8.7% -- large enough that lumping it in would misstate what 'Other race' means. This preserves the rule already recorded above. Set _default_includes_unknown true to override.",
                 "Black or African American": "Black",
                 "White": "White",
@@ -312,7 +312,7 @@
             },
             "missing_class": "absence_means_not_ventilated",
             "_absence_why": "Invasive ventilation is charted continuously, so a window with no device record was almost certainly not on a ventilator rather than unobserved. The count set to zero this way MUST be reported.",
-            "_role": "Required to identify extubated windows (design_notes.md 10a(a): dose in an extubated gap is a true 0) and to count failed extubations."
+            "_role": "Required to identify extubated windows (dose in an extubated gap is a true 0) and to count failed extubations."
         },
         "crrt_status": {
             "label": "On CRRT at any point in the window",
@@ -330,6 +330,44 @@
             },
             "_INTERVAL_RECONSTRUCTION_WARNING": "crrt_therapy is a POINT-IN-TIME table: it carries recorded_dttm and no start or stop timestamp. 'On CRRT during this window' is therefore an interval-reconstruction problem, not a lookup. A row inside the window is sufficient; hold_hours bridges a charting gap that spans a window boundary. VERIFY THE CHARTING INTERVAL AT UCMC BEFORE RELYING ON hold_hours -- if CRRT is charted hourly, 4h is generous; if q4h, it is exactly one interval and may need widening.",
             "missing_class": "absence_means_zero"
+        },
+        "rass": {
+            "label": "Richmond Agitation-Sedation Scale, deepest value in the window",
+            "source": {
+                "table": "assessments",
+                "category": "RASS",
+                "value": "numerical_value",
+                "time": "recorded_dttm"
+            },
+            "summary": "min",
+            "_summary_why": "min = the DEEPEST sedation reached in the window. RASS runs -5 (unarousable) to +4 (combative), so the minimum is the clinically actionable tail and is what the deep-sedation literature reports. A window mean would average a -4 and a +1 into a value no clinician ever saw.",
+            "_MEAN_DELIBERATELY_NOT_COLLECTED": "A median or time-weighted RASS is NOT collected. summary_rules has no median, and time_weighted_mean is not dispatchable on this path -- assessment_covariates() summarises with a pandas .agg, exactly as lab_covariates() does. Adding either is a protocol change AND a new code path, and it was deliberately not bundled into the change that merely made RASS available. If a central-tendency RASS is ever wanted, add the rule to summary_rules FIRST so the vocabulary stays the single source of truth. Barker et al. (Chest 2024) binned a 12h weighted-average RASS as deep vs target, so this is the likely eventual need.",
+            "_CASE_MATTERS": "UCMC charts this category as 'RASS', capitalised, unlike 'gcs_total'. apply_long() and the from_file filter match the category string literally, so the case is part of the contract, not cosmetic.",
+            "locf": {
+                "eligible": true,
+                "cap_hours": 4
+            },
+            "_cap_why": "One window width, so at most one window is ever bridged. RASS is charted q2-4h under sedation protocols -- median 116 values per cohort hospitalisation at UCMC, measured 2026-09-23 -- so a 4h gap is a plausible charting interval, while an 8h gap is a documentation fault that should stay visible as missing rather than be filled in.",
+            "missing_class": "time_varying"
+        },
+        "nvps": {
+            "label": "Non-Verbal Pain Scale, worst value in the window",
+            "source": {
+                "table": "assessments",
+                "category": "NVPS",
+                "value": "numerical_value",
+                "time": "recorded_dttm"
+            },
+            "summary": "max",
+            "_summary_why": "max = the WORST pain scored in the window, the mirror of rass's min. NVPS runs 0-10 with higher worse, and an analgesia study cares about the peak a patient reached, not the average of a peak and a trough.",
+            "_CASE_MATTERS": "Charted as 'NVPS', capitalised. See rass._CASE_MATTERS.",
+            "_why_NVPS_and_not_CPOT": "NVPS is what UCMC charts: 1,549,178 rows site-wide against 0 for CPOT (measured 2026-09-23 over 33.6M patient_assessments rows). PAINAD is also present (901,909 rows) and is NOT collected -- it scores pain in dementia and would mix two instruments. A site that charts CPOT instead will need its own entry here; this is the kind of key a federated run must check rather than assume.",
+            "locf": {
+                "eligible": true,
+                "cap_hours": 4
+            },
+            "_cap_why": "Same as rass: one window width. Median 113 values per cohort hospitalisation at UCMC.",
+            "missing_class": "time_varying"
         },
         "bun": {
             "label": "Blood urea nitrogen",
@@ -378,6 +416,7 @@
                 "cap_hours": 24
             },
             "_cap_why": "24h, per the uniform lab rule. pCO2 tracks minute ventilation, which changes within minutes of a ventilator adjustment, so like lactate it is a variable where a long carry is loose; the pco2_arterial_locf flag is what makes that visible.",
+            "_VENOUS_CONSIDERED_AND_REJECTED": "pco2_venous was considered as a fallback and REJECTED (SG, 2026-09-06). It would have recovered a great deal -- 181,540 venous results against 635,165 arterial, with 1,495 hospitalizations (8.1%) holding venous and no arterial -- and Chong et al. (PMID 33780397), cited here for the pH offset, gives arterial pCO2 = venous pCO2 - 5 mmHg. Rejected because CLIF DOES NOT DISTINGUISH CENTRAL FROM PERIPHERAL venous sampling, and peripheral venous pCO2 diverges from arterial most severely in shock and post-arrest patients -- precisely this study's population. A single fixed offset would be least valid exactly where it matters most. The missingness is accepted and reported instead. Recorded here 2026-09-23 because this was the one rejected option with no other home once docs/design_notes.md was retired.",
             "missing_class": "time_varying"
         },
         "lactate": {
@@ -443,7 +482,7 @@
         "_units_DECISION": "CHANGED FROM mcg/kg/hr, SG 2026-09-07. Fentanyl is ordered and titrated in mcg/hr; a weight-normalised opioid rate is not a quantity any clinician reads. MEASURED at UCMC the same day: 655,783 of 659,338 continuous fentanyl rows (99.5%) are ALREADY charted in mcg/hr, and 374,938 of 406,287 bolus rows (92.3%) in plain mcg. The former unit therefore divided the site's native value by weight for 99.5% of the exposure, manufacturing a weight dependence the source data did not have. Weight now touches fentanyl only for the 3,555 mcg/kg/hr infusion rows and the 445 mcg/kg bolus rows.",
         "_units_MODELLING_CONSEQUENCE": "gbmt runs at scaling = 0, so ABSOLUTE level defines the classes. In mcg/hr two patients on the same ordered rate are the same trajectory regardless of size, which is what the order sheet says; in mcg/kg/hr they were different. This is a real change to what a class means and belongs in Methods.",
         "_units_SIDE_EFFECT": "The weight-lag question (11% of blocks take weight from after the anchor, max 804h) is now near-moot for the EXPOSURE, though weight still governs nee, bmi and the weight-based minority of rows.",
-        "_three_columns_why": "Kept separate so the Model A / Model B choice (design_notes.md section 1) is deferred to analysis time rather than baked into the pipeline.",
+        "_three_columns_why": "Kept separate so the Model A / Model B choice is deferred to analysis time rather than baked into the pipeline.",
         "grid_resolution_minutes": 60,
         "_grid_why": "DECIDED SG 2026-09-05: build an hourly waterfall grid of infusion rates, LOCF-filled at every timepoint, so a 4h window total is a simple sum over its cells. Same structure as nee, which keeps the two exposures consistent and auditable.",
         "_grid_APPROXIMATION_TO_STATE": "An hourly grid is a DISCRETISED time-weighted mean, not an exact one. A rate change at 10:30 is attributed to whichever cell the last-rate-per-hour rule picks, so the error is bounded by the within-hour timing of rate changes and is at most one hour of one rate per change. At 4h windows this is small and it is uniform across patients, but it is an approximation and belongs in the methods rather than in a footnote. Lower this key to 15 or 30 if a sensitivity analysis wants it; nothing else changes.",
@@ -457,11 +496,11 @@
             "hold_hours": 4,
             "algorithm": "Bin to hours. Take the LAST charted rate per (block, hour), stable-sorted on (time, value). Complete the grid across the block's alive_admitted span. Treat mar_action_category == 'stop' as a rate of 0, NOT a missing value. Forward-fill at most hold_hours. Everything still empty is 0.",
             "missing_class": "absence_means_zero",
-            "_absence_why": "Identical to nee, and to design_notes.md section 5: 'drip off is a real zero, not missing.' The LOCF bridges a CHARTING GAP inside a running infusion; it does not carry a rate across a stopped one.",
+            "_absence_why": "Identical to nee: 'drip off is a real zero, not missing.' The LOCF bridges a CHARTING GAP inside a running infusion; it does not carry a rate across a stopped one.",
             "_HOLD_CAP_IS_LOAD_BEARING": "Without it, LOCF on an infusion rate runs to the end of follow-up. A patient whose drip stopped at hour 10 with no stop row charted would show a non-zero rate at hour 72, and because this is the EXPOSURE rather than a covariate, that error is the outcome of the study rather than noise around it. hold_hours = 4 is inherited from nee, where the coordinating site's median inter-record interval was 57 min (p90 68).",
             "_HOLD_CAP_VERIFIED_AT_UCMC": "MEASURED 2026-09-07, closing the standing instruction to verify the fentanyl charting interval before trusting this parameter. Over 647,457 inter-record gaps within a hospitalization: median 1.00h, p75 1.00, p90 1.67, p95 2.58, p98 4.92, p99 8.04. Only 2.6% of gaps exceed the 4h cap and 1.0% exceed 8h, so the cap bridges routine charting without inventing exposure. Audited in the other direction too: of blocks ventilated in window 6 with a raw fentanyl record in h24-28, only 2.5% read zero in the grid, and every such record is a stop action carrying dose 0 or null. The grid is faithful; the zeros in the descriptive output are real.",
             "_never_extrapolate": "Bounded by the block's first and last charted medication record, and by the alive_admitted span. Never filled past either.",
-            "_extubated_windows": "imv_status == 0 forces dose to 0 for that window, per design_notes.md section 10a(a), decided 2026-09-05. That gate is applied AFTER the grid, so an extubated gap reads as the true zero it was.",
+            "_extubated_windows": "imv_status == 0 forces dose to 0 for that window, per the extubated-gap rule, decided 2026-09-05. That gate is applied AFTER the grid, so an extubated gap reads as the true zero it was.",
             "_extubated_windows_IMPLEMENTED": "2026-09-07, in gate_dose_on_ventilation(). It had been DECLARED HERE AND NEVER APPLIED since 2026-09-05 -- found during the Phase 1 planning pass, alongside the same failure in windows.extended and exposure.sedatives. MEASURED blast radius before implementing: 4,377 alive-admitted-but-not-ventilated windows carried a non-zero fentanyl dose (1.7% of alive-admitted windows, 1,793 of 14,897 blocks; median 0.17, max 7.07 mcg/kg/hr), of which only 317 windows across 144 blocks fall inside the landmark cohort that Phases 2-6 model.",
             "_extubated_windows_SETTLED": "SG 2026-09-07: 'Boluses of sedation while not ventilated should not count for this study.' The rule stands as decided on 2026-09-05 and the question is CLOSED -- no sensitivity analysis on the ungated column is planned. Rationale: the estimand is sedation and analgesia DURING MECHANICAL VENTILATION, and every affected window is bolus-only with no infusion running, i.e. post-extubation PRN analgesia, which is a different clinical process. MEASURED inside the landmark cohort at T=72h: 317 windows (0.26% of landmark windows) across 144 episodes (2.1% of the cohort), all 317 bolus-only; the effect on any cohort mean is 0.22%. For an affected episode the gate removes a median 11.6% of its whole [0,72) dose (p95 80%), so total_dose_ungated is still carried on every row -- not for a planned analysis but so the decision can be revisited without another Phase 0 run.",
             "_extubated_windows_NOT_APPLIED_TO_SEDATIVES": "The gate applies to the fentanyl exposure columns only. propofol_dose and midazolam_dose are descriptive companions, and a propofol infusion running in an extubated window is a fact worth describing rather than a contaminated exposure. Stated so it reads as a choice, not an omission."
@@ -473,12 +512,12 @@
             },
             "_category_CONFIRMED": "SG 2026-09-05: medication_admin_intermittent carries med_category == 'fentanyl' explicitly at UCMC. Same assertion requirement as the infusion arm. NOTE that other_sedative_categories (propofol, midazolam) were NOT confirmed in the same breath and remain assumed.",
             "summary": "sum",
-            "_NEVER_LOCF": "A bolus is an EVENT, not a state. It never enters the hourly grid and is never forward-filled. Carrying it forward replicates one dose into every later window: design_notes.md section 5 works the example, where one 50 mcg bolus becomes several hundred mcg. The grid and the sum come out of the same pipeline, so the rule must be applied per column, not globally.",
+            "_NEVER_LOCF": "A bolus is an EVENT, not a state. It never enters the hourly grid and is never forward-filled. Carrying it forward replicates one dose into every later window: one 50 mcg bolus would otherwise become several hundred mcg. The grid and the sum come out of the same pipeline, so the rule must be applied per column, not globally.",
             "conversion": "Window bolus total mcg / window_hours, so it lands on the same mcg/hr scale as the infusion and the two are additive. No weight division."
         },
         "total": "inf_dose + bolus_dose, both already in mcg/hr.",
         "sedatives": {
-            "_role": "DESCRIPTIVE COMPANIONS to the fentanyl exposure, not indicators. Added SG 2026-09-07 after the Phase 1 planning pass found that design_notes.md section 10 promised propofol_dose and midazolam_dose in Table 1 while Phase 0 only loaded the categories and checked they were present -- no column was ever computed. Declared, checked, never consumed.",
+            "_role": "DESCRIPTIVE COMPANIONS to the fentanyl exposure, not indicators. Added SG 2026-09-07 after the Phase 1 planning pass found that the plan promised propofol_dose and midazolam_dose in Table 1 while Phase 0 only loaded the categories and checked they were present -- no column was ever computed. Declared, checked, never consumed.",
             "columns": [
                 "propofol_dose",
                 "midazolam_dose",
@@ -501,7 +540,7 @@
             "summary": "mean of the hourly grid cells in the window, identical machinery to the fentanyl infusion arm",
             "hold_hours": 4,
             "missing_class": "absence_means_zero",
-            "_NOT_gbmt_INDICATORS": "These do not enter a gbmt model as additional indicators. Mixed units across drugs would force scaling >= 2, which erases the absolute dose level the whole design rests on (design_notes.md sections 3 and 9). Fentanyl-equivalents may be the escape route; that decision is open and these columns exist so it can be judged against real numbers."
+            "_NOT_gbmt_INDICATORS": "These do not enter a gbmt model as additional indicators. Mixed units across drugs would force scaling >= 2, which erases the absolute dose level the whole design rests on . Fentanyl-equivalents may be the escape route; that decision is open and these columns exist so it can be judged against real numbers."
         },
         "_two_scales": "TWO SCALES, both exact, neither derivable from the other. inf_dose/bolus_dose/total_dose are RATES in mcg/hr (the time-weighted mean over the window's hourly cells). inf_mcg/bolus_mcg/window_mcg are AMOUNTS in mcg (the sum over those cells, each an hour wide). total_dose * window_hours equals window_mcg for a FULL window only: _hourly_scaffold drops cells past followup_end_dttm, so a window straddling discharge or death holds fewer cells and the product overstates. 632 of 184,854 ventilated windows are short at UCMC (0.34%; 151 at 1h, 215 at 2h, 266 at 3h, measured 2026-09-09). Trajectory modelling (Phases 3-4) uses the RATE; the dose states below use the AMOUNT.",
         "dose_states": {
@@ -734,7 +773,9 @@
                 "pco2_arterial",
                 "lactate",
                 "inr",
-                "bilirubin_total"
+                "bilirubin_total",
+                "rass",
+                "nvps"
             ]
         },
         "absence_means_zero": {

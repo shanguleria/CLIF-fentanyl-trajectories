@@ -5,15 +5,27 @@ ICU patients, using the Common Longitudinal ICU data Format (CLIF).
 
 ## Objective
 
-Identify and characterize distinct trajectories of fentanyl exposure over the
-first days of invasive mechanical ventilation (IMV), and test whether trajectory
-class predicts liberation from ventilation and survival.
+Describe **how fentanyl is delivered** to adults over the first days of invasive
+mechanical ventilation (IMV) — continuous infusion, intermittent bolus, both, or
+neither — and how that delivery pattern changes over the ventilation course.
 
-The pipeline is both **descriptive** (cohort-level dosing curves with
-balanced-panel overlays) and **model-based** (group-based trajectory models via
-`gbmt`, latent class mixed models via `lcmm`, followed by competing-risks
-outcome analysis). Design rationale, methodological decisions, and the evidence
-behind them are in [`docs/design_notes.md`](docs/design_notes.md).
+The pipeline is **descriptive**: cohort-level dosing curves with balanced-panel
+overlays, delivery-state prevalence and transitions, and a landmarked view of the
+first 72 hours. The question, the measurement frame, the standing principles and
+the options considered and rejected are in
+[`docs/principles.md`](docs/principles.md); literature in
+[`docs/references.md`](docs/references.md). **Definitions live in `config/`**, not
+in either document.
+
+> **Scope change, 2026-09-23.** This project began as a trajectory-modelling
+> study: find latent classes of fentanyl exposure with `gbmt`/`lcmm`, then use
+> class membership as an exposure. That approach was **tested and retired** —
+> dose level proved continuous with no subpopulation structure (`gbmt` classes
+> predicted an episode's mean dose at R² = 0.82; `lcmm` converged only at two
+> classes; the two methods agreed at an adjusted Rand index of 0.037). Steps 3–6
+> below remain in the repo and still run, but they are **tabled**, not part of the
+> current analysis, and their outputs on disk predate their own scripts. Do not
+> cite a number from them without re-running. See `.claude/claude-todo.md`.
 
 ## Required CLIF tables and fields
 
@@ -26,7 +38,7 @@ values below were verified against `clifpy`'s bundled schemas.
 |---|---|---|
 | `patient` | `patient_id`, `sex_category`, `race_category`, `ethnicity_category`, `birth_date` | `death_dttm` exists but is **unstable across CLIF sites** and is deliberately not used; mortality comes from `hospitalization.discharge_category` |
 | `hospitalization` | `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admission_type_category`, `discharge_category` | mortality from `discharge_category` ∈ {`Expired`, `Hospice`} |
-| `adt` | `hospitalization_id`, `in_dttm`, `out_dttm`, `location_category` | ICU location, length of stay |
+| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm` | encounter stitching and `hospital_id_admission` / `_discharge`. **`location_category` is not read** — the pipeline has no ICU flag |
 
 ### Exposure — fentanyl dosing
 
@@ -67,9 +79,9 @@ its internal consistency.
 | `respiratory_support` | **all columns** | FiO₂ waterfall + `device_category` for `imv_status`. Load every column — the waterfall needs `device_name`, `mode_category`, `lpm_set`, `peep_set` to build its blocks |
 | `crrt_therapy` | `hospitalization_id`, `recorded_dttm`, `crrt_mode_category` | `crrt_status`. **Point-in-time table, no start/stop** — interval reconstruction, not a lookup |
 | `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format`, `poa_present` | Charlson Comorbidity Index |
-| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); RASS is ordinal, so **not** averaged |
+| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); `RASS` → `rass` (**min**, deepest sedation in the window); `NVPS` → `nvps` (**max**, worst pain). Both are ordinal, so neither is averaged — see design notes §11. **Category names are matched literally and are case-sensitive**: UCMC charts `RASS` and `NVPS` capitalised but `gcs_total` lowercase. A site charting CPOT rather than NVPS needs its own entry in `covariates.json` |
 | `patient` | `patient_id`, `sex_category`, `race_category` | sex; **race — Table 1 reporting only, not a model covariate** |
-| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`, `location_category` | `hospital_id_admission` / `_discharge`; **`hospital_id` is required by `stitch_encounters`** |
+| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm` | `hospital_id_admission` / `_discharge` and encounter stitching; **`hospital_id` is required by `stitch_encounters`**. `location_category` is **not** read — there is no ICU flag in the pipeline, and "in the ICU" is proxied by `imv_status` wherever an at-risk denominator needs it |
 
 **Encounter blocks are the unit of analysis.** Hospitalizations are stitched with
 clifpy `stitch_encounters(..., time_interval=6)`: a `hospitalization_id` is one
@@ -121,14 +133,26 @@ set this differently, is the pooled result still meaningful?* If no, it is
 protocol. Nothing estimand-defining may live only in the gitignored
 `config.json`.
 
+The suite is the preflight in `run_pipeline.sh` / `.ps1`, which runs these in
+order and stops on the first failure. `pytest tests/` runs them all at once.
+
 ```bash
-.venv/bin/python tests/test_covariates.py   # 16 checks on the covariate protocol
-.venv/bin/python tests/test_fio2.py         # 10 checks on FiO2 unit handling
-.venv/bin/python tests/test_outliers.py     # 14 checks on the outlier bounds
-.venv/bin/python tests/test_build_cohort.py # 30 checks on Phase 0 logic
-.venv/bin/python tests/test_doses.py        # 11 checks on dose unit conversion
-.venv/bin/python tests/test_paths.py        # 12 checks on output locations + staleness
+.venv/bin/python code/check_config.py        # the site config is usable at all
+.venv/bin/python tests/test_covariates.py    # the covariate protocol is internally consistent
+.venv/bin/python tests/test_fio2.py          # FiO2 unit handling (percent vs fraction)
+.venv/bin/python tests/test_outliers.py      # outlier bounds, both layers
+.venv/bin/python tests/test_waterfall_cache.py  # the cache key covers every input
+.venv/bin/python tests/test_doses.py         # dose unit conversion
+.venv/bin/python tests/test_pooling.py       # federated-pooling exports are exactly poolable
+.venv/bin/python tests/test_paths.py         # output locations and staleness guards
+.venv/bin/python tests/test_build_cohort.py  # Phase 0 logic
 ```
+
+Counts are deliberately not stated here. The numbers that used to be — 16, 14,
+30, 11, 12 — were wrong by 2026-09-23 for five of the six files listed (the true
+figures were 24, 15, 57, 14 and 9), and two suites were missing from the list
+entirely. A hand-maintained count with nothing enforcing it is a claim that goes
+stale silently; `pytest tests/` reports the real number.
 
 ### Key settings
 
@@ -177,29 +201,33 @@ artifacts never leave the site, and the PHI-free set reaches the coordinating
 centre by upload rather than by git. `logs/` is gitignored too. The PHI directory
 gets a `README.md` warning label written at runtime by `site_dirs()`.
 
-`output/final_no_phi/` is subdivided by the **script** that produced each file;
-the `phaseN_` prefixes stay, so the folder says which script and the prefix says
-which phase. `phase0_manifest.json` sits at the root because it is the pipeline's
-staleness marker rather than a phase result. `output/intermediate_phi/` stays
-flat — it is the machine handoff between phases.
+`output/final_no_phi/` is subdivided by the **script** that produced each file.
+The `phaseN_` file prefixes were removed on 2026-09-23 — the folder already says
+which script produced a file, and the phases themselves are gone. `manifest.json`
+sits at the root because it is the pipeline's staleness marker rather than one
+script's result. `output/intermediate_phi/` stays flat; it is the machine handoff
+between scripts.
 
-What each phase writes:
+What each script writes:
 
-| Phase | Files |
+| Script | Files |
 |---|---|
-| 0 | `01_cohort/` — `phase0_strobe.{csv,txt,png}`, `phase0_manifest.json`, `phase0_provenance.json`, `diagnostics/phase0_{missingness,missingness_patterns,diagnostics}.csv` |
-| 1 | `02_descriptive/` — `phase1_state_{prevalence,transitions}.csv`, `phase1_state_{alluvial,prevalence}.png`, `phase1_baseline_characteristics.csv`, `phase1_retention.csv`, `phase1_choosing_T.csv`, `phase1_dose_summary.csv`, `phase1_dose_distribution.csv`, `phase1_balanced_panels.csv`, `phase1_zero_fraction.csv`, `phase1_imv_episodes.csv`, `phase1_pooling_continuous.csv`, `phase1_pooling_categorical.csv`, `phase1_provenance.json`; figures `phase1_fentanyl_{curves,balanced_panels,distribution}.png` (primary) and `phase1_sedative_curves.png` (secondary) |
-| 2 | `03_landmark/` — `phase2_landmark_flow.{csv,txt}`, `phase2_T_sensitivity.csv`, `phase2_failed_extubation.csv`, `phase2_dose_curve.{csv,png}`, `phase2_dependence.csv`, `phase2_pooling_{continuous,categorical}.csv`, `phase2_provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, plus `manifest.json` at the root of `final_no_phi/` |
+| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
+| `03_delivery_states.R` | `03_states/` — `state_{prevalence,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,alluvial}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json` |
+| `04_landmark_cohort.R` | `04_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
-The two `phase1_pooling_*.csv` files exist for **federated pooling**: they carry
+The two `pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
 so a coordinating centre can compute an exact pooled mean and SD without a
 median, which cannot be pooled. Cells below `reporting.small_cell_min_den` are
-suppressed. See design notes §10 Phase 1.
+suppressed.
 
-`phase0_manifest.json` is written **last** and is what marks the Phase 0 outputs
-complete and current. Every R phase calls `require_manifest()` first, which
+`manifest.json` is written **last** and is what marks the Phase 0 outputs
+complete and current. Every R script calls `require_manifest()` first, which
 refuses to read tables produced by a different code version or a drifted config.
+Note that it digests whole config files, so editing even a comment in
+`config/covariates.json` invalidates the build.
 
 Shareable outputs carry a provenance block from `provenance()`: `site_name`,
 `clif_version`, `dataset_version`, `code_version` (git describe), `generated`.
@@ -245,12 +273,18 @@ python3 code/check_config.py
 | Step | Language | Script | Description |
 |---|---|---|---|
 | 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
-| 1 | R | `code/02_descriptive_trajectory.R` | Cohort dose curves, balanced-panel overlays, retention table, zero fraction |
-| 2 | R | `code/03_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
-| 3 | R | `code/04_gbmt_classes.R` | `gbmt` on combined dose, `ng` sweep, class enumeration |
-| 4 | R | `code/05_lcmm_classes.R` | `lcmm::hlme` on the same data; compare partitions by ARI |
-| 5 | R | `code/06_transition_model.R` | Discrete-time multinomial model for the next fentanyl state, whole analytic cohort. Run twice: delivery **route** and dose **intensity band** |
-| 6 | R | `code/07_outcomes.R` | Competing-risks outcome models from the landmark |
+| 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1, retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
+| 2 | R | `code/03_delivery_states.R` | The seven delivery states: prevalence per window, transitions, and the state figures. Run twice — delivery **route** and dose **intensity band** |
+| 3 | R | `code/04_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
+
+These four steps are the current analysis and are exactly what the runners
+execute. The **tabled** trajectory-modelling scripts moved to `code/tabled/` on
+2026-09-23 (`04_gbmt_classes.R`, `05_lcmm_classes.R`, `06_transition_model.R`,
+`07_outcomes.R`) — see **Objective**. They still run, but by hand:
+`Rscript code/tabled/04_gbmt_classes.R`. They were also removed from both runners,
+because `07_outcomes.R` is an unconditional `stop()` and while it sat in the step
+list `./run_pipeline.sh` exited non-zero on every run — the documented
+one-command build could never succeed.
 
 ## Project structure
 
@@ -267,19 +301,24 @@ CLIF-fentanyl-trajectories/
 │   └── config.json               # gitignored, site-local
 ├── code/
 │   ├── check_config.py           # preflight: is config.json usable?
-│   ├── 01_build_cohort.py        # Phase 0  (Python / clifpy)
-│   ├── 02_descriptive_trajectory.R
-│   ├── 03_landmark_cohort.R
-│   ├── 04_gbmt_classes.R
-│   ├── 05_lcmm_classes.R
-│   ├── 06_transition_model.R
-│   ├── 07_outcomes.R
+│   ├── 01_build_cohort.py        # build the analytic tables (Python / clifpy)
+│   ├── 02_descriptive_cohort.R   # cohort description + dose curves
+│   ├── 03_delivery_states.R      # delivery states: prevalence, transitions, figures
+│   ├── 04_landmark_cohort.R      # landmark T (available, not the current analysis)
+│   ├── tabled/                   # trajectory modelling, parked -- not in the runners
+│   │   ├── 04_gbmt_classes.R
+│   │   ├── 05_lcmm_classes.R
+│   │   ├── 06_transition_model.R
+│   │   └── 07_outcomes.R
 │   └── utils/
 │       ├── doses.py              # dose unit conversion (not clifpy's)
 │       ├── fio2.py               # FiO2 scale detection + normalisation
 │       ├── outliers.py           # applies config/outlier_config.json
 │       ├── paths.R               # output dirs + provenance
 │       ├── paths.py              #   (the two must agree)
+│       ├── states.R              # the delivery-state definitions, once
+│       ├── figures.R             # shared theme + state palettes
+│       ├── pooling.R             # federated-pooling exports
 │       └── dependencies.R        # package list for renv's scanner
 ├── tests/
 │   ├── test_covariates.py        # integrity checks on config/covariates.json
@@ -289,11 +328,9 @@ CLIF-fentanyl-trajectories/
 │   ├── test_paths.py             # the PHI boundary, and paths.R == paths.py
 │   ├── test_waterfall_cache.py   # the cache key covers every input
 │   └── test_doses.py             # every charted dose unit converts correctly
-├── validation/                   # one-off measurements, synthetic or aggregate
-│   ├── repeat_encounter_cost.R
-│   └── waterfall_span_equivalence.py
 ├── docs/
-│   └── design_notes.md           # protocol, decisions, evidence
+│   ├── principles.md            # the question, the frame, principles, rejected options
+│   └── references.md            # literature, with DOIs
 ├── output/
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy

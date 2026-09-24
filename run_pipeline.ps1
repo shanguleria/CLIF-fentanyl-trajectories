@@ -35,8 +35,9 @@ Write-Host "== Phase 0: build cohort (Python) =="
 & $py code/01_build_cohort.py
 if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 
-$steps = @("02_descriptive_trajectory","03_landmark_cohort","04_gbmt_classes",
-           "05_lcmm_classes","06_transition_model","07_outcomes")
+# Steps 3-6 are TABLED as of 2026-09-23 and deliberately excluded; 07_outcomes is
+# an unconditional stop(). Run a tabled script by hand if you need it.
+$steps = @("02_descriptive_cohort","03_delivery_states","04_landmark_cohort")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"

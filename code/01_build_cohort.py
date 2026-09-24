@@ -5,7 +5,7 @@ Outputs (PHI, written to output/intermediate_phi/):
     time_to_event.parquet       one row per encounter block
     hospital_intervals.parquet  one row per ADT interval
 
-Protocol: config/covariates.json. Column spec: docs/design_notes.md §10, §11.
+Protocol: config/covariates.json.
 """
 from __future__ import annotations
 
@@ -70,6 +70,14 @@ LAB_VARS = {
     for k, v in COV["time_varying"].items()
     if not k.startswith("_") and (v.get("source") or {}).get("table") == "labs"
 }
+# Same shape as LAB_VARS, and for the same reason: the set of assessment
+# covariates is whatever the config declares, so adding a score is a config edit
+# rather than an edit in two places that can disagree.
+ASSESS_VARS = {
+    k: v["source"]["category"]
+    for k, v in COV["time_varying"].items()
+    if not k.startswith("_") and (v.get("source") or {}).get("table") == "assessments"
+}
 ZERO_VARS = COV["missing_values"]["absence_means_zero"]["members"]
 NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
 SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
@@ -77,7 +85,7 @@ SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 # Everything this script owns. Cleared before it runs so a crash cannot leave a stale file
 # The shareable tree is subdivided by the script that produced each file; the
 # phaseN_ prefixes stay, so the folder says which script and the prefix says
-# which phase. phase0_manifest.json is the exception and lives at the ROOT of
+# which phase. manifest.json is the exception and lives at the ROOT of
 # out_final: it is not a Phase 0 result but the pipeline's staleness marker,
 # which every later phase consults through require_manifest().
 PHASE_DIR = "01_cohort"
@@ -86,27 +94,40 @@ OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
                 "hospital_intervals.parquet"],
-    "out_final": ["phase0_manifest.json"],
-    "phase": ["phase0_strobe.csv", "phase0_strobe.txt", "phase0_strobe.png",
-              "phase0_provenance.json"],
-    "diagnostics": ["phase0_missingness.csv", "phase0_missingness_patterns.csv",
-                    "phase0_diagnostics.csv"],
+    "out_final": ["manifest.json"],
+    "phase": ["strobe.csv", "strobe.txt", "strobe.png",
+              "provenance.json"],
+    "diagnostics": ["missingness.csv", "missingness_patterns.csv",
+                    "diagnostics.csv"],
 }
 
 # Paths this script used to write and no longer does. Cleared so a relocation
 # cannot leave a stale twin the owned list no longer names.
+# Two rounds of retirement. The prefixes are written out with an f-string rather
+# than inline so a future find-and-replace on output names cannot silently strip
+# them -- which is exactly what happened here on 2026-09-23.
+_P0 = "phase0_"
 RETIRED_OUTPUTS = [
-    "output/final_no_phi/phase0_missingness.csv",
-    "output/final_no_phi/phase0_missingness_patterns.csv",
-    "output/final_no_phi/phase0_diagnostics.csv",
     # flat locations retired 2026-09-08 when out_final was subdivided by script
-    "output/final_no_phi/phase0_strobe.csv",
-    "output/final_no_phi/phase0_strobe.txt",
-    "output/final_no_phi/phase0_strobe.png",
-    "output/final_no_phi/phase0_provenance.json",
-    "output/final_no_phi/diagnostics/phase0_missingness.csv",
-    "output/final_no_phi/diagnostics/phase0_missingness_patterns.csv",
-    "output/final_no_phi/diagnostics/phase0_diagnostics.csv",
+    f"output/final_no_phi/{_P0}missingness.csv",
+    f"output/final_no_phi/{_P0}missingness_patterns.csv",
+    f"output/final_no_phi/{_P0}diagnostics.csv",
+    f"output/final_no_phi/{_P0}strobe.csv",
+    f"output/final_no_phi/{_P0}strobe.txt",
+    f"output/final_no_phi/{_P0}strobe.png",
+    f"output/final_no_phi/{_P0}provenance.json",
+    f"output/final_no_phi/diagnostics/{_P0}missingness.csv",
+    f"output/final_no_phi/diagnostics/{_P0}missingness_patterns.csv",
+    f"output/final_no_phi/diagnostics/{_P0}diagnostics.csv",
+    # the phase0_ prefix itself retired 2026-09-23 -- the phases are gone
+    f"output/final_no_phi/{_P0}manifest.json",
+    f"output/final_no_phi/01_cohort/{_P0}strobe.csv",
+    f"output/final_no_phi/01_cohort/{_P0}strobe.txt",
+    f"output/final_no_phi/01_cohort/{_P0}strobe.png",
+    f"output/final_no_phi/01_cohort/{_P0}provenance.json",
+    f"output/final_no_phi/01_cohort/diagnostics/{_P0}missingness.csv",
+    f"output/final_no_phi/01_cohort/diagnostics/{_P0}missingness_patterns.csv",
+    f"output/final_no_phi/01_cohort/diagnostics/{_P0}diagnostics.csv",
 ]
 
 STROBE: list[tuple[str, int]] = []
@@ -137,7 +158,10 @@ def flow(label: str, n_after: int, reason: str = "") -> None:
 LAB_NEEDED = sorted(set(LAB_VARS.values()) | {"po2_arterial", "creatinine",
                                               "platelet_count"})
 VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
-ASSESS_NEEDED = ["gcs_total"]
+# gcs_total is unioned in explicitly: it is a SOFA INPUT carried by
+# _sofa_inputs() with its own cap, not a declared time_varying covariate, so
+# it is absent from ASSESS_VARS and would be dropped from the read filter.
+ASSESS_NEEDED = sorted(set(ASSESS_VARS.values()) | {"gcs_total"})
 
 
 def _kw(**extra) -> dict:
@@ -557,14 +581,14 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
 def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
     """Force dose to 0 in alive-admitted windows the patient was not ventilated in.
 
-    design_notes.md §10a(a). Applied after status_covariates because it needs
+    Applied after status_covariates because it needs
     imv_status. total_dose_ungated preserves the pre-gate value, so reversing the
     decision is a column swap rather than another run.
     """
     off = long["alive_admitted"] & (long["imv_status"].fillna(0) == 0)
     long["total_dose_ungated"] = long["total_dose"]
     hit = off & (long["total_dose"] > 0)
-    note("windows zeroed by the extubated-gap rule (§10a(a))", int(hit.sum()))
+    note("windows zeroed by the extubated-gap rule", int(hit.sum()))
     if hit.any():
         print(f"    across {long.loc[hit, 'encounter_block'].nunique():,} blocks; "
               f"median {long.loc[hit, 'total_dose'].median():.2f} mcg/hr, "
@@ -753,6 +777,50 @@ def lab_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
         sub = labs[labs["lab_category"] == cat]
         agg = (sub.groupby(["encounter_block", "window_idx"], as_index=False)
                   ["lab_value_numeric"].agg(how).rename(columns={"lab_value_numeric": var}))
+        out = agg if out is None else out.merge(
+            agg, on=["encounter_block", "window_idx"], how="outer")
+    return out if out is not None else pd.DataFrame()
+
+
+def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
+    """Per-window sedation and pain scores. Config: time_varying.rass / .nvps.
+
+    Deliberately the same shape as lab_covariates(): variables, source categories
+    and summary rules all come from covariates.json, so adding a score is a config
+    edit. gcs_total is NOT here -- it is a SOFA input with its own cap, carried by
+    _sofa_inputs().
+    """
+    if not ASSESS_VARS:
+        return pd.DataFrame()
+
+    asm = _to_windows(t["assessments"], cohort, "recorded_dttm")
+    vocabulary = {k for k in COV["summary_rules"] if not k.startswith("_")}
+
+    out = None
+    for var, cat in ASSESS_VARS.items():
+        spec = COV["time_varying"][var]
+        how = spec["summary"]
+        # summary_rules says any rule outside its vocabulary must raise rather
+        # than default. That matters most HERE: pandas .agg would happily accept
+        # "median", so an undeclared rule would work in code while violating the
+        # protocol, and nothing downstream would ever say so.
+        if how not in vocabulary:
+            raise SystemExit(
+                f"time_varying.{var}.summary = {how!r} is not in "
+                f"covariates.json summary_rules ({sorted(vocabulary)}). "
+                f"Add the rule to the vocabulary first."
+            )
+        val = spec["source"]["value"]
+        sub = asm[asm["assessment_category"] == cat]
+        if sub.empty:
+            raise SystemExit(
+                f"assessment_category {cat!r} (declared as time_varying.{var}) "
+                f"matched no rows in the cohort. Check the category spelling and "
+                f"its CASE -- the filter matches literally."
+            )
+        agg = (sub.groupby(["encounter_block", "window_idx"], as_index=False)
+                  [val].agg(how).rename(columns={val: var}))
+        print(f"    {var:.<24} {cat} ({how}) -> {len(agg):,} block-windows")
         out = agg if out is None else out.merge(
             agg, on=["encounter_block", "window_idx"], how="outer")
     return out if out is not None else pd.DataFrame()
@@ -1107,7 +1175,7 @@ def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
 
 
 def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
-    """Six SOFA components and their total. Vincent 1996; see design_notes.md §11."""
+    """Six SOFA components and their total. Vincent 1996."""
     g = lambda c: df[c] if c in df.columns else pd.Series(np.nan, index=df.index)
     dopa, epi = g("dopamine_mcg_kg_min"), g("epinephrine_mcg_kg_min")
     norepi, dobu = g("norepinephrine_mcg_kg_min"), g("dobutamine_mcg_kg_min")
@@ -1377,7 +1445,7 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
 
 def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
                         imv_records: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
-    """One row per block, origin = landmark T. See design_notes.md §10, §10a.
+    """One row per block, origin = landmark T.
 
     Successful extubation = extubation not followed by reintubation within
     successful_extubation_hours. Ventilation status comes from the RAW IMV series,
@@ -1417,7 +1485,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     note("blocks with an extubation at or after T", int(tte["ext_hr"].notna().sum()))
 
     # Death inside the succ_h window after extubation is the competing event,
-    # not a success -- §10a, per the VFD convention.
+    # not a success, per the VFD convention.
     off = tte["hours_to_discharge"] - tte["ext_hr"]
     died_in_window = tte["died"] & (off < succ_h)
     success = tte["ext_hr"].notna() & ~died_in_window
@@ -1439,7 +1507,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
              int((tte["extubation_event"] == code).sum()))
     note("  30-day analysis: died", int((tte["mortality_event"] == 1).sum()))
 
-    # Tracheostomy is event code 3 and its rule is still undecided (§10a(c)).
+    # Tracheostomy is event code 3 and its rule is still undecided.
     tte["tracheostomy_pending"] = True
     return tte
 
@@ -1507,6 +1575,7 @@ def main() -> None:
 
     print("\nCovariates")
     for part in (lab_covariates(t, cohort),
+                 assessment_covariates(t, cohort),
                  nee_covariate(t, mapping, cohort),
                  oxygenation_covariate(t, cohort),
                  status_covariates(t, cohort)):
@@ -1592,19 +1661,19 @@ def main() -> None:
     tte.to_csv(out / "time_to_event.csv", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
     diag = dirs["diagnostics"]
-    per_variable.to_csv(diag / "phase0_missingness.csv", index=False)
+    per_variable.to_csv(diag / "missingness.csv", index=False)
     if len(per_pattern):
-        per_pattern.to_csv(diag / "phase0_missingness_patterns.csv", index=False)
+        per_pattern.to_csv(diag / "missingness_patterns.csv", index=False)
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
-        diag / "phase0_diagnostics.csv", index=False)
+        diag / "diagnostics.csv", index=False)
 
-    pd.DataFrame(FLOW).to_csv(dirs["phase"] / "phase0_strobe.csv", index=False)
-    (dirs["phase"] / "phase0_strobe.txt").write_text(render_text(FLOW) + "\n")
-    render_png(FLOW, dirs["phase"] / "phase0_strobe.png",
+    pd.DataFrame(FLOW).to_csv(dirs["phase"] / "strobe.csv", index=False)
+    (dirs["phase"] / "strobe.txt").write_text(render_text(FLOW) + "\n")
+    render_png(FLOW, dirs["phase"] / "strobe.png",
                title=f"Phase 0 cohort flow -- {CONFIG['site_name']}")
     print()
     print(render_text(FLOW))
-    (dirs["phase"] / "phase0_provenance.json").write_text(json.dumps(prov, indent=2))
+    (dirs["phase"] / "provenance.json").write_text(json.dumps(prov, indent=2))
 
     # Written last: its presence is what marks these outputs complete and current.
     write_manifest(dirs, CONFIG, REPO, {
@@ -1620,7 +1689,7 @@ def main() -> None:
     for name in ("trajectory_long.csv", "time_to_event.csv"):
         mb = (out / name).stat().st_size / 1e6
         print(f"  {name:<26} {mb:,.1f} MB  (review copy)")
-    print(f"  phase0_manifest.json written -- outputs are marked complete")
+    print("  manifest.json written -- outputs are marked complete")
 
 
 if __name__ == "__main__":

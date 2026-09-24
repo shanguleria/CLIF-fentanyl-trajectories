@@ -19,7 +19,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 COV = json.loads((REPO / "config" / "covariates.json").read_text())
-NOTES = (REPO / "docs" / "design_notes.md").read_text()
 TEMPLATE = json.loads((REPO / "config" / "config_template.json").read_text())
 
 TIME_VARYING = {k: v for k, v in COV["time_varying"].items() if not k.startswith("_")}
@@ -145,69 +144,6 @@ def test_nee_coefficients_match_its_declared_source_categories():
     )
 
 
-def _parse_section_11_table() -> dict[str, dict[str, str]]:
-    """Pull the §11 time-varying table out of design_notes.md as {var: {col: cell}}."""
-    import re
-
-    start = NOTES.index("### Time-varying covariates")
-    end = NOTES.index("### The three missingness classes")
-    rows = {}
-    for line in NOTES[start:end].split("\n"):
-        if not line.startswith("|") or line.startswith("|---"):
-            continue
-        cells = [c.replace("*", "").strip() for c in line.strip("|").split("|")]
-        if len(cells) != 6 or cells[0] == "Variable":
-            continue
-        names = re.findall(r"`([^`]+)`", cells[0])
-        for n in names:
-            rows[n] = {"summary": cells[2], "locf": cells[3], "cap": cells[4], "class": cells[5]}
-    return rows
-
-
-def test_design_notes_section_11_matches_the_config():
-    """§11 is a hand-written mirror of a machine-readable file, which is exactly
-    the pair that drifts. CRRT-dose-lmtp's own build notes are stamped 0.2.0
-    against a 0.13.0 config and are wrong on three counts as a result. This makes
-    the mirror checkable instead of aspirational."""
-    table = _parse_section_11_table()
-
-    missing = set(TIME_VARYING) - set(table)
-    assert not missing, f"declared in covariates.json but absent from §11's table: {sorted(missing)}"
-
-    unknown = {v for v in table if v not in TIME_VARYING and v not in
-               ("inf_dose", "bolus_dose", "total_dose")}
-    assert not unknown, f"named in §11's table but not declared in covariates.json: {sorted(unknown)}"
-
-    for name, spec in TIME_VARYING.items():
-        row = table[name]
-
-        # missingness class
-        cls = spec["missing_class"]
-        if cls != "not_applicable":
-            assert f"`{cls}`" in row["class"], (
-                f"{name}: §11 says class {row['class']!r}, config says {cls!r}"
-            )
-
-        # LOCF cap
-        locf = spec.get("locf") or {}
-        cap = locf.get("cap_hours")
-        if cap is None:
-            assert row["cap"] in ("—", "-", ""), (
-                f"{name}: config declares no LOCF cap but §11 shows {row['cap']!r}"
-            )
-        else:
-            assert row["cap"] == f"{cap}h", (
-                f"{name}: config cap is {cap}h but §11 shows {row['cap']!r}"
-            )
-
-        # LOCF eligibility
-        if "eligible" in locf:
-            shown_yes = "yes" in row["locf"].lower()
-            assert shown_yes == locf["eligible"], (
-                f"{name}: config LOCF eligible={locf['eligible']} but §11 shows {row['locf']!r}"
-            )
-
-
 def test_repeat_block_decision_carries_its_required_diagnostics():
     """Keeping every encounter block is defensible only if the dependence it
     admits is measured. The decision and the diagnostics that bound it must travel
@@ -215,8 +151,7 @@ def test_repeat_block_decision_carries_its_required_diagnostics():
     limitation becomes an unreported one."""
     eb = COV["encounter_blocks"]
     assert eb.get("blocks_per_patient") == "all", (
-        "blocks_per_patient changed; the diagnostics below were written for 'all' "
-        "and the limitations text in design_notes.md §11 assumes it"
+        "blocks_per_patient changed; the diagnostics below were written for 'all'"
     )
     diags = eb.get("required_dependence_diagnostics", [])
     assert len(diags) >= 3, (
@@ -227,43 +162,6 @@ def test_repeat_block_decision_carries_its_required_diagnostics():
     joined = " ".join(diags).lower()
     for token in ("more than one encounter block", "same patient", "limitations"):
         assert token in joined, f"required diagnostic missing: {token!r}"
-
-
-def test_design_notes_section_11_lists_every_time_invariant_variable():
-    """The time-varying table is mirror-checked above; the time-invariant one was
-    not, and it is the half that just grew from 4 variables to 7. A mirror that
-    covers only some of the config is a mirror nobody can rely on."""
-    import re
-
-    start = NOTES.index("### Time-invariant covariates")
-    end = NOTES.index("### Time-varying covariates")
-    block = NOTES[start:end]
-
-    labels = {
-        name: spec["label"].lower()
-        for name, spec in COV["time_invariant"].items()
-        if not name.startswith("_")
-    }
-    lowered = block.lower()
-    missing = [
-        n for n, lab in labels.items()
-        if n not in block and lab.split(",")[0] not in lowered
-    ]
-    assert not missing, (
-        f"declared in covariates.json time_invariant but absent from §11's table: {missing}"
-    )
-
-
-def test_design_notes_section_11_reports_the_right_number_of_checks():
-    """§11 claims a count of the checks in this file. Keep it true."""
-    import re
-
-    n = len([k for k in globals() if k.startswith("test_")])
-    claimed = re.search(r"`tests/test_covariates\.py`\*\* — (\d+) static checks", NOTES)
-    assert claimed, "§11 no longer states how many checks this file holds"
-    assert int(claimed.group(1)) == n, (
-        f"§11 claims {claimed.group(1)} static checks; this file defines {n}"
-    )
 
 
 def test_nee_carries_a_literature_citation():

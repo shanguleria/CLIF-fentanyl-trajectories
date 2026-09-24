@@ -597,8 +597,84 @@ def test_a_record_charted_after_discharge_reaches_no_window():
     assert out["recorded_dttm"].max() < cohort["followup_end_dttm"].iloc[0]
 
 
+# ------------------------------------------------- assessment covariates
+def _asm_cohort_and_records():
+    """One block, a 12h follow-up, and one RASS + one NVPS value per 4h window."""
+    anchor = pd.Timestamp("2026-01-01 00:00", tz="UTC")
+    cohort = pd.DataFrame([{"encounter_block": 1, "anchor_dttm": anchor,
+                            "followup_end_dttm": anchor + pd.Timedelta(hours=12)}])
+    rows = []
+    for hr, cat, val in [(1, "RASS", -2.0), (2, "RASS", -4.0),   # window 0: min -4
+                         (5, "RASS", 0.0),                        # window 1
+                         (1, "NVPS", 3.0), (2, "NVPS", 7.0),      # window 0: max 7
+                         (5, "NVPS", 1.0)]:                       # window 1
+        rows.append({"encounter_block": 1, "assessment_category": cat,
+                     "numerical_value": val,
+                     "recorded_dttm": anchor + pd.Timedelta(hours=hr)})
+    return cohort, pd.DataFrame(rows)
+
+
+def test_assessment_covariates_applies_the_declared_summary_per_variable():
+    """rass and nvps are summarised in OPPOSITE directions on purpose -- min for
+    deepest sedation, max for worst pain. A single shared rule would be wrong for
+    one of them, and the error would be invisible: both produce a plausible
+    number in range."""
+    cohort, rec = _asm_cohort_and_records()
+    out = B.assessment_covariates({"assessments": rec}, cohort)
+    w0 = out[out["window_idx"] == 0].iloc[0]
+    assert w0["rass"] == -4.0, f"rass must take the window MINIMUM, got {w0['rass']}"
+    assert w0["nvps"] == 7.0, f"nvps must take the window MAXIMUM, got {w0['nvps']}"
+
+
+def test_assessment_covariates_raises_on_a_rule_outside_the_vocabulary():
+    """covariates.json summary_rules says an unlisted rule must raise, not
+    default. This is the one place that promise is load-bearing: pandas .agg
+    accepts "median" happily, so an undeclared rule would produce numbers while
+    violating the protocol, and nothing downstream would report it."""
+    cohort, rec = _asm_cohort_and_records()
+    spec = B.COV["time_varying"]["rass"]
+    original = spec["summary"]
+    spec["summary"] = "median"          # not in summary_rules
+    try:
+        raised = False
+        try:
+            B.assessment_covariates({"assessments": rec}, cohort)
+        except SystemExit as e:
+            raised = "summary_rules" in str(e)
+        assert raised, "an undeclared summary rule must raise SystemExit"
+    finally:
+        spec["summary"] = original
+
+
+def test_assessment_covariates_raises_when_a_declared_category_matches_nothing():
+    """The category filter matches literally and is case-sensitive: UCMC charts
+    RASS and NVPS capitalised but gcs_total lowercase. A mis-cased category would
+    otherwise yield a silently all-NA column."""
+    cohort, rec = _asm_cohort_and_records()
+    rec = rec[rec["assessment_category"] != "NVPS"]
+    try:
+        B.assessment_covariates({"assessments": rec}, cohort)
+    except SystemExit as e:
+        assert "NVPS" in str(e) and "CASE" in str(e)
+    else:
+        raise AssertionError("a declared category matching no rows must raise")
+
+
+def test_assess_needed_covers_every_declared_assessment_plus_the_sofa_input():
+    """ASSESS_NEEDED is the read filter. A category declared in the config but
+    absent from it would be filtered out at load time, and the covariate would
+    then be all-NA with no error -- the exact shape of a config key that is
+    declared and never consumed."""
+    for var, cat in B.ASSESS_VARS.items():
+        assert cat in B.ASSESS_NEEDED, (
+            f"time_varying.{var} declares category {cat!r}, which the read filter "
+            f"would drop: ASSESS_NEEDED = {B.ASSESS_NEEDED}"
+        )
+    assert "gcs_total" in B.ASSESS_NEEDED, "gcs_total is a SOFA input and must still be read"
+
+
 def test_the_extubated_gap_rule_zeroes_dose_and_keeps_the_pre_gate_value():
-    """design_notes.md §10a(a) was DECLARED in covariates.json and never applied
+    """The extubated-gap rule was DECLARED in covariates.json and never applied
     until 2026-09-07. The gate must fire, must fire only on alive-admitted
     not-ventilated windows, and must leave total_dose_ungated recoverable --
     that column is what makes the decision reversible without another run."""
@@ -617,7 +693,7 @@ def test_the_extubated_gap_rule_zeroes_dose_and_keeps_the_pre_gate_value():
     assert out.loc[0, "total_dose"] == 2.0, "a ventilated window must be untouched"
     assert out.loc[1, "total_dose"] == 0.0 and out.loc[1, "bolus_dose"] == 0.0
     assert out.loc[1, "total_dose_ungated"] == 1.5, (
-        "the pre-gate value must survive, or reversing §10a(a) costs a re-run"
+        "the pre-gate value must survive, or reversing the gate costs a re-run"
     )
     assert (out["total_dose_ungated"] == df["total_dose"]).all()
 

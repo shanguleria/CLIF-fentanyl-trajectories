@@ -3,7 +3,7 @@
 Scale is decided per column; bounds are applied per value. A column is rescaled
 only if its distribution says it is on the percent scale; an out-of-range value
 in an otherwise-fractional column is nulled, not rescaled. Ambiguous columns
-raise. Rationale: design_notes.md §11, config/covariates.json oxygenation.fio2_scale.
+raise. Rationale: config/covariates.json oxygenation.fio2_scale.
 """
 from __future__ import annotations
 
