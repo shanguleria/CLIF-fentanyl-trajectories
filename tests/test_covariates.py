@@ -345,29 +345,6 @@ def test_small_cell_thresholds_do_not_contradict_the_site_config():
     )
 
 
-if __name__ == "__main__":
-    import sys, traceback
-
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  PASS  {t.__name__}")
-        except Exception:
-            failed += 1
-            print(f"  FAIL  {t.__name__}")
-            traceback.print_exc(limit=2)
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(1 if failed else 0)
-
-
-# --------------------------------------------------------------- dose states
-# exposure.dose_states is the newest config block, and a config block nothing
-# reads is the failure mode this repo has hit six times: it looks like a policy
-# declaration, so the next person trusts it, and editing it is a no-op. These
-# tests assert the block REACHES the operations it names.
-
 def _r_sources():
     return {f.name: f.read_text()
             for f in (REPO / "code").rglob("*.R")}
@@ -424,3 +401,83 @@ def test_the_dose_bands_and_labels_agree_in_length():
     assert len(spec["labels"]) == len(spec["cuts"]) + 2, (
         "labels = one zero band + one per interval the cuts create")
     assert spec["cuts"] == sorted(set(spec["cuts"])) and spec["cuts"][0] > 0
+
+
+def test_the_exemplar_selection_rule_is_declared_and_consumed():
+    """F1's selection rule is protocol, not a local preference.
+
+    Baker et al., which F1 is modelled on, states no selection rule at all; the
+    whole point of declaring ours is that a reader can check it. A rule that
+    lives in config.json would be worse than none -- that file is gitignored and
+    site-local, so two sites could silently draw exemplars by different rules and
+    the figures would not be comparable. It must be here, and it must actually
+    reach the code that applies it.
+    """
+    spec = COV.get("exemplar")
+    assert spec is not None, "covariates.json must declare an `exemplar` block"
+
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    figure = (REPO / "code" / "05_exemplar.R").read_text()
+
+    # Every declared key must be claimed by someone. A threshold nobody reads is
+    # a policy declaration that is not a policy -- the failure mode this repo
+    # has already hit twice (small_cell_min_den, grid_resolution_minutes).
+    live = {k for k in spec if not k.startswith("_")}
+    unread = {k for k in live if k not in build and k not in figure}
+    assert not unread, (
+        f"exemplar keys declared but read by nothing: {sorted(unread)}. Either "
+        f"consume them or delete them.")
+
+    assert spec["draw"] == "uniform_random_from_eligible", (
+        "the draw must be a seeded uniform draw from the eligible set; a "
+        "weighted score needs weights nobody can defend, and hand-picking "
+        "reintroduces the bias the rule exists to remove")
+    for k in ("require_extubated_by_hours", "min_continuous_hours",
+              "min_boluses", "min_off_fentanyl_gap_hours",
+              "min_rass_observations", "min_nvps_observations"):
+        assert k in spec, f"exemplar rule is missing {k}"
+        assert isinstance(spec[k], int) and spec[k] >= 0, (
+            f"exemplar.{k} must be a non-negative integer, got {spec[k]!r}")
+
+    assert spec["min_boluses"] >= 2, (
+        "F1 must be able to show the near-simultaneous bolus staircase, which "
+        "needs at least two administrations")
+    assert spec["require_extubated_by_hours"] <= COV["windows"]["granular"]["extent_hours"], (
+        "an exemplar cannot be required to extubate after the window ends")
+
+
+def test_the_exemplar_figure_breaks_the_step_at_the_locf_cap():
+    """The panel must not assert a score persisted longer than the analytic
+    table lets it. Both must read the same key rather than restate the number."""
+    figure = (REPO / "code" / "05_exemplar.R").read_text()
+    assert "COV$time_varying$rass$locf$cap_hours" in figure, (
+        "05_exemplar.R must read the step-breaking threshold from the same "
+        "covariates.json key Phase 0 caps LOCF with, never restate it")
+    assert COV["time_varying"]["rass"]["locf"]["cap_hours"] == \
+           COV["time_varying"]["nvps"]["locf"]["cap_hours"], (
+        "rass and nvps must share one cap, or the two panels break at different "
+        "gap lengths for no stated reason")
+
+
+if __name__ == "__main__":
+    import sys, traceback
+
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  PASS  {t.__name__}")
+        except Exception:
+            failed += 1
+            print(f"  FAIL  {t.__name__}")
+            traceback.print_exc(limit=2)
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)
+
+
+# --------------------------------------------------------------- dose states
+# exposure.dose_states is the newest config block, and a config block nothing
+# reads is the failure mode this repo has hit six times: it looks like a policy
+# declaration, so the next person trusts it, and editing it is a no-op. These
+# tests assert the block REACHES the operations it names.

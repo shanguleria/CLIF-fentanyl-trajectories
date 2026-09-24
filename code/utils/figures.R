@@ -152,24 +152,86 @@ risk_table_panel <- function(prevalence, windows, denom_label, x_title = NULL,
   p
 }
 
-# Stack a plot over its risk table, sharing one x axis. Panel widths are matched
-# so the table columns line up under the bands -- the two panels have different
-# y-label widths, so without this the table drifts sideways. The table's panel
-# is given an absolute height; left as the default `null` unit it would claim
-# half the figure.
-stack_with_risk_table <- function(p_main, p_table, row_height = 0.20) {
+# ---- Stacking panels on one shared x axis -------------------------------------
+# Several plots drawn one above the other, sharing an x axis: an area chart over
+# its risk table, or the exemplar's four series. Two things have to be forced.
+#
+# WIDTHS. Each panel has its own y-axis labels, of different widths, so their
+# plot panels would otherwise start at different x positions and the shared axis
+# would be a lie. unit.pmax() across every gtable column aligns them.
+#
+# HEIGHTS. A ggplot panel is `1null`, meaning "share the space equally". Stacking
+# four of those gives four equal panels, and stacking a risk table under a chart
+# gives the table half the figure. Any panel passed an absolute height gets it;
+# those left NA stay `null` and divide what is left.
+#
+# `heights` is in inches, one per plot, NA to leave a panel flexible.
+stack_panels <- function(plots, heights = NULL) {
+  stopifnot("stack_panels needs at least two plots" = length(plots) >= 2)
+  if (is.null(heights)) heights <- rep(NA_real_, length(plots))
+  stopifnot("one height per plot" = length(heights) == length(plots))
+
   # ggplotGrob() measures text, which needs an open graphics device. Under
   # Rscript there is none, so R opens the DEFAULT one and leaves an Rplots.pdf
   # in the repo root on every pipeline run. Measure on a null device instead.
   grDevices::pdf(NULL)
   on.exit(grDevices::dev.off(), add = TRUE)
 
-  g1 <- ggplotGrob(p_main)
-  g2 <- ggplotGrob(p_table)
-  w  <- grid::unit.pmax(g1$widths, g2$widths)
-  g1$widths <- w
-  g2$widths <- w
-  panel <- g2$layout$t[g2$layout$name == "panel"]
-  g2$heights[panel] <- grid::unit(row_height * attr(p_table, "n_rows"), "in")
-  rbind(g1, g2, size = "first")
+  gs <- lapply(plots, ggplotGrob)
+  w  <- Reduce(grid::unit.pmax, lapply(gs, function(g) g$widths))
+  gs <- lapply(seq_along(gs), function(i) {
+    g <- gs[[i]]
+    g$widths <- w
+    if (!is.na(heights[i])) {
+      panel <- g$layout$t[g$layout$name == "panel"]
+      g$heights[panel] <- grid::unit(heights[i], "in")
+    }
+    g
+  })
+  Reduce(function(a, b) rbind(a, b, size = "first"), gs)
+}
+
+# The risk-table case: the chart stays flexible, the table gets exactly the
+# height its rows need.
+stack_with_risk_table <- function(p_main, p_table, row_height = 0.20) {
+  stack_panels(list(p_main, p_table),
+               c(NA, row_height * attr(p_table, "n_rows")))
+}
+
+# ---- Captions ----------------------------------------------------------------
+# Figures here are journal panels: no title, no subtitle. What would have sat on
+# the panel is registered instead and written out as captions.md beside the
+# figures, so the n, the denominator, the seed and the selection rules survive in
+# a form a manuscript can lift. Held in an environment rather than a list so a
+# draw function can register from inside its own scope without `<<-` reaching
+# through whatever happens to enclose it.
+.captions <- new.env(parent = emptyenv())
+
+register_caption <- function(file, title, note) {
+  assign(file, list(title = title, note = note), envir = .captions)
+  invisible(NULL)
+}
+
+# `figures` is the authority on what must exist -- pass the .png entries of the
+# script's OWNED list. A panel whose provenance lives only in the code is a panel
+# nobody can caption later, so a missing entry is an error, not a warning.
+write_captions <- function(path, script, figures, prov) {
+  missing <- setdiff(figures, ls(.captions))
+  stopifnot("every figure must register a caption" = length(missing) == 0)
+  get_cap <- function(f) get(f, envir = .captions)
+  writeLines(c(
+    sprintf("# Figure captions -- %s", script),
+    "",
+    sprintf("Site %s | code %s | generated %s", prov$site_name, prov$code_version,
+            prov$generated),
+    "",
+    "Figures are drawn journal-style, with no title or subtitle on the panel.",
+    "These are the captions; edit for house style, but do not restate the numbers",
+    "from memory -- they are written here by the run that drew the figures.",
+    "",
+    unlist(lapply(figures, function(f) c(
+      sprintf("## `%s`", f), "",
+      sprintf("**%s.** %s", get_cap(f)$title, get_cap(f)$note), "")))),
+    path)
+  invisible(length(figures))
 }

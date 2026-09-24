@@ -827,6 +827,22 @@
         "no_variable_drop_threshold": "No variable is dropped for excess missingness. A variable both frequently missing and poorly predicted by the others is as likely an extract or mapping problem as genuine clinical non-measurement, and that is a finding rather than a reason to discard it.",
         "imputation": "OUT OF SCOPE for Phase 0. 01_build_cohort.py writes NA and reports it; nothing here imputes. Where imputation is later added it must (a) restrict predictors to the target's own window or EARLIER, (b) clamp predictions to the observed range of the target, and (c) never see the outcome or the trajectory class."
     },
+    "exemplar": {
+        "_role": "Selection rule for F1, the single-patient exemplar. PROTOCOL, not a local preference: two sites drawing exemplars by different rules produce figures that cannot be set beside each other. Applied by code/01_build_cohort.py, drawn by code/05_exemplar.R, and restated in the figure caption.",
+        "_why_declared_not_chosen": "Baker et al. Sci Rep 2020;10:10718 Figure 1 is F1's model, and its caption reads only 'Representative ICU admission' with NO stated selection rule -- the figure's weakest point and the one thing F1 must improve on (docs/references.md, F1 entry). A pre-specified filter plus a seeded draw is that improvement: 'one episode was drawn at random from the N meeting criteria X' is a claim a reader can check, where 'we chose a representative patient' is cherry-picking with extra steps.",
+        "_why_a_draw_and_not_a_score": "A weighted score would need weights nobody can defend, and would quietly become an argument about which patient is most photogenic. A filter admits or excludes on stated grounds; the draw among survivors is then arbitrary in the honest sense. If the drawn episode reads badly, CHANGE THE RULE AND RE-RUN -- never hand-pick from the eligible set, which would reintroduce exactly the bias the rule exists to remove.",
+        "require_extubated_by_hours": 72,
+        "min_continuous_hours": 12,
+        "min_boluses": 2,
+        "min_off_fentanyl_gap_hours": 6,
+        "min_rass_observations": 12,
+        "min_nvps_observations": 12,
+        "draw": "uniform_random_from_eligible",
+        "_seed_source": "config.json model.seed. The same seed that draws the 100-episode raster in 03_delivery_states.R.",
+        "_thresholds_DECISION": "SG 2026-09-24. Each criterion exists to make the figure show something it claims to show: min_continuous_hours so there is a real infusion trace to step; min_boluses >= 2 so the near-simultaneous staircase can appear at all; min_off_fentanyl_gap_hours so 'time off fentanyl' is visible as the trace at baseline; the assessment minima so RASS and NVPS are documented throughout rather than in one corner. require_extubated_by_hours makes the panel show the whole arc to liberation instead of stopping at an arbitrary cutoff.",
+        "_thresholds_ARE_TUNABLE": "These are a starting point, not a finding. 01_build_cohort.py prints the funnel -- how many episodes survive each criterion in turn -- so a threshold that empties the pool is visible immediately and can be loosened. Loosening is a protocol change: re-run and restate the rule in the caption.",
+        "_deidentification": "The exported series carries relative hours only, no dates and no identifiers, asserted in code at export and again at draw. The chosen episode id is written to output/intermediate_phi/ and never to the shareable tree."
+    },
     "outlier_bounds": {
         "_source": "config/outlier_config.json, applied by a single shared helper. No bound is ever hardcoded in a pipeline script.",
         "_STATUS": "WRITTEN 2026-09-05. config/outlier_config.json (definition_version 0.1.0), applied by code/utils/outliers.py, tested in tests/test_outliers.py (14 checks, in both runners). Two layers: med_dose_raw per (drug, charted unit) applied BEFORE conversion, med_dose_converted per drug applied AFTER. Angiotensin is bounded there rather than inherited, since clifpy has no angiotensin entry.",

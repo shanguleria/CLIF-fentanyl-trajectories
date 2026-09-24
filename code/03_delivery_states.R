@@ -292,12 +292,6 @@ if (file.exists(ds_file)) {
 # discarded to achieve that: every draw call registers its caption here and the
 # set is written to captions.md beside the figures.
 
-CAPTIONS <- list()
-register_caption <- function(file, title, note) {
-  CAPTIONS[[file]] <<- list(title = title, note = note)
-  invisible(NULL)
-}
-
 
 # --- Delivery-state figures ---------------------------------------------------
 # Alluvial: every episode is a ribbon, its width the number of episodes moving
@@ -566,24 +560,8 @@ cat("written: provenance.json\n")
 # and the ordering rules survive in a form a manuscript can lift directly.
 # Every figure this script writes must appear; a panel whose provenance exists
 # only in the code is a panel nobody can caption later.
-figs <- grep("\\.png$", OWNED$phase, value = TRUE)
-missing <- setdiff(figs, names(CAPTIONS))
-stopifnot("every figure must register a caption" = length(missing) == 0)
-
-writeLines(c(
-  "# Figure captions -- 03_delivery_states.R",
-  "",
-  sprintf("Site %s | code %s | generated %s", prov$site_name, prov$code_version,
-          prov$generated),
-  "",
-  "Figures are drawn journal-style, with no title or subtitle on the panel.",
-  "These are the captions; edit for house style, but do not restate the numbers",
-  "from memory -- they are written here by the run that drew the figures.",
-  "",
-  unlist(lapply(figs, function(f) c(
-    sprintf("## `%s`", f), "",
-    sprintf("**%s.** %s", CAPTIONS[[f]]$title, CAPTIONS[[f]]$note), "")))),
-  file.path(dirs$phase, "captions.md"))
+write_captions(file.path(dirs$phase, "captions.md"), "03_delivery_states.R",
+               grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
 

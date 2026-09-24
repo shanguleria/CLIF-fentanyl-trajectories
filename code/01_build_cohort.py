@@ -93,10 +93,12 @@ PHASE_DIR = "01_cohort"
 OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
-                "hospital_intervals.parquet"],
+                "hospital_intervals.parquet",
+                "exemplar_series.parquet", "exemplar_meta.json",
+                "exemplar_id.txt"],
     "out_final": ["manifest.json"],
     "phase": ["strobe.csv", "strobe.txt", "strobe.png",
-              "provenance.json"],
+              "provenance.json", "exemplar_selection.csv"],
     "diagnostics": ["missingness.csv", "missingness_patterns.csv",
                     "diagnostics.csv"],
 }
@@ -633,8 +635,14 @@ def sedative_exposure(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     return out
 
 
-def bolus_doses(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
-    """Window bolus total / weight / window_hours. Summed, never carried forward."""
+def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+    """Individual bolus administrations: exact admin_dttm, converted mcg, bounded.
+
+    Split out of bolus_doses() on 2026-09-24 so the exemplar export can reach the
+    per-administration grain that the 4h aggregation throws away. ONE copy of the
+    unit conversion and the outlier bound live here -- a second copy is how two
+    places quietly start disagreeing about what a mg is.
+    """
     cats = CONFIG["medications"]["opioid_bolus_categories"]
     b = t["mai"][t["mai"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
@@ -675,6 +683,16 @@ def bolus_doses(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Data
     b["window_idx"] = ((b["admin_dttm"] - b["anchor_dttm"]).dt.total_seconds()
                        // (WINDOW_H * 3600)).astype("Int64")
     b = b[(b["window_idx"] >= 0) & (b["window_idx"] < N_WINDOWS) & b["mcg"].notna()]
+    return b
+
+
+def bolus_doses(b: pd.DataFrame) -> pd.DataFrame:
+    """Window bolus total / weight / window_hours. Summed, never carried forward.
+
+    Takes the per-administration frame from _bolus_events() rather than building
+    it, so the unit conversion and its console report happen once per run even
+    though two consumers now need the result.
+    """
     agg = b.groupby(["encounter_block", "window_idx"], as_index=False).agg(
         bolus_mcg=("mcg", "sum"), n_bolus=("mcg", "size"))
     # mcg delivered in the window, spread over its hours -> mcg/hr, the same scale
@@ -1512,6 +1530,196 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     return tte
 
 
+def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame,
+                    bolus_events: pd.DataFrame, t: dict, dirs: dict) -> None:
+    """Select ONE episode by the declared rule and export its sub-hourly series.
+
+    F1 draws a single patient in detail. Baker et al. Sci Rep 2020;10:10718
+    Figure 1, which F1 is modelled on, is captioned only "Representative ICU
+    admission" and states NO selection rule -- the one thing F1 has to improve
+    on. So the criteria are declared in covariates.json, applied here, and the
+    episode is DRAWN AT RANDOM from those that qualify. Nothing about the choice
+    depends on anyone looking at a patient, which is also what lets the figure be
+    designed without patient data ever being displayed.
+
+    If the drawn episode reads badly, change the RULE and re-run. Picking a
+    different one from the eligible set by eye reintroduces exactly the bias the
+    rule exists to remove.
+    """
+    spec = COV.get("exemplar")
+    if spec is None:
+        raise SystemExit("config/covariates.json declares no `exemplar` block; "
+                         "F1 has no selection rule to apply.")
+    if spec["draw"] != "uniform_random_from_eligible":
+        raise SystemExit(f"unsupported exemplar draw: {spec['draw']!r}")
+
+    print("\nExemplar (F1) selection")
+    anchor_n = long["encounter_block"].nunique()
+
+    # ---- ventilation shape, from the SAME window grid the states use ----------
+    # extubated = alive, admitted, and not on IMV, after having been on it. Read
+    # off imv_status so this figure and code/utils/states.R cannot disagree about
+    # what extubation is.
+    w = long.sort_values(["encounter_block", "window_idx"])
+    w = w.assign(_vent=(w["imv_status"].notna() & (w["imv_status"] == 1)))
+    g = w.groupby("encounter_block", sort=False)
+    ever_vent = g["_vent"].any()
+    # first window that is alive-admitted and NOT ventilated, after ventilation
+    def _extub_window(d):
+        v = d["_vent"].to_numpy()
+        if not v.any():
+            return pd.NA
+        after = np.flatnonzero(~v & d["alive_admitted"].to_numpy())
+        after = after[after > np.flatnonzero(v)[0]]
+        if not len(after):
+            return pd.NA
+        first = after[0]
+        # no reintubation inside the window: the trace ends at extubation, and a
+        # patient who goes back on the vent would make that ending a lie.
+        if v[first:].any():
+            return pd.NA
+        return int(d["window_idx"].to_numpy()[first])
+    extub_w = g.apply(_extub_window, include_groups=False)
+    extub_w.name = "extub_window"
+
+    # ---- fentanyl shape, from the hourly grid --------------------------------
+    gr = grid.sort_values(["encounter_block", "hr"])
+    def _fent(d):
+        r = d["rate"].to_numpy()
+        nz = np.flatnonzero(r > 0)
+        if not len(nz):
+            return pd.Series({"cont_hours": 0, "gap_hours": 0})
+        inner = r[nz[0]:nz[-1] + 1] == 0          # zeros BETWEEN infusions only
+        best = 0
+        run = 0
+        for z in inner:
+            run = run + 1 if z else 0
+            best = max(best, run)
+        return pd.Series({"cont_hours": int((r > 0).sum()), "gap_hours": int(best)})
+    fent = gr.groupby("encounter_block", sort=False).apply(_fent, include_groups=False)
+
+    n_bolus = bolus_events.groupby("encounter_block").size().rename("n_bolus")
+
+    # ---- assessment density, from the RAW timestamped records ----------------
+    asm = t["assessments"].merge(cohort[["encounter_block", "anchor_dttm"]],
+                                 on="encounter_block", how="inner")
+    asm["t_hr"] = ((asm["recorded_dttm"] - asm["anchor_dttm"]).dt.total_seconds()
+                   / 3600.0)
+    asm = asm[(asm["t_hr"] >= 0) & (asm["t_hr"] <= EXTENT_H)]
+    dens = (asm[asm["assessment_category"].isin(["RASS", "NVPS"])]
+            .groupby(["encounter_block", "assessment_category"]).size()
+            .unstack(fill_value=0))
+    for c in ("RASS", "NVPS"):
+        if c not in dens.columns:
+            dens[c] = 0
+
+    f = (pd.DataFrame(index=pd.Index(sorted(long["encounter_block"].unique()),
+                                     name="encounter_block"))
+         .join(extub_w).join(fent).join(n_bolus).join(dens[["RASS", "NVPS"]]))
+    f = f.fillna({"cont_hours": 0, "gap_hours": 0, "n_bolus": 0,
+                  "RASS": 0, "NVPS": 0})
+
+    # ---- the funnel. Printed so a threshold that empties the pool is visible --
+    # immediately, and loosening it is a protocol change rather than a surprise.
+    # The declared deadline is APPLIED, not assumed. It happens to equal the
+    # window extent today, so the check is inert on this config -- but a site
+    # that sets it to 48 must get 48, and a threshold that is read by nothing is
+    # the failure mode tests/test_covariates.py exists to catch.
+    extub_hr_col = f["extub_window"].astype("Float64") * WINDOW_H
+    tests = [
+        (f"extubated by {spec['require_extubated_by_hours']}h, no reintubation",
+         f["extub_window"].notna()
+         & (extub_hr_col <= spec["require_extubated_by_hours"]).fillna(False)),
+        (f"continuous infusion >= {spec['min_continuous_hours']}h",
+         f["cont_hours"] >= spec["min_continuous_hours"]),
+        (f">= {spec['min_boluses']} boluses", f["n_bolus"] >= spec["min_boluses"]),
+        (f"off-fentanyl gap >= {spec['min_off_fentanyl_gap_hours']}h",
+         f["gap_hours"] >= spec["min_off_fentanyl_gap_hours"]),
+        (f">= {spec['min_rass_observations']} RASS",
+         f["RASS"] >= spec["min_rass_observations"]),
+        (f">= {spec['min_nvps_observations']} NVPS",
+         f["NVPS"] >= spec["min_nvps_observations"]),
+    ]
+    keep = pd.Series(True, index=f.index)
+    counts = []
+    for label, ok in tests:
+        alone = int(ok.sum())
+        keep = keep & ok
+        print(f"    {label:<48s} {alone:>6,} alone, {int(keep.sum()):>6,} cumulative")
+        counts.append({"criterion": label, "n_passing_alone": alone,
+                       "n_passing_cumulative": int(keep.sum())})
+    n_eligible = int(keep.sum())
+    print(f"    {'ELIGIBLE':<48s} {n_eligible:>6,} of {anchor_n:,} episodes")
+    counts.append({"criterion": "ELIGIBLE", "n_passing_alone": n_eligible,
+                   "n_passing_cumulative": n_eligible})
+    pd.DataFrame(counts).to_csv(dirs["phase"] / "exemplar_selection.csv", index=False)
+
+    if not n_eligible:
+        print("  NO episode meets every criterion. F1 cannot be drawn; loosen the "
+              "thresholds in covariates.json `exemplar` and re-run.")
+        return
+
+    rng = np.random.default_rng(CONFIG["model"]["seed"])
+    # NOT str(): encounter_block is numeric at this site, and coercing the
+    # drawn key to text made every downstream .loc and == miss.
+    chosen = f.index[keep][rng.integers(n_eligible)]
+    extub_window = int(f.loc[chosen, "extub_window"])
+    extub_hr = float(extub_window * WINDOW_H)
+    # first_imv_episode_hours is computed from the raw records, so it locates
+    # extubation more precisely than the 4h grid can. Use it when the two agree;
+    # the assertion is what stops a silent disagreement becoming a wrong figure.
+    fine = long.loc[long["encounter_block"] == chosen, "first_imv_episode_hours"]
+    fine = float(fine.iloc[0]) if len(fine) and pd.notna(fine.iloc[0]) else np.nan
+    if np.isfinite(fine) and extub_hr <= fine <= extub_hr + WINDOW_H:
+        extub_hr = fine
+    print(f"  drawn at random (seed {CONFIG['model']['seed']}) from {n_eligible:,}; "
+          f"extubated at {extub_hr:.1f}h")
+
+    # ---- the series, de-identified at construction ---------------------------
+    inf = grid[grid["encounter_block"] == chosen][["hr", "rate"]]
+    inf = pd.DataFrame({"t_hr": inf["hr"].astype(float), "series": "infusion",
+                        "value": inf["rate"].astype(float)})
+
+    bo = bolus_events[bolus_events["encounter_block"] == chosen]
+    bo = pd.DataFrame({
+        "t_hr": ((bo["admin_dttm"] - bo["anchor_dttm"]).dt.total_seconds() / 3600.0),
+        "series": "bolus", "value": bo["mcg"].astype(float)})
+
+    a = asm[asm["encounter_block"] == chosen]
+    ord_ = pd.DataFrame({
+        "t_hr": a["t_hr"].astype(float),
+        "series": a["assessment_category"].str.lower(),
+        "value": pd.to_numeric(a["numerical_value"], errors="coerce")})
+    ord_ = ord_[ord_["series"].isin(["rass", "nvps"]) & ord_["value"].notna()]
+
+    series = pd.concat([inf, bo, ord_], ignore_index=True)
+    series = series[(series["t_hr"] >= 0) & (series["t_hr"] <= EXTENT_H)]
+    series = series.sort_values(["series", "t_hr"]).reset_index(drop=True)
+
+    # Asserted, not assumed. Same contract as the 100-episode raster in
+    # 03_delivery_states.R: relative hours only, no dates, no identifiers.
+    ident = {"encounter_block", "patient_id", "hospitalization_id", "anchor_dttm"}
+    assert not (ident & set(series.columns)), "exemplar series carries an identifier"
+    assert not any(pd.api.types.is_datetime64_any_dtype(series[c])
+                   for c in series.columns), "exemplar series carries a datetime"
+    assert set(series.columns) == {"t_hr", "series", "value"}
+    assert series["t_hr"].min() >= 0
+
+    out = dirs["out_phi"]
+    series.to_parquet(out / "exemplar_series.parquet", index=False)
+    with open(out / "exemplar_meta.json", "w") as fh:
+        json.dump({"extent_h": EXTENT_H, "window_h": WINDOW_H,
+                   "extubation_hr": extub_hr, "n_eligible": n_eligible,
+                   "criteria": {k: v for k, v in spec.items()
+                                if not k.startswith("_") and k != "draw"}},
+                  fh, indent=2)
+    # The chosen id stays on the PHI side so the site can reproduce the figure;
+    # it never reaches the shareable tree, where only the rule and the N appear.
+    (out / "exemplar_id.txt").write_text(f"{chosen}\n")
+    print(f"  exemplar series: {len(series):,} rows across "
+          f"{series['series'].nunique()} series")
+
+
 def main() -> None:
     dirs = site_dirs(REPO)
     dirs["phase"] = phase_dir(dirs, PHASE_DIR)
@@ -1566,7 +1774,8 @@ def main() -> None:
     grid = infusion_grid(t, mapping, cohort,
                          CONFIG["medications"]["opioid_infusion_categories"],
                          _to_mcg_hr)
-    bolus = bolus_doses(t, mapping, cohort)
+    bolus_events = _bolus_events(t, mapping, cohort)
+    bolus = bolus_doses(bolus_events)
     long = window_exposure(grid, bolus, windows)
 
     print("\n  Sedatives (descriptive companions, infusions only)")
@@ -1660,6 +1869,11 @@ def main() -> None:
     tte.to_parquet(out / "time_to_event.parquet", index=False)
     tte.to_csv(out / "time_to_event.csv", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
+
+    # Deliberately AFTER the analytic tables are on disk. F1 is a figure input,
+    # not a core table: a fault in the exemplar selection must not cost the whole
+    # Phase 0 rebuild, which is exactly what it did on 2026-09-24.
+    exemplar_export(cohort, long, grid, bolus_events, t, dirs)
     diag = dirs["diagnostics"]
     per_variable.to_csv(diag / "missingness.csv", index=False)
     if len(per_pattern):

@@ -62,7 +62,7 @@ echo "== Phase 0: build cohort (Python) =="
 # unconditional stop(), so with `set -e` its presence in this list made the whole
 # pipeline exit non-zero every time -- the documented one-command build could not
 # succeed. Run a tabled script by hand if you need it: Rscript code/04_gbmt_classes.R
-for s in 02_descriptive_cohort 03_delivery_states 04_landmark_cohort; do
+for s in 02_descriptive_cohort 03_delivery_states 04_landmark_cohort 05_exemplar; do
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done

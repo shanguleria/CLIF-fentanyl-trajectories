@@ -67,11 +67,11 @@ later. Nothing in the current analysis depends on it.
 
 | | Figure | Status |
 |---|---|---|
-| F1 | One example IMV course: continuous fentanyl, boluses, time off fentanyl, with documented RASS and NVPS throughout. Modelled on Baker et al. Figure 1 | data collected; figure to build |
-| F2 | States of 100 example patients as a per-patient raster, same states as the alluvial. Modelled on Iyer et al. Figure 1B; reads as panel A to F4 | to build, no new data needed |
+| F1 | One example IMV course: continuous fentanyl, boluses, time off fentanyl, with documented RASS and NVPS throughout. Modelled on Baker et al. Figure 1 | **exists** — `exemplar` |
+| F2 | States of 100 example patients as a per-patient raster, same states as the alluvial. Modelled on Iyer et al. Figure 1B; reads as panel A to F4 | **exists** — `state_raster` |
 | F3 | Prevalence of states over time | **exists** — `state_prevalence` |
 | F4 | Transitions between states | **exists** — `state_alluvial` |
-| F5 | Point prevalence on an **at-risk denominator**: among patients still ventilated and alive in each window, the fraction receiving ≥1 bolus, a continuous infusion, both, or neither | to build, small |
+| F5 | Point prevalence on an **at-risk denominator**: among patients still ventilated and alive in each window, the fraction receiving ≥1 bolus, a continuous infusion, both, or neither | **exists** — `state_prevalence_at_risk` |
 
 States are **infusion only / bolus only / both / no fentanyl / extubated /
 discharged alive / died**, defined by delivery **route** rather than by a
@@ -79,6 +79,20 @@ threshold, so there are no cut points to defend. `extubated` is **transient**,
 not absorbing — patients are reintubated. A second, parallel definition cuts the
 same windows into declared **intensity bands**; both run over one cohort to
 triangulate. The definitions live once, in `code/utils/states.R`.
+
+**All five figures are drawn journal-style** — no title or subtitle on the
+panel. Each run writes its captions to `captions.md` beside the figures, with a
+guard that no figure may ship without one.
+
+**How the F1 exemplar is selected** was the last open question here and is now
+closed. The criteria are declared in `config/covariates.json` → `exemplar`,
+applied by `01_build_cohort.py`, and the episode is **drawn at random** from
+those that qualify. Baker's figure, which F1 is modelled on, is captioned only
+"Representative ICU admission" and states no rule at all; a declared filter plus
+a seeded draw is the one thing F1 set out to improve on it. If a drawn episode
+reads badly the **rule** changes and the pipeline re-runs — picking a different
+one from the eligible set by eye would reintroduce exactly the bias the rule
+removes.
 
 F5 is the figure that fixes a real dilution in F3: F3's denominator is every
 episode at every window with terminal states carried forward, so the fentanyl
@@ -113,7 +127,6 @@ and returning to it is deliberate future work.
   remifentanil and morphine are not collected. A scope decision.
 - **The weight lag cap.** 11% of blocks take the dose denominator from a weight
   charted after the anchor; median 7h, max ~804h.
-- **How the F1 exemplar is selected**, stated in the figure caption.
 - **Window-width sensitivity** for the state definitions.
 
 ## 7. Where things live
