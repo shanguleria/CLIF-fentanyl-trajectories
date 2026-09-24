@@ -710,6 +710,128 @@ def test_the_gate_does_not_reach_windows_with_no_ventilation_record():
     assert out.loc[0, "total_dose"] == 3.0
 
 
+# ---- the hourly infusion grid ------------------------------------------------
+# The grid is the primary exposure of this project: inf_dose, inf_mcg,
+# total_dose and window_mcg all derive from it, and through them every dose
+# curve, the intensity bands, zero_fraction and the delivery states. Until
+# 2026-09-24 it had NO test of its own -- 57 tests in this file, none of which
+# called it -- and it had been taking the MAXIMUM rate per hour while
+# covariates.json declared the LAST. These pin every rule it is supposed to obey.
+
+_GBASE = pd.Timestamp("2026-01-01 00:00")
+
+
+def _grid_inputs(records, followup_h=B.EXTENT_H):
+    """records: (hour, minute, rate_mcg_hr, action) -> the three frames the grid needs."""
+    mac = pd.DataFrame({
+        "hospitalization_id": ["h0"] * len(records),
+        "med_category": ["fentanyl"] * len(records),
+        "admin_dttm": [_GBASE + pd.Timedelta(hours=h, minutes=mi) for h, mi, _, _ in records],
+        "med_dose": [r for _, _, r, _ in records],
+        "med_dose_unit": ["mcg/hr"] * len(records),
+        "mar_action_category": [a for _, _, _, a in records],
+        "mar_action_group": ["not_administered" if a in ("stop", "held") else "administered"
+                             for _, _, _, a in records],
+    })
+    mapping = pd.DataFrame([{"hospitalization_id": "h0", "encounter_block": 1}])
+    cohort = pd.DataFrame([{"encounter_block": 1, "anchor_dttm": _GBASE,
+                            "followup_end_dttm": _GBASE + pd.Timedelta(hours=followup_h),
+                            "weight_kg": 70.0}])
+    return {"mac": mac}, mapping, cohort
+
+
+def _rates(records, **kw):
+    t, mapping, cohort = _grid_inputs(records, **kw)
+    g = B.infusion_grid(t, mapping, cohort,
+                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+    return g.sort_values("hr")["rate"].tolist()
+
+
+def test_the_hourly_cell_takes_the_last_rate_not_the_highest():
+    """covariates.json exposure.infusion.algorithm: 'Take the LAST charted rate
+    per (block, hour), stable-sorted on (time, value).'
+
+    Sorting on value instead of time returns the MAXIMUM, which is what this
+    code did until 2026-09-24. The two agree on an uptitration and diverge on
+    every downtitration -- measured then at 9,312 cells, error always upward,
+    median 50 mcg/hr, 35.0% of episodes touched."""
+    up = _rates([(0, 5, 50.0, "start"), (0, 40, 100.0, "dose_change")])
+    assert up[0] == 100.0, "an uptitration ends the hour at the higher rate"
+
+    down = _rates([(0, 5, 100.0, "start"), (0, 40, 50.0, "dose_change")])
+    assert down[0] == 50.0, (
+        f"a downtitration must leave the hour at the LAST rate, got {down[0]} -- "
+        f"100.0 means the sort is on value rather than time")
+
+
+def test_a_stop_inside_a_populated_hour_drives_the_cell_to_zero():
+    """The worst case of the max-vs-last bug: a stop is always the lowest rate
+    in its hour, so a value sort hides it behind whatever preceded it."""
+    r = _rates([(0, 5, 100.0, "start"), (0, 40, 100.0, "stop")])
+    assert r[0] == 0.0, f"a charted stop must zero its own hour, got {r[0]}"
+
+
+def test_a_row_charted_not_administered_is_not_drug_given():
+    """mar_action_group is a separate CLIF column from mar_action_category, and
+    a site need not pair them. 802 records carried a positive rate while charted
+    not_administered and were counted at full rate until 2026-09-24."""
+    t, mapping, cohort = _grid_inputs([(0, 5, 100.0, "held")])
+    assert t["mac"].loc[0, "mar_action_group"] == "not_administered"
+    g = B.infusion_grid(t, mapping, cohort,
+                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+    assert g.sort_values("hr")["rate"].iloc[0] == 0.0, (
+        "a rate charted as not administered must not count as drug given")
+
+
+def test_the_grid_carries_forward_only_as_far_as_the_declared_hold():
+    """hold_hours comes from covariates.json exposure.infusion.hold_hours; a
+    hardcoded carry is how the config silently stops governing the pipeline."""
+    hold = B.INF_HOLD_H
+    r = _rates([(0, 0, 100.0, "start"), (hold + 6, 0, 100.0, "verify")])
+    assert r[0] == 100.0
+    assert all(v == 100.0 for v in r[1:hold + 1]), "must carry for exactly hold_hours"
+    assert r[hold + 1] == 0.0, (
+        f"hour {hold + 1} is past the {hold}h hold and must fall to zero, got {r[hold + 1]}")
+
+
+def test_nothing_is_carried_past_the_last_charted_record():
+    r = _rates([(0, 0, 100.0, "start")])
+    assert r[0] == 100.0
+    assert r[B.INF_HOLD_H + 1:] == [0.0] * len(r[B.INF_HOLD_H + 1:]), (
+        "absence_means_zero: after the last record the grid is zero, not carried")
+
+
+def test_absence_before_the_first_record_is_zero_not_backfilled():
+    r = _rates([(3, 0, 100.0, "start")])
+    assert r[:3] == [0.0, 0.0, 0.0], "no drug charted yet means zero, never backfill"
+    assert r[3] == 100.0
+
+
+def test_records_outside_the_window_are_excluded():
+    """Before the anchor and past the granular extent. A negative hour must not
+    fold into hour 0 -- floor division makes -0.5h into -1, not 0."""
+    r = _rates([(-2, 0, 500.0, "start"), (0, 0, 25.0, "start"),
+                (B.EXTENT_H + 1, 0, 500.0, "dose_change")])
+    assert r[0] == 25.0, "a record charted before the anchor must not reach hour 0"
+    assert len(r) <= B.EXTENT_H, "no cell may exist past the granular extent"
+
+
+def test_the_grid_stops_at_the_blocks_followup_end():
+    r = _rates([(0, 0, 100.0, "start")], followup_h=10)
+    assert len(r) == 10, f"the scaffold must stop at followup_end_dttm, got {len(r)} cells"
+
+
+def test_the_carry_forward_never_crosses_an_encounter_block():
+    t, mapping, cohort = _grid_inputs([(0, 0, 100.0, "start")])
+    mapping = pd.DataFrame([{"hospitalization_id": "h0", "encounter_block": 1},
+                            {"hospitalization_id": "h1", "encounter_block": 2}])
+    cohort = pd.concat([cohort, cohort.assign(encounter_block=2)], ignore_index=True)
+    g = B.infusion_grid(t, mapping, cohort,
+                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+    other = g[g["encounter_block"] == 2]["rate"]
+    assert (other == 0.0).all(), "one block's infusion must never bleed into another"
+
+
 if __name__ == "__main__":
     import traceback
 

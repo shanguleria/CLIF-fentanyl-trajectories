@@ -135,7 +135,7 @@ count, because of two design choices we did not make.
 in this repo. Xiao's move — recode a skewed, zero-heavy dose into clinically
 defined **absolute** bands and model the band index — is exactly
 `exposure.dose_states` (`window_mcg` cut at 200 and 400 mcg per 4 h window;
-shares 50.8 / 21.3 / 12.5 / 15.5%), added in `c1c4d29` for the intensity-band
+shares 51.6 / 21.4 / 12.2 / 14.8%), added in `c1c4d29` for the intensity-band
 state definition. Feed **that**, not raw `total_dose`. Four levels over 18
 occasions is coarser than their six over 36, so it would likely want more cuts —
 and those cuts are federation-critical, so widening them is a consortium

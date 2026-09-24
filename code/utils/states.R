@@ -166,7 +166,7 @@ derive_dose_states <- function(d, cuts, labels = DOSE_LABELS) {
   lv <- dose_state_levels(labels)
   # breaks = (-Inf, 0], (0, c1], (c1, c2], (c2, Inf) -- zero is its own band, not
   # the bottom of `low`: giving no fentanyl is a different decision from giving a
-  # little, and 50.8% of ventilated windows are in it.
+  # little, and 51.6% of ventilated windows are in it.
   band <- as.character(cut(d$window_mcg, breaks = c(-Inf, 0, cuts, Inf),
                            labels = labels, right = TRUE))
   vent <- !is.na(d$imv_status) & d$imv_status == 1

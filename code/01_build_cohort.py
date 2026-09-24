@@ -532,13 +532,45 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     m = m.merge(cohort[["encounter_block", "anchor_dttm", "weight_kg"]],
                 on="encounter_block", how="left")
     m["rate"] = rate_fn(m)
-    # A charted stop is a rate of zero, not a missing value.
-    stopped = m.get("mar_action_category", pd.Series(index=m.index, dtype=object))
-    m.loc[stopped.astype("string").str.lower() == "stop", "rate"] = 0.0
+    # A charted stop is a rate of zero, not a missing value -- and so is anything
+    # the nurse recorded as NOT ADMINISTERED. Every `stop` at UCMC is already
+    # `not_administered`, but the two are separate CLIF columns and a site may
+    # not pair them, so both are checked. Measured 2026-09-24: 802 rows carried a
+    # positive rate while charted not_administered and were being counted as drug
+    # given at full rate.
+    act = m.get("mar_action_category", pd.Series(index=m.index, dtype=object))
+    grp = m.get("mar_action_group", pd.Series(index=m.index, dtype=object))
+    not_given = ((act.astype("string").str.lower() == "stop")
+                 | (grp.astype("string").str.lower() == "not_administered"))
+    n_zeroed = int((not_given & (m["rate"] > 0)).sum())
+    m.loc[not_given, "rate"] = 0.0
+    if n_zeroed:
+        print(f"  infusion: {n_zeroed:,} record(s) charted stop/not_administered "
+              f"carried a positive rate and are zeroed")
 
     m["hr"] = ((m["admin_dttm"] - m["anchor_dttm"]).dt.total_seconds() // 3600).astype("Int64")
-    m = m[(m["hr"] >= 0) & (m["hr"] < EXTENT_H) & m["rate"].notna()]
-    last = (m.sort_values(["encounter_block", "hr", "rate"], kind="stable")
+    # A record inside the window whose converted rate is NaN disappears here.
+    # It is not necessarily wrong -- a dose charted with no value cannot be used
+    # -- but a silent drop of exposure is exactly what this pipeline reports
+    # everywhere else, so it is counted out loud.
+    in_window = (m["hr"] >= 0) & (m["hr"] < EXTENT_H)
+    n_nan = int((in_window & m["rate"].isna()).sum())
+    if n_nan:
+        print(f"  infusion: {n_nan:,} of {int(in_window.sum()):,} in-window record(s) "
+              f"carry no convertible rate and are dropped")
+    m = m[in_window & m["rate"].notna()]
+
+    # THE LAST charted rate in the hour, which means sorting on TIME. Until
+    # 2026-09-24 the sort key was ["encounter_block", "hr", "rate"] -- no time
+    # component at all -- so `.last()` returned the HIGHEST rate in the hour.
+    # The two rules agree on a single-record hour and on an uptitration, and
+    # diverge wherever the rate falls inside one. A charted stop is exactly that
+    # case, so a stop was invisible whenever anything else was charted in the
+    # same hour. Measured before the fix: 9,312 cells (21.3% of multi-record
+    # cells) disagreed, the error was ALWAYS upward, median 50 mcg/hr, and 35.0%
+    # of episodes had at least one affected window. covariates.json ->
+    # exposure.infusion.algorithm had declared the correct rule all along.
+    last = (m.sort_values(["encounter_block", "hr", "admin_dttm", "rate"], kind="stable")
               .groupby(["encounter_block", "hr"], as_index=False)["rate"].last())
 
     grid = _hourly_scaffold(cohort).merge(last, on=["encounter_block", "hr"], how="left")
