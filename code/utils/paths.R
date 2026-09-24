@@ -66,7 +66,15 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
   # that nothing writes and cannot tell whether it matters. Remove a retired
   # directory once it is empty -- never one that still holds anything, since
   # that would delete a file nobody declared.
+  # NEVER a directory this run writes to. 02 retires old files that live in its
+  # OWN phase directory, so after clearing them the folder is legitimately empty
+  # and the rule above would delete the directory out from under the script --
+  # which it did, taking all twelve of 02's outputs with it before the first
+  # ggsave failed. A retired path may sit in a live directory; only the dead
+  # ones may be removed.
+  live <- normalizePath(unlist(dirs), mustWork = FALSE)
   for (d in unique(dirname(file.path(root, retired)))) {
+    if (normalizePath(d, mustWork = FALSE) %in% live) next
     if (dir.exists(d) && !length(list.files(d, all.files = TRUE, no.. = TRUE))) {
       unlink(d, recursive = TRUE)
     }

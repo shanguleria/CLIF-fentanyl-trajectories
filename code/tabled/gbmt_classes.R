@@ -1,5 +1,5 @@
 # ==============================================================================
-# 04_gbmt_classes.R  --  Phase 3 -- gbmt classes on combined dose
+# gbmt_classes.R  --  Phase 3 -- gbmt classes on combined dose
 #
 # Purpose : Group-based trajectory model on total fentanyl dose among episodes that received ANY fentanyl in [0, T]; sweep ng and select by the full criterion conjunction.
 # Author  : Shan Guleria
@@ -47,10 +47,10 @@ set.seed(config$model$seed)
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "04_gbmt")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "gbmt")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[04_gbmt_classes] site=%s  clif=%s  data=%s",
+message(sprintf("[gbmt_classes] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -71,14 +71,23 @@ OWNED <- list(
   phase = c("gbmt_exposure_stratum.csv", "gbmt_model_selection.csv",
                 "bic_ng_plot.png",
                 "gbmt_trajectories.png"))
-n_cleared <- clear_owned_outputs(dirs, OWNED)
+# Taken off the number line on 2026-09-24: the live pipeline reclaimed 04 and
+# 05 when the exemplar moved ahead of the states script, so two scripts were
+# claiming each number. These are parked, not part of the sequence, and their
+# folder now says so. The numbered folder is retired -- built with paste0 so a
+# name-level find-and-replace cannot reach the old names (lessons.md #13).
+# Existing results were MOVED, not discarded; this only clears the twin a
+# re-run would otherwise leave behind.
+RETIRED <- file.path("output", "final_no_phi", paste0("04_", "gbmt"),
+                     OWNED$phase)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
 # ---- 5. gbmt ANALYSIS part 1 ----
 # read from  : dirs$out_phi
 # PHI out    : dirs$out_phi
-# aggregate  : dirs$phase   (output/final_no_phi/04_gbmt/)
+# aggregate  : dirs$phase   (output/final_no_phi/gbmt/)
 
 ## ---- Data ----
 # Read landmark_cohort parquet as df foy gbmt
@@ -346,8 +355,8 @@ ggsave(file.path(dirs$phase, "gbmt_trajectories.png"), traj_plot,
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/04_gbmt_classes.R"),
+    paste("Script :", "code/tabled/gbmt_classes.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "04_gbmt_classes_sessioninfo.txt")
+  here("logs", "gbmt_classes_sessioninfo.txt")
 )

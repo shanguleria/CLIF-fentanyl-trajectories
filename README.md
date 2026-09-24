@@ -281,10 +281,13 @@ python3 code/check_config.py
 
 These five steps are the current analysis and are exactly what the runners
 execute. The **tabled** trajectory-modelling scripts moved to `code/tabled/` on
-2026-09-23 (`04_gbmt_classes.R`, `05_lcmm_classes.R`, `06_transition_model.R`,
-`07_outcomes.R`) — see **Objective**. They still run, but by hand:
-`Rscript code/tabled/04_gbmt_classes.R`. They were also removed from both runners,
-because `07_outcomes.R` is an unconditional `stop()` and while it sat in the step
+2026-09-23 (`gbmt_classes.R`, `lcmm_classes.R`, `transition_model.R`,
+`outcomes.R`) — see **Objective**. They still run, but by hand:
+`Rscript code/tabled/gbmt_classes.R`. Their names and output folders carry **no
+step number**: the number line belongs to the live pipeline, and while these
+scripts kept their old numbers two different scripts claimed 04 and two claimed
+05. They were also removed from both runners, because `outcomes.R` is an
+unconditional `stop()` and while it sat in the step
 list `./run_pipeline.sh` exited non-zero on every run — the documented
 one-command build could never succeed.
 
@@ -309,10 +312,10 @@ CLIF-fentanyl-trajectories/
 │   ├── 04_delivery_states.R      # delivery states: prevalence, transitions, figures
 │   ├── 05_landmark_cohort.R      # landmark T (available, not the current analysis)
 │   ├── tabled/                   # trajectory modelling, parked -- not in the runners
-│   │   ├── 04_gbmt_classes.R
-│   │   ├── 05_lcmm_classes.R
-│   │   ├── 06_transition_model.R
-│   │   └── 07_outcomes.R
+│   │   ├── gbmt_classes.R        # -> output/final_no_phi/gbmt/
+│   │   ├── lcmm_classes.R        # -> lcmm/
+│   │   ├── transition_model.R    # -> transitions/
+│   │   └── outcomes.R            #    unnumbered: the number line is the live pipeline's
 │   └── utils/
 │       ├── doses.py              # dose unit conversion (not clifpy's)
 │       ├── fio2.py               # FiO2 scale detection + normalisation

@@ -29,7 +29,7 @@ write a negative literature finding on the strength of a web search.
   Models Using Latent Classes and Latent Processes.* R package v**2.2.2**
   (2025-11-20); manual generated 2026-05-08. `references/lcmm_R.pdf` ✓✓
   — the version pinned in `renv.lock` **and** the version actually loaded by the
-  run: `logs/05_lcmm_classes_sessioninfo.txt` reads `lcmm_2.2.2`. The manual is
+  run: `logs/lcmm_classes_sessioninfo.txt` reads `lcmm_2.2.2`. The manual is
   the right edition for the numbers on disk. Source of the `gridsearch()` /
   multiple-start remedy that this project's `nstart >= 50` decision rests on.
 - **`gbmt` package documentation** — `references/gbmt_R.pdf`; `scaling` formulas

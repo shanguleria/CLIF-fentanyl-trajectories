@@ -111,7 +111,13 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
     # where a reader finds a directory nothing writes and cannot tell whether it
     # matters. Remove a retired directory once it is empty -- never one that
     # still holds anything, which would delete a file nobody declared.
+    # NEVER a directory this run writes to. A script may retire old files that
+    # live in its OWN phase directory, which leaves that directory legitimately
+    # empty -- removing it then deletes the folder out from under the script.
+    live = {Path(v).resolve() for v in dirs.values()}
     for d in {(dirs["out_final"].parent.parent / rel).parent for rel in retired or []}:
+        if d.resolve() in live:
+            continue
         if d.is_dir() and not any(d.iterdir()):
             d.rmdir()
     return n

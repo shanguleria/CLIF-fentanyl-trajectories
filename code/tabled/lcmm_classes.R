@@ -1,5 +1,5 @@
 # ==============================================================================
-# 05_lcmm_classes.R  --  Phase 4 -- lcmm classes on the same data, ARI vs Phase 3
+# lcmm_classes.R  --  Phase 4 -- lcmm classes on the same data, ARI vs Phase 3
 #
 # Purpose : Latent-class mixed model on total fentanyl dose over the identical landmark panel Phase 3 used; sweep ng, evaluate by the same criterion conjunction, and compare the partition to gbmt by adjusted Rand index.
 # Author  : Shan Guleria
@@ -56,10 +56,10 @@ n_groups <- seq(ng_range[1], ng_range[2])
 # ---- 3. Paths and provenance ----
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "05_lcmm")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "lcmm")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[05_lcmm_classes] site=%s  clif=%s  data=%s",
+message(sprintf("[lcmm_classes] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 # ---- 4. Guards ----
@@ -74,7 +74,16 @@ OWNED <- list(
   phase = c("lcmm_ic_comparison.csv", "lcmm_vs_gbmt_ari.csv",
                 "lcmm_trajectories.png", "lcmm_bic_ng_plot.png",
                 "lcmm_provenance.json"))
-n_cleared <- clear_owned_outputs(dirs, OWNED)
+# Taken off the number line on 2026-09-24: the live pipeline reclaimed 04 and
+# 05 when the exemplar moved ahead of the states script, so two scripts were
+# claiming each number. These are parked, not part of the sequence, and their
+# folder now says so. The numbered folder is retired -- built with paste0 so a
+# name-level find-and-replace cannot reach the old names (lessons.md #13).
+# Existing results were MOVED, not discarded; this only clears the twin a
+# re-run would otherwise leave behind.
+RETIRED <- file.path("output", "final_no_phi", paste0("05_", "lcmm"),
+                     OWNED$phase)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 # ---- 5. Data ----
@@ -315,8 +324,8 @@ write_json(prov, file.path(dirs$phase, "lcmm_provenance.json"),
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/05_lcmm_classes.R"),
+    paste("Script :", "code/tabled/lcmm_classes.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "05_lcmm_classes_sessioninfo.txt")
+  here("logs", "lcmm_classes_sessioninfo.txt")
 )

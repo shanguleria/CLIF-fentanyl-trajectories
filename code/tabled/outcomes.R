@@ -1,5 +1,5 @@
 # ==============================================================================
-# 07_outcomes.R  --  Phase 6 -- competing-risks outcome models
+# outcomes.R  --  Phase 6 -- competing-risks outcome models
 #
 # Purpose : Trajectory class as predictor of successful extubation (competing with death and tracheostomy) and of in-hospital death (competing with discharge alive), followed from the landmark.
 # Author  : Shan Guleria
@@ -39,7 +39,7 @@ set.seed(config$model$seed)
 dirs <- site_dirs()
 prov <- provenance(config)
 
-message(sprintf("[07_outcomes] site=%s  clif=%s  data=%s",
+message(sprintf("[outcomes] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -48,7 +48,7 @@ message(sprintf("[07_outcomes] site=%s  clif=%s  data=%s",
 # PHI out    : dirs$out_phi
 # aggregate  : dirs$out_final   (stamp `prov` onto anything shareable)
 
-stop("07_outcomes not yet implemented")
+stop("tabled/outcomes.R not yet implemented")
 
 
 # ---- 5. Provenance -----------------------------------------------------------
@@ -56,8 +56,8 @@ stop("07_outcomes not yet implemented")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/07_outcomes.R"),
+    paste("Script :", "code/tabled/outcomes.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "07_outcomes_sessioninfo.txt")
+  here("logs", "outcomes_sessioninfo.txt")
 )

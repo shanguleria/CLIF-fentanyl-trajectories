@@ -1,11 +1,11 @@
 # ==============================================================================
-# 06_transition_model.R  --  Phase 5 -- discrete-time multinomial transition model
+# transition_model.R  --  Phase 5 -- discrete-time multinomial transition model
 #
 # Purpose : Model where a ventilation episode's fentanyl delivery state goes next, given where it is now, how long it has been there, and how sick the patient is. Whole analytic cohort, 4h windows.
 # Author  : Shan Guleria
 # Created : 2026-09-09
 # Inputs  : output/intermediate_phi/trajectory_long.parquet
-# Outputs : output/intermediate_phi/transition_model.rds; output/final_no_phi/06_transitions/
+# Outputs : output/intermediate_phi/transition_model.rds; output/final_no_phi/transitions/
 #
 # WHY THIS AND NOT A TRAJECTORY CLASS. Phases 3 and 4 established that dose LEVEL
 # carries 66% of the variance, is continuously distributed with no gaps, and that
@@ -74,7 +74,7 @@ stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
 # clustering is handled by resampling PATIENTS with replacement.
 # MEASURED 2026-09-09: one multinom fit over 178,126 transition rows takes ~29s,
 # so 200 replicates is ~1.6h. Override for a quick pass:
-#     TRANSITION_BOOT_REPS=25 Rscript code/06_transition_model.R
+#     TRANSITION_BOOT_REPS=25 Rscript code/tabled/transition_model.R
 # Deliberately NOT in config.json: it does not change the estimand, only the
 # precision of the interval, and putting it there would force every site through
 # a Phase 0 re-run to alter a compute setting.
@@ -86,10 +86,10 @@ stopifnot("TRANSITION_BOOT_REPS must be a positive integer" =
 # ---- 3. Paths and provenance -------------------------------------------------
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "06_transitions")
+dirs$phase <- phase_dir(dirs, "transitions")
 prov <- provenance(config)
 
-message(sprintf("[06_transition_model] site=%s  clif=%s  data=%s",
+message(sprintf("[transition_model] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -116,8 +116,19 @@ OWNED <- list(
 # names, so clear_owned_outputs walks past it forever. phase5_complete_case_loss
 # was written while the missing-indicator decision was still open, and
 # orphaned when it closed.
-RETIRED <- file.path("output", "final_no_phi", "06_transitions",
-                     "phase5_complete_case_loss.csv")
+# Taken off the number line on 2026-09-24: the live pipeline reclaimed 04 and
+# 05 when the exemplar moved ahead of the states script, so two scripts were
+# claiming each number. These are parked, not part of the sequence, and their
+# folder now says so. The numbered folder is retired -- built with paste0 so a
+# name-level find-and-replace cannot reach the old names (lessons.md #13).
+# Existing results were MOVED, not discarded; this only clears the twin a
+# re-run would otherwise leave behind.
+RETIRED <- c(
+  file.path("output", "final_no_phi", paste0("06_", "transitions"),
+            "phase5_complete_case_loss.csv"),
+  file.path("output", "final_no_phi", paste0("06_", "transitions"), OWNED$phase),
+  file.path("output", "final_no_phi", "transitions",
+            "phase5_complete_case_loss.csv"))
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -785,7 +796,7 @@ write_json(prov, file.path(dirs$phase, "phase5_provenance.json"),
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/06_transition_model.R"),
+    paste("Script :", "code/tabled/transition_model.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "06_transition_model_sessioninfo.txt"))
+  here("logs", "transition_model_sessioninfo.txt"))

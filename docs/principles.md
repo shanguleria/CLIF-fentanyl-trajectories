@@ -50,9 +50,11 @@ five figures in §4.
 
 **It is not, for now, a trajectory-classification study.** Group-based and
 multi-trajectory modelling is intended **later work** and is deemed too
-complicated to tackle now. `code/04_gbmt_classes.R` and
-`code/05_lcmm_classes.R` remain in the repo and still run, but they are tabled
-and are not in either runner. Their outputs on disk predate their own scripts —
+complicated to tackle now. `code/tabled/gbmt_classes.R` and
+`code/tabled/lcmm_classes.R` remain in the repo and still run, but they are
+tabled and are not in either runner. They carry no step number, and neither do
+their output folders (`gbmt/`, `lcmm/`, `transitions/`): the number line belongs
+to the live pipeline. Their outputs on disk predate their own scripts —
 do not cite a number from them without re-running. What was learned before
 tabling: dose level is continuously distributed with no subpopulation gaps, so a
 *latent* class claim was not supportable, while a *declared* band — which asserts
