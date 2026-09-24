@@ -372,11 +372,15 @@ fmt_p <- function(p) {
   if (p < 0.001) "<0.001" else sprintf("%.3f", p)
 }
 
-fmt_iqr <- function(v) {
+# `digits` is per-measure, not per-table: a norepinephrine equivalent needs two
+# places to show anything at all, a P/F ratio and an integer index are false
+# precision at one. Default 1 keeps every unspecified row as it was.
+fmt_iqr <- function(v, digits = 1) {
   v <- v[!is.na(v)]
   if (!length(v)) return("--")
   q <- unname(quantile(v, c(0.25, 0.5, 0.75)))
-  sprintf("%.1f (%.1f, %.1f)", q[2], q[1], q[3])
+  f <- sprintf("%%.%df (%%.%df, %%.%df)", digits, digits, digits)
+  sprintf(f, q[2], q[1], q[3])
 }
 fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
                                   100 * k / max(n, 1))
@@ -389,7 +393,7 @@ fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
 # across increasing fentanyl intensity -- not whether any two differ. Spearman
 # rho against the band index is a trend test and is in base R; an omnibus
 # Kruskal-Wallis would answer a weaker question and is easier to over-read.
-row_continuous <- function(label, v, unit = NA_character_) {
+row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
   for (st in c("overall", STRATA)) {
     x <- if (st == "overall") v else v[grp == st]
     POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x, MIN_CELL)
@@ -398,8 +402,8 @@ row_continuous <- function(label, v, unit = NA_character_) {
                                 exact = FALSE)$p.value,
                 error = function(e) NA_real_)
   out <- data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
-                    overall = fmt_iqr(v), stringsAsFactors = FALSE)
-  for (st in STRATA) out[[st]] <- fmt_iqr(v[grp == st])
+                    overall = fmt_iqr(v, digits), stringsAsFactors = FALSE)
+  for (st in STRATA) out[[st]] <- fmt_iqr(v[grp == st], digits)
   out$p_value <- fmt_p(p)
   out$test <- "trend (Spearman)"
   out
@@ -438,12 +442,13 @@ baseline <- rbind(
   row_continuous("Age, years", base$age, "years"),
   row_categorical("Sex", base$sex),
   row_categorical("Race", base$race, collapse = RACE_COLLAPSE),
-  row_continuous("Charlson Comorbidity Index", base$cci, "index"),
+  row_continuous("Charlson Comorbidity Index", base$cci, "index", digits = 0),
   row_continuous("BMI at admission, kg/m2", base$bmi_admission, "kg/m2"),
   row_continuous("Weight, kg", base$weight_kg, "kg"),
   row_continuous("SOFA, first window", base$sofa_total, "points"),
-  row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee, "mcg/kg/min"),
-  row_continuous("P/F ratio, first window", base$oxygenation, "mmHg"),
+  row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee, "mcg/kg/min",
+                 digits = 2),
+  row_continuous("P/F ratio, first window", base$oxygenation, "mmHg", digits = 0),
   row_continuous("Lactate, mmol/L", base$lactate, "mmol/L"),
   row_continuous(sprintf("Fentanyl dose, first window (%s)", UNITS[["fentanyl"]]),
                  base$total_dose, UNITS[["fentanyl"]]),
@@ -452,7 +457,6 @@ baseline <- rbind(
             paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
     base[[DRUGS[[d]]]], UNITS[[d]]))),
   row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours"),
-  row_continuous("IMV episodes per block", base$n_imv_episodes, "count"),
   # Not baseline characteristics -- properties of the stratification itself,
   # reported so its two artifacts stay visible rather than being argued away.
   # At-risk hours expose a duration confound (a short course cannot accumulate
