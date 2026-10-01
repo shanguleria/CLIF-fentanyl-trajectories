@@ -21,12 +21,20 @@ OUT = REPO / "output" / "final_no_phi"
 # out_final is subdivided by the script that produced each file (2026-09-08).
 CONT = OUT / "02_descriptive" / "pooling_continuous.csv"
 CAT = OUT / "02_descriptive" / "pooling_categorical.csv"
-# Phases 1 and 2 share one pooling contract, so both are held to it.
-# 06_landmark since the 2026-09-24 renumbers, as the exemplar and then the
-# titration analysis each took a slot ahead of it. This test caught the stale
+# Phases 1 and 2 shared one pooling contract and both were held to it, the second
+# through 06_landmark/ after the 2026-09-24 renumbers. This test caught the stale
 # path the first time and is the reason it is worth keeping accurate.
-ALL_CONT = [CONT, OUT / "06_landmark" / "pooling_continuous.csv"]
-ALL_CAT = [CAT, OUT / "06_landmark" / "pooling_categorical.csv"]
+#
+# COVERAGE LOSS, 2026-09-30. landmark_cohort.R was tabled and is no longer run, so
+# its pooling exports are not regenerated and cannot be held to the contract
+# without re-running a tabled script by hand. Both entries are removed rather than
+# left to fail, and the consequence is recorded here rather than silently
+# absorbed: ONE producer is now checked, not two. The contract itself is
+# unchanged. If a second live script ever emits pooling_*.csv -- 06_unit_variation.R
+# deliberately does not, it suppresses directly -- add it to these lists in the
+# same change that adds the writer.
+ALL_CONT = [CONT]
+ALL_CAT = [CAT]
 TOL = 1e-5          # the exports are rounded to 6 decimals
 
 

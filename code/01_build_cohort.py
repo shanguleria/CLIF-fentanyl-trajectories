@@ -4,6 +4,8 @@ Outputs (PHI, written to output/intermediate_phi/):
     trajectory_long.parquet     one row per encounter block per window
     time_to_event.parquet       one row per encounter block
     hospital_intervals.parquet  one row per ADT interval
+    care_intervals.parquet      one row per attributed care-location stay, relative clock
+    assessment_events.parquet   raw pain/sedation scores, on the relative clock
 
 Protocol: config/covariates.json.
 """
@@ -93,10 +95,11 @@ PHASE_DIR = "01_cohort"
 OWNED = {
     "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
-                "hospital_intervals.parquet",
+                "hospital_intervals.parquet", "care_intervals.parquet",
                 "exemplar_series.parquet", "exemplar_meta.json",
                 "exemplar_id.txt",
-                "titration_rate_events.parquet", "titration_bolus_events.parquet"],
+                "titration_rate_events.parquet", "titration_bolus_events.parquet",
+                "assessment_events.parquet"],
     "out_final": ["manifest.json"],
     "phase": ["strobe.csv", "strobe.txt", "strobe.png",
               "provenance.json", "exemplar_selection.csv"],
@@ -122,6 +125,10 @@ RETIRED_OUTPUTS = [
     f"output/final_no_phi/diagnostics/{_P0}missingness.csv",
     f"output/final_no_phi/diagnostics/{_P0}missingness_patterns.csv",
     f"output/final_no_phi/diagnostics/{_P0}diagnostics.csv",
+    # icu_intervals.parquet became care_intervals.parquet on 2026-09-30, when the
+    # ED joined the ICU as an attributed location and the old name became a lie.
+    # Built with an f-string for the same reason as the prefixes above.
+    f"output/intermediate_phi/{'icu_'}intervals.parquet",
     # the phase0_ prefix itself retired 2026-09-23 -- the phases are gone
     f"output/final_no_phi/{_P0}manifest.json",
     f"output/final_no_phi/01_cohort/{_P0}strobe.csv",
@@ -164,7 +171,19 @@ VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
 # gcs_total is unioned in explicitly: it is a SOFA INPUT carried by
 # _sofa_inputs() with its own cap, not a declared time_varying covariate, so
 # it is absent from ASSESS_VARS and would be dropped from the read filter.
-ASSESS_NEEDED = sorted(set(ASSESS_VARS.values()) | {"gcs_total"})
+#
+# The indication instruments are unioned in for the same reason, and they are
+# deliberately NOT time_varying covariates: assessment_covariates() raises
+# SystemExit when a declared category matches no rows, which is right for a
+# required covariate and fatal for an optional one. CPOT is not charted at
+# UCMC. Iterating the config's own keys rather than naming instruments here
+# means a site adding BPS or PAINAD edits config only.
+INDICATION = COV.get("indication", {})
+INDICATION_INSTRUMENTS = sorted(
+    set(INDICATION.get("pain_instruments", {}))
+    | set(INDICATION.get("sedation_instruments", {})))
+ASSESS_NEEDED = sorted(set(ASSESS_VARS.values()) | {"gcs_total"}
+                       | set(INDICATION_INSTRUMENTS))
 
 
 def _kw(**extra) -> dict:
@@ -358,7 +377,14 @@ def build_blocks(t: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def hospital_intervals(t: dict, mapping: pd.DataFrame) -> pd.DataFrame:
-    cols = [c for c in ("hospital_id", "hospital_type", "in_dttm", "out_dttm")
+    # location_* joined the whitelist on 2026-09-30 for 06_unit_variation.R.
+    # clifpy's adt schema makes location_category and location_type REQUIRED
+    # category columns and location_name optional free text, and
+    # stitch_encounters already demands location_category, so the first two are
+    # guaranteed wherever this pipeline runs at all. The `if c in` guard still
+    # covers a site without location_name.
+    cols = [c for c in ("hospital_id", "hospital_type", "in_dttm", "out_dttm",
+                        "location_category", "location_name", "location_type")
             if c in t["adt"].columns]
     if "hospital_id" not in cols:
         raise SystemExit("adt has no hospital_id; stitch_encounters requires it")
@@ -381,6 +407,129 @@ def hospital_endpoints(hi: pd.DataFrame) -> pd.DataFrame:
     n_moved = int((ends["hospital_id_admission"] != ends["hospital_id_discharge"]).sum())
     note("blocks transferring between hospitals", n_moved)
     return ends
+
+
+def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+    """Care-location stays per episode, on the relative clock, for 06_unit_variation.R.
+
+    NO DERIVATION, exactly as titration_export() does it. The attribution rule --
+    which unit gets credit for a titration event -- is an analysis parameter, so
+    it lives in the R script. Emitting raw intervals on the same relative clock
+    the events already use means the rule can change for the cost of an R re-run
+    and never a Phase 0 rebuild.
+
+    A RELATIVE CLOCK, AND NOTHING ELSE. `in_dttm`/`out_dttm` are real calendar
+    timestamps; hours since the anchor are not. The datetime assert below is the
+    same contract exemplar_export() and titration_export() hold.
+
+    Unit labels are NOT reduced to one per episode here. Two different
+    denominators, both measured at UCMC on 2026-09-30 and neither a substitute
+    for the other: 11.0% of ICU HOSPITALIZATIONS touch more than one unit, while
+    6.4% of ATTRIBUTED EPISODES do so inside the 72h observation window, the
+    window being the shorter span. The second is the one that bears on
+    attribution. covariates.json's `_DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE` records what
+    collapsing to an admitting label costs: CRRT-dose-lmtp "silently discarded
+    the very variation that makes it worth carrying, and at a single-hospital
+    site the loss would have been invisible."
+    """
+    spec = COV.get("unit_variation")
+    if spec is None:
+        raise SystemExit("config/covariates.json declares no `unit_variation` block")
+    cats = [str(c).lower() for c in spec["attributed_location_categories"]]
+
+    if "location_category" not in hi.columns:
+        raise SystemExit(
+            "adt carries no location_category, which clifpy's schema makes a "
+            "required column and stitch_encounters already demands. "
+            "06_unit_variation.R cannot run without it.")
+    keep = [c for c in ("location_name", "location_type") if c in hi.columns]
+    if not keep:
+        raise SystemExit(
+            "adt carries neither location_name nor location_type; there is no "
+            "unit label to attribute a titration event to.")
+
+    lc = hi["location_category"].astype("string").str.lower()
+    icu = hi[lc.isin(cats)].copy()
+    for c in cats:
+        note(f"adt intervals with location_category == {c!r}", int((lc == c).sum()))
+    # Everything NOT attributed, so the exclusion is visible rather than implied.
+    for c, n in lc[~lc.isin(cats)].value_counts().items():
+        note(f"  not attributed: location_category == {c!r}", int(n))
+    icu = icu.merge(cohort[["encounter_block", "anchor_dttm"]],
+                    on="encounter_block", how="inner", validate="many_to_one")
+
+    icu["t_start_hr"] = (icu["in_dttm"] - icu["anchor_dttm"]).dt.total_seconds() / 3600.0
+    icu["t_end_hr"] = (icu["out_dttm"] - icu["anchor_dttm"]).dt.total_seconds() / 3600.0
+
+    # An open-ended stay (no out_dttm charted) runs to the end of the grid rather
+    # than being dropped. Dropping it would silently unattribute every event in a
+    # patient still in the unit when the extract was cut.
+    n_open = int(icu["t_end_hr"].isna().sum())
+    if n_open:
+        icu.loc[icu["t_end_hr"].isna(), "t_end_hr"] = float(EXTENT_H)
+        note("ICU intervals with no out_dttm, run to the end of the grid", n_open)
+    icu = icu[icu["t_start_hr"].notna()]
+
+    # Discard non-overlapping intervals BEFORE clipping. A stay that ended before
+    # intubation has t_end_hr <= 0; clipping first would collapse it to a
+    # zero-width interval sitting exactly on the anchor, which is not nothing --
+    # it would claim hour 0 for the wrong unit.
+    icu = icu[(icu["t_end_hr"] > 0) & (icu["t_start_hr"] < EXTENT_H)].copy()
+    icu["t_start_hr"] = icu["t_start_hr"].clip(lower=0.0)
+    icu["t_end_hr"] = icu["t_end_hr"].clip(upper=float(EXTENT_H))
+
+    # care_setting = location_type where CLIF populates it, else
+    # location_category. Emitted ALONGSIDE the raw columns, never overwriting
+    # location_type: silently redefining a CLIF column name to mean something
+    # else is how the next reader is misled. location_type is non-null only for
+    # ICU rows, so this yields the mCIDE ICU types plus the other attributed
+    # categories by name.
+    if "location_type" in icu.columns:
+        icu["care_setting"] = (icu["location_type"].astype("string")
+                               .fillna(icu["location_category"].astype("string")))
+    else:
+        icu["care_setting"] = icu["location_category"].astype("string")
+    assert icu["care_setting"].notna().all(), "an attributed interval has no care_setting"
+
+    cols = ["encounter_block", "care_setting"] + keep + ["location_category",
+                                                         "t_start_hr", "t_end_hr"]
+    out = (icu[cols]
+           .sort_values(["encounter_block", "t_start_hr"], kind="stable")
+           .reset_index(drop=True))
+
+    # Overlapping intervals inside one block would let a single event match two
+    # units and be counted twice. Loud rather than silently de-duplicated: if a
+    # site's adt has overlaps, that is a fact about the data the site must see.
+    nxt = out.groupby("encounter_block")["t_start_hr"].shift(-1)
+    overlap = (out["t_end_hr"] > nxt).fillna(False)
+    if overlap.any():
+        blocks = out.loc[overlap, "encounter_block"].nunique()
+        raise SystemExit(
+            f"{int(overlap.sum())} overlapping ICU interval(s) across {blocks} "
+            f"encounter block(s). An event inside an overlap would be attributed "
+            f"to two units and counted twice. Resolve in the ADT extract.")
+
+    assert not any(pd.api.types.is_datetime64_any_dtype(out[c]) for c in out.columns), \
+        "care_intervals carries a datetime"
+    # Guarded on emptiness: min()/max() of an empty column is NaN, and every
+    # comparison against NaN is False, so an unguarded bound assert would fail
+    # here with "outside the grid" at a site whose ICU stays simply do not
+    # overlap the observation window -- a misleading message for a legitimate,
+    # if degenerate, state.
+    if len(out):
+        assert out["t_start_hr"].min() >= 0 and out["t_end_hr"].max() <= EXTENT_H, \
+            f"care_intervals fall outside [0, {EXTENT_H}]"
+        assert (out["t_end_hr"] > out["t_start_hr"]).all(), \
+            "care_intervals contains a zero-width or inverted interval"
+
+    n_blocks = out["encounter_block"].nunique()
+    per_block = out.groupby("encounter_block")["care_setting"].nunique()
+    pct_multi = 100 * float((per_block > 1).mean()) if len(per_block) else 0.0
+    print(f"  care_intervals: {len(out):,} stay(s) across {n_blocks:,} of "
+          f"{cohort['encounter_block'].nunique():,} episodes; "
+          f"settings {sorted(out['care_setting'].unique())}; "
+          f"{pct_multi:.1f}% of attributed episodes touch more than one")
+    return out
 
 
 def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
@@ -1371,6 +1520,21 @@ def time_invariant(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
     note("blocks with no diagnosis rows (CCI unknown, not 0)",
          int((~ti["encounter_block"].isin(with_dx)).sum()))
     ti.loc[~ti["encounter_block"].isin(with_dx), "cci"] = np.nan
+
+    # Calendar year of the anchor, for code/06_unit_variation.R. An INTEGER, not
+    # a date: year alone is what HIPAA safe harbour permits, and an int is what
+    # the no-datetime asserts on the shareable side will accept. The anchor is
+    # the start of ventilation rather than admission, so an episode is labelled
+    # by the year care was given, not the year the patient arrived -- the two
+    # differ only across a new-year boundary.
+    year_from = COV["unit_variation"]["year_from"]
+    ti = ti.merge(cohort[["encounter_block", year_from]],
+                  on="encounter_block", how="left", validate="one_to_one")
+    ti["anchor_year"] = ti[year_from].dt.year.astype("Int64")
+    ti = ti.drop(columns=[year_from])
+    assert ti["anchor_year"].notna().all(), "an episode has no anchor year"
+    yrs = ti["anchor_year"]
+    note(f"anchor years spanned ({int(yrs.min())}-{int(yrs.max())})", int(yrs.nunique()))
     return ti
 
 
@@ -1834,9 +1998,31 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
                  .dt.total_seconds() / 3600.0).to_numpy(),
         "mcg": bolus_events["mcg"].astype(float).to_numpy(),
     })
+    # DETERMINISTIC TIE-BREAK, not merely a stable sort. 402 rate records (0.14%)
+    # share an exact (encounter_block, t_hr) with another record carrying a
+    # DIFFERENT rate, in 201 groups. A stable sort preserves upstream order for
+    # those, and upstream order is not reproducible across runs -- measured
+    # 2026-09-30, two runs of identical input gave 37,244 and 37,245 classified
+    # events, because whichever tied record lands second becomes `prev_rate` for
+    # the next one and one delta crossed the threshold.
+    #
+    # Ties resolve toward the HIGHER rate, the convention
+    # covariates.json.predominant_intensity.tie_break already sets for this
+    # project: a tie is never settled in the direction of less exposure. The
+    # charted data genuinely does not say which of two simultaneous records came
+    # last, so this is a declared rule rather than a recovery of the truth --
+    # see the open item in .claude/claude-todo.md.
+    rate.sort_values(["encounter_block", "t_hr", "rate", "action"],
+                     kind="stable", inplace=True)
+    bol.sort_values(["encounter_block", "t_hr", "mcg"], kind="stable", inplace=True)
     for f in (rate, bol):
-        f.sort_values(["encounter_block", "t_hr"], kind="stable", inplace=True)
         f.reset_index(drop=True, inplace=True)
+
+    ambiguous = rate.duplicated(subset=["encounter_block", "t_hr"], keep=False)
+    n_amb = int(rate[ambiguous].groupby(["encounter_block", "t_hr"])["rate"]
+                .nunique().gt(1).sum())
+    note("rate records at a tied timestamp", int(ambiguous.sum()))
+    note("tied groups where the rate differs (order was decided by rule)", n_amb)
 
     # A relative clock, and nothing else. Same contract as exemplar_export().
     for name, f in (("rate", rate), ("bolus", bol)):
@@ -1856,6 +2042,76 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
     print(f"  titration: {len(rate):,} rate record(s) and {len(bol):,} bolus record(s) "
           f"across {rate['encounter_block'].nunique():,} episodes "
           f"({100 * frac:.1f}% sub-hourly timestamps)")
+
+
+def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
+    """Export raw pain and sedation scores on a relative clock.
+
+    For code/05_titration.R's indication analysis, which asks whether a dose
+    change had a documented pain score or agitation near it.
+
+    NO THRESHOLDING, NO WINDOWING -- the same contract titration_export() holds
+    and for the same reason. The cut points and the window are analysis
+    parameters, so classifying happens in the R script. Keeping raw values here
+    means the 1-4h sensitivity sweep costs nothing and never needs a Phase 0
+    re-run, and a consortium change to a threshold is a config edit.
+
+    AN ABSENT INSTRUMENT IS REPORTED, NOT FATAL. CPOT is not charted at UCMC.
+    assessment_covariates() raises on a category matching no rows, which is
+    correct there and wrong here -- these instruments are optional and
+    site-specific. A zero-record line is printed loudly instead, because an
+    instrument that vanishes silently is how a site finds out much later that
+    it was never captured.
+    """
+    spec = COV.get("indication")
+    if spec is None:
+        raise SystemExit("config/covariates.json declares no `indication` block")
+    instruments = {**spec["pain_instruments"], **spec["sedation_instruments"]}
+
+    asm = t["assessments"].merge(cohort[["encounter_block", "anchor_dttm"]],
+                                 on="encounter_block", how="inner")
+    asm["t_hr"] = ((asm["recorded_dttm"] - asm["anchor_dttm"]).dt.total_seconds()
+                   / 3600.0)
+    asm = asm[(asm["t_hr"] >= 0) & (asm["t_hr"] <= EXTENT_H)]
+
+    keep = []
+    for name in sorted(instruments):
+        sub = asm[asm["assessment_category"] == name]
+        sub = sub[sub["numerical_value"].notna()]
+        if sub.empty:
+            print(f"    {name:.<24} 0 records at this site -- declared in "
+                  f"covariates.json indication, not charted here")
+            continue
+        print(f"    {name:.<24} {len(sub):,} record(s), "
+              f"{sub['encounter_block'].nunique():,} episode(s)")
+        keep.append(pd.DataFrame({
+            "encounter_block": sub["encounter_block"].to_numpy(),
+            "t_hr": sub["t_hr"].astype(float).to_numpy(),
+            "instrument": name,
+            "value": sub["numerical_value"].astype(float).to_numpy(),
+        }))
+
+    if not keep:
+        raise SystemExit(
+            "not one declared indication instrument matched a row. Check the "
+            "category spellings and their CASE -- the filter matches literally.")
+
+    out = (pd.concat(keep, ignore_index=True)
+             .sort_values(["encounter_block", "t_hr", "instrument"], kind="stable")
+             .reset_index(drop=True))
+
+    # A relative clock, and nothing else. Same contract as titration_export().
+    assert not any(pd.api.types.is_datetime64_any_dtype(out[c]) for c in out.columns), \
+        "assessment events carry a datetime"
+    assert out["t_hr"].min() >= 0 and out["t_hr"].max() <= EXTENT_H, \
+        f"assessment events fall outside [0, {EXTENT_H}]"
+
+    missing = sorted(set(instruments) - set(out["instrument"].unique()))
+    out.to_parquet(dirs["out_phi"] / "assessment_events.parquet", index=False)
+    print(f"  assessment_events: {len(out):,} record(s) across "
+          f"{out['encounter_block'].nunique():,} episodes; "
+          f"instruments present {sorted(out['instrument'].unique())}"
+          + (f"; ABSENT AT THIS SITE {missing}" if missing else ""))
 
 
 def main() -> None:
@@ -1932,6 +2188,7 @@ def main() -> None:
     long = gate_dose_on_ventilation(long)
 
     hi = hi[hi["encounter_block"].isin(cohort["encounter_block"])]
+    icu = care_intervals(hi, cohort)
     ti = time_invariant(t, mapping, cohort).merge(bmi, on="encounter_block", how="left")
     ti = ti.merge(ends, on="encounter_block", how="left")
     long = long.merge(ti.drop(columns=["patient_id"]), on="encounter_block", how="left")
@@ -2007,12 +2264,14 @@ def main() -> None:
     tte.to_parquet(out / "time_to_event.parquet", index=False)
     tte.to_csv(out / "time_to_event.csv", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
+    icu.to_parquet(out / "care_intervals.parquet", index=False)
 
     # Deliberately AFTER the analytic tables are on disk. F1 is a figure input,
     # not a core table: a fault in the exemplar selection must not cost the whole
     # Phase 0 rebuild, which is exactly what it did on 2026-09-24.
     exemplar_export(cohort, long, grid, bolus_events, t, dirs)
     titration_export(cohort, t, mapping, bolus_events, dirs)
+    assessment_export(cohort, t, dirs)
     diag = dirs["diagnostics"]
     per_variable.to_csv(diag / "missingness.csv", index=False)
     if len(per_pattern):
@@ -2033,12 +2292,14 @@ def main() -> None:
         "trajectory_long": len(long),
         "time_to_event": len(tte),
         "hospital_intervals": len(hi),
+        "care_intervals": len(icu),
     })
 
     print(f"\nwritten to {out}")
     print(f"  trajectory_long.parquet  {len(long):,} rows x {long.shape[1]} cols")
     print(f"  time_to_event.parquet    {len(tte):,} rows")
     print(f"  hospital_intervals.parquet {len(hi):,} rows")
+    print(f"  care_intervals.parquet   {len(icu):,} rows")
     for name in ("trajectory_long.csv", "time_to_event.csv"):
         mb = (out / name).stat().st_size / 1e6
         print(f"  {name:<26} {mb:,.1f} MB  (review copy)")

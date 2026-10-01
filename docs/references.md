@@ -327,13 +327,46 @@ not its subject.
   `gbmt`/`lcmm`. Two phenotypes. Its real value is as a second instance of the
   critique our own latent-class work ran into: two "phenotypes" that largely track a continuous
   severity and ventilator-load gradient.
-- **Myers LC, Bosch NA, … Walkey AJ.** Opioid administration practice patterns in
-  patients with acute respiratory failure who undergo invasive mechanical
-  ventilation. *Crit Care Explor* 2024;6(7):e1123; PMC11257673 ✓ — **no local
-  PDF.**
-  — nearest epidemiology comparator: 21 ICUs, infusion *and* bolus opioid in
-  morphine-milligram equivalents. Cite for context, not figure design (its
-  figures are hospital-level caterpillar plots).
+- **Myers LC, Bosch NA, Soltesz L, … Liu VX, Walkey AJ.** Opioid administration
+  practice patterns in patients with acute respiratory failure who undergo
+  invasive mechanical ventilation. *Crit Care Explor* 2024;6(7):e1123.
+  [doi:10.1097/CCE.0000000000001123](https://doi.org/10.1097/CCE.0000000000001123);
+  **PMID 39018285**; PMC11257673 ✓ — **no local PDF.**
+  — nearest epidemiology comparator: 13,140 patients across 21 KPNC hospitals
+  plus 52,033 across 96 Philips eRI hospitals / **148 ICUs**; infusion *and*
+  bolus opioid in morphine-milligram equivalents.
+  — **METHODS PRECEDENT for `06_unit_variation.R`'s deferred model** (promoted
+  from "cite for context, not figure design" on 2026-09-30). They fit a
+  **hierarchical logistic regression** for infusion use and hierarchical linear
+  regression for dose, with **hospital as a random intercept**, adjusted for
+  patient- and hospital-level fixed effects, and reported **ICCs of 7% (95% CI
+  3–11) at KPNC and 39% (28–49) in eRI** for opioid infusion use.
+  — **Correction, verified 2026-09-30:** this entry previously asserted "its
+  figures are hospital-level caterpillar plots." The words *caterpillar* and
+  *forest* appear **nowhere** in the paper. Figures 1 and 2 plot, in their own
+  words, "the mode of the conditional distribution of the random effects" —
+  conditional modes with conditional-variance bands, **on the log-odds scale,
+  centered at 0**, hospitals ranked by predicted value. That is the construction
+  of a caterpillar plot but not the paper's word for it, and more importantly it
+  is an estimand (shrunken, risk-adjusted deviation from average) rather than an
+  observed rate. `06_unit_variation.R` ships the unadjusted observed proportion
+  with a cluster-bootstrap interval; the two are sequential, not competing.
+
+- **Bosch NA, Myers LC, Jafarzadeh SR, Wunsch H, Stevens JP, Liu VX, Walkey AJ.**
+  Temporal trends in use of opioids for patients with acute respiratory failure
+  following "analgesia-first" sedation guidelines. *Ann Am Thorac Soc*
+  2024;21(1):179–183.
+  [doi:10.1513/AnnalsATS.202307-632RL](https://doi.org/10.1513/AnnalsATS.202307-632RL);
+  PMID 37847821; PMC10867903 ✓ — **no local PDF.**
+  — the **secular-trend** comparator, and the closest published analogue to
+  `06_unit_variation.R`'s `year_trend.png`. Read this before interpreting the
+  UCMC year series as a local phenomenon.
+- Variation in opioid administration among patients mechanically ventilated with
+  acute respiratory failure. *AJRCCM* 2024;209(Suppl 1):A5033 — ATS conference
+  abstract, appears to be the meeting version of e1123 above; author list not
+  verified here. Cite the journal article, not this. Noted only because a search
+  for "variation in opioid administration" surfaces it first and the two are
+  easily conflated.
 
 ## Multistate and transition models
 

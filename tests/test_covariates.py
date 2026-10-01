@@ -548,6 +548,179 @@ def test_the_stratification_is_never_called_a_trajectory():
             assert "trajectory" not in low and "latent class" not in low, (
                 f"{rel} names the stratification a trajectory: {line.strip()[:70]}")
 
+
+# ----------------------------------------------------------- unit variation
+# Splitting the titration metric by ICU unit and calendar year. The attribution
+# rule and the resample count are protocol: two sites crediting units by
+# different rules, or drawing different numbers of resamples, produce intervals
+# that cannot be set beside each other.
+
+def test_the_unit_variation_rule_is_declared_and_consumed():
+    """Two of these keys are read by Phase 0, which emits care_intervals.parquet
+    and anchor_year, and the rest by the R script that splits the metric. Every
+    declared key must reach the code that applies it -- the same check that
+    caught `require_extubated_by_hours` declared and never read."""
+    spec = COV.get("unit_variation")
+    assert spec is not None, "covariates.json must declare a `unit_variation` block"
+
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    figure = (REPO / "code" / "06_unit_variation.R").read_text()
+    live = {k for k in spec if not k.startswith("_")}
+    unread = {k for k in live if k not in build and k not in figure}
+    assert not unread, (
+        f"unit_variation keys declared but read by nothing: {sorted(unread)}. "
+        f"Either consume them or delete them.")
+
+    assert spec["bootstrap_resamples"] > 0
+    assert spec["min_events_per_unit"] >= TEMPLATE["reporting"]["small_cell_min_den"], (
+        "min_events_per_unit must clear reporting.small_cell_min_den, which is "
+        "the disclosure floor, not a suggestion")
+    assert "care_setting" in spec["unit_keys"], (
+        "care_setting (location_type, else location_category) is the only unit "
+        "key another CLIF site can reproduce -- both inputs are required mCIDE "
+        "columns, where location_name is optional free text. Dropping it would "
+        "make this analysis unpoolable.")
+    assert spec["year_from"] in ("anchor_dttm", "block_admission_dttm"), (
+        "year_from must name a datetime the cohort frame actually carries")
+
+
+def test_anchor_year_is_declared_so_the_build_must_produce_it():
+    """assert_config_is_honoured() fails the build when a declared time_invariant
+    key reaches no column. Declaring anchor_year there is what makes the column a
+    guarded contract rather than an incidental side effect of Phase 0."""
+    ti = COV["time_invariant"]
+    assert "anchor_year" in ti, (
+        "anchor_year must be declared in time_invariant, or nothing checks that "
+        "Phase 0 actually built it")
+    assert ti["anchor_year"]["source"]["column"] == COV["unit_variation"]["year_from"], (
+        "the declared source column and unit_variation.year_from have drifted")
+
+
+def test_the_unit_split_is_never_called_a_quality_measure():
+    """No evidence establishes that pairing a bolus with an up-titration is
+    better care, so a unit with a lower rate is not worse. The words are banned
+    from the code that builds the split -- the same guard, for the same reason,
+    as test_the_stratification_is_never_called_a_trajectory."""
+    banned = ("quality", "performance", "benchmark")
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue              # comments may discuss why it is NOT one
+        low = line.lower()
+        hit = [w for w in banned if w in low]
+        assert not hit, (
+            f"06_unit_variation.R calls the split a {hit[0]} measure: "
+            f"{stripped[:70]}")
+
+
+# ------------------------------------------------------------- indication
+# Was the dose change prompted by anything documented? Thresholds and the
+# window are protocol: two sites cutting NVPS at different values, or looking
+# over different windows, produce numbers that cannot be pooled.
+
+# Published ranges of each instrument. A threshold outside its own scale is
+# silently unreachable -- the analysis would run and report a clean zero.
+INSTRUMENT_RANGE = {
+    "NVPS": (0, 10),      # Non-Verbal Pain Scale
+    "CPOT": (0, 8),       # Critical-Care Pain Observation Tool
+    "RASS": (-5, 4),      # Richmond Agitation-Sedation Scale
+    "PAINAD": (0, 10),    # Pain Assessment in Advanced Dementia
+    "BPS": (3, 12),       # Behavioural Pain Scale
+}
+
+
+def test_the_indication_rule_is_declared_and_consumed():
+    """Phase 0 decides what to read and export; the R script applies the
+    thresholds. Every declared key must reach one of them."""
+    spec = COV.get("indication")
+    assert spec is not None, "covariates.json must declare an `indication` block"
+
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    figure = (REPO / "code" / "05_titration.R").read_text()
+    live = {k for k in spec if not k.startswith("_")}
+    unread = {k for k in live if k not in build and k not in figure}
+    assert not unread, (
+        f"indication keys declared but read by nothing: {sorted(unread)}. "
+        f"Either consume them or delete them.")
+
+
+def test_indication_thresholds_are_inside_each_instrument_range():
+    spec = COV["indication"]
+    both = {**spec["pain_instruments"], **spec["sedation_instruments"]}
+    assert both, "at least one instrument must be declared"
+    for name, thr in both.items():
+        assert name in INSTRUMENT_RANGE, (
+            f"{name} has no published range in this test's table. Add it, with "
+            f"a source, before declaring a threshold on it.")
+        lo, hi = INSTRUMENT_RANGE[name]
+        assert lo <= thr <= hi, (
+            f"{name} threshold {thr} is outside its scale [{lo}, {hi}], so it "
+            f"can never fire and the analysis would report a clean zero")
+
+
+def test_the_primary_indication_window_is_in_the_sensitivity_sweep():
+    spec = COV["indication"]
+    assert spec["indication_window_hours"] in spec["indication_window_sensitivity_hours"], (
+        "the primary window must appear in the sweep, or the curve cannot be "
+        "read against the headline number")
+    assert max(spec["indication_window_sensitivity_hours"]) <= \
+        COV["windows"]["granular"]["extent_hours"], (
+        "a window wider than the observation grid cannot be evaluated")
+
+
+def test_an_optional_instrument_is_never_declared_as_a_covariate():
+    """assessment_covariates() raises SystemExit when a declared category
+    matches no rows -- correct for a required covariate, fatal for an optional
+    site-specific instrument. CPOT is not charted at UCMC, so declaring it in
+    time_varying would kill the build here."""
+    spec = COV["indication"]
+    both = {**spec["pain_instruments"], **spec["sedation_instruments"]}
+    declared_as_covariate = {
+        v["source"]["category"]
+        for k, v in COV["time_varying"].items()
+        if not k.startswith("_") and (v.get("source") or {}).get("table") == "assessments"
+    }
+    optional = set(both) - declared_as_covariate
+    assert optional, (
+        "every indication instrument is also a required time_varying covariate, "
+        "so the tolerant path is never exercised -- check this is intended")
+    # RASS and NVPS are legitimately both; the point is that the set is not
+    # forced to overlap, and that anything site-specific stays out.
+    assert "CPOT" not in declared_as_covariate, (
+        "CPOT is declared as a time_varying covariate. assessment_covariates() "
+        "raises on a category matching no rows, and CPOT is not charted at "
+        "every site -- this would fail the build wherever it is absent.")
+
+
+def test_the_renamed_unit_figures_are_retired_not_orphaned():
+    """clear_owned_outputs() only removes what a script NAMES. The five figures
+    renamed on 2026-09-30 (unit_caterpillar_*, unit_funnel_*, year_trend.png)
+    would otherwise sit in the shareable tree beside their replacements looking
+    current -- the failure the RETIRED mechanism exists to prevent."""
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+    block = src[src.index("RETIRED <-"):src.index("n_cleared <-")]
+    # Strip comments first. Checking raw text would pass on a RETIRED that had
+    # been commented out, since the old names would survive in the prose --
+    # a guard that cannot fail is not a guard (lessons.md #17).
+    code = "\n".join(l.split("#", 1)[0] for l in block.splitlines())
+    for old in ("caterpillar_", "funnel_", "trend.png"):
+        assert old in code, (
+            f"the RETIRED block no longer names {old!r} in CODE; a renamed "
+            f"figure will be left behind in output/final_no_phi/06_unit_variation/")
+    assert '"unit_' in code, "RETIRED must name the old `unit_` prefix explicitly"
+
+
+def test_both_titration_metrics_are_split_by_unit():
+    """06 splits two metrics. If one is dropped from METRICS its figures stop
+    being owned, and a stale copy survives the next run."""
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+    assert 'METRICS <- c("coadmin", "indication")' in src, (
+        "the METRICS vector changed; check FIGS, OWNED and RETIRED together")
+    for m in ("coadmin", "indication"):
+        assert f"{m} = list(" in src, f"ANALYSES has no {m} entry"
+
+
 if __name__ == "__main__":
     import sys, traceback
 

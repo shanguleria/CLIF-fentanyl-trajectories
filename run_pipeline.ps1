@@ -35,11 +35,12 @@ Write-Host "== Phase 0: build cohort (Python) =="
 & $py code/01_build_cohort.py
 if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 
-# The trajectory-modelling scripts in code/tabled/ are TABLED as of 2026-09-23 and
-# deliberately excluded. They carry no step number: the number line is this list.
+# The trajectory-modelling scripts in code/tabled/ are TABLED as of 2026-09-23, and
+# tabled/landmark_cohort joined them on 2026-09-30, so they are deliberately
+# excluded. They carry no step number: the number line is this list.
 # outcomes.R is
 # an unconditional stop(). Run a tabled script by hand if you need it.
-$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_titration","06_landmark_cohort")
+$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_titration","06_unit_variation")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"

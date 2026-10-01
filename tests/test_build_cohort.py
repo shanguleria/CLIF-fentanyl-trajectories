@@ -832,6 +832,123 @@ def test_the_carry_forward_never_crosses_an_encounter_block():
     assert (other == 0.0).all(), "one block's infusion must never bleed into another"
 
 
+# ----------------------------------------------------------- care_intervals
+# The relative-clock conversion that 06_unit_variation.R attributes events with.
+# Every one of these was a way to lose or mis-credit an event silently.
+
+def _icu_fixture(rows, anchor="2021-03-01 12:00"):
+    """rows: (block, name, type, in_offset_h, out_offset_h) relative to anchor."""
+    a = pd.Timestamp(anchor)
+    hi = pd.DataFrame([{
+        "encounter_block": r[0],
+        "location_category": "icu",
+        "location_name": r[1],
+        "location_type": r[2],
+        "in_dttm": a + pd.Timedelta(hours=r[3]),
+        "out_dttm": (a + pd.Timedelta(hours=r[4])) if r[4] is not None else pd.NaT,
+    } for r in rows])
+    blocks = sorted({r[0] for r in rows})
+    cohort = pd.DataFrame({"encounter_block": blocks, "anchor_dttm": [a] * len(blocks)})
+    return hi, cohort
+
+
+def test_care_intervals_are_relative_to_the_anchor_and_carry_no_datetime():
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", -6.0, 30.0)])
+    out = B.care_intervals(hi, cohort)
+    assert list(out.columns) == ["encounter_block", "care_setting", "location_name",
+                                 "location_type", "location_category",
+                                 "t_start_hr", "t_end_hr"]
+    # care_setting falls back to location_category only where location_type is
+    # null; an ICU row must keep its mCIDE type.
+    assert out["care_setting"].iloc[0] == "medical_icu"
+    # Entered 6h before intubation, so the stay clips to hour 0, not to -6.
+    assert out["t_start_hr"].iloc[0] == 0.0
+    assert out["t_end_hr"].iloc[0] == 30.0
+    assert not any(pd.api.types.is_datetime64_any_dtype(out[c]) for c in out.columns)
+
+
+def test_care_intervals_clip_at_the_end_of_the_grid():
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 2.0, B.EXTENT_H + 500)])
+    out = B.care_intervals(hi, cohort)
+    assert out["t_end_hr"].iloc[0] == float(B.EXTENT_H)
+
+
+def test_a_stay_that_ended_before_intubation_is_dropped_not_clipped_to_zero():
+    """Clipping first would collapse it to a zero-width interval sitting exactly
+    on the anchor, which is not nothing -- it would claim hour 0 for a unit the
+    patient had already left."""
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", -40.0, -10.0)])
+    assert len(B.care_intervals(hi, cohort)) == 0
+
+
+def test_a_stay_beginning_after_the_grid_ends_is_dropped():
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu",
+                               B.EXTENT_H + 1, B.EXTENT_H + 20)])
+    assert len(B.care_intervals(hi, cohort)) == 0
+
+
+def test_an_open_ended_stay_runs_to_the_end_of_the_grid():
+    """Dropping a stay with no out_dttm would silently unattribute every event
+    in a patient still in the unit when the extract was cut."""
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 1.0, None)])
+    out = B.care_intervals(hi, cohort)
+    assert len(out) == 1 and out["t_end_hr"].iloc[0] == float(B.EXTENT_H)
+
+
+def test_a_multi_unit_episode_keeps_every_unit():
+    """11% of ICU hospitalizations touch more than one unit. Reducing them to one
+    label is the loss covariates.json records under
+    _DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE."""
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 20.0),
+                               ("b0", "N03E", "surgical_icu", 20.0, 48.0)])
+    out = B.care_intervals(hi, cohort)
+    assert len(out) == 2
+    assert list(out["location_name"]) == ["N04E", "N03E"]   # sorted by t_start_hr
+    assert out["t_start_hr"].tolist() == [0.0, 20.0]
+
+
+def test_overlapping_care_intervals_fail_loudly():
+    """An event inside an overlap would be attributed to two units and counted
+    twice. Loud rather than silently de-duplicated: an overlap is a fact about
+    the site's ADT extract that the site has to see."""
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 30.0),
+                               ("b0", "N03E", "surgical_icu", 20.0, 48.0)])
+    try:
+        B.care_intervals(hi, cohort)
+    except SystemExit as e:
+        assert "overlapping" in str(e)
+    else:
+        raise AssertionError("overlapping ICU intervals were accepted")
+
+
+def test_the_ed_is_attributed_and_labelled_by_its_category():
+    """A ventilated patient is not always in an ICU. The ED is a ward-type
+    setting where NVPS and RASS are meant to be charted, and CLIF leaves
+    location_type null for it -- so care_setting must fall back to the
+    category rather than dropping the row."""
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 20.0)])
+    ed = hi.iloc[[0]].copy()
+    ed["location_category"] = "ed"
+    ed["location_name"] = "ED CCD"
+    ed["location_type"] = None
+    ed["in_dttm"] = hi["in_dttm"].iloc[0] + pd.Timedelta(hours=20)
+    ed["out_dttm"] = hi["in_dttm"].iloc[0] + pd.Timedelta(hours=30)
+    out = B.care_intervals(pd.concat([hi, ed], ignore_index=True), cohort)
+    assert len(out) == 2
+    assert sorted(out["care_setting"]) == ["ed", "medical_icu"]
+    assert out.loc[out["care_setting"] == "ed", "location_name"].iloc[0] == "ED CCD"
+
+
+def test_an_unattributed_category_is_dropped():
+    hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 20.0)])
+    proc = hi.iloc[[0]].copy()
+    proc["location_category"] = "procedural"   # deliberately not attributed:
+    proc["location_name"] = "CD MAIN OR"       # scores are not charted under GA
+    proc["location_type"] = None
+    out = B.care_intervals(pd.concat([hi, proc], ignore_index=True), cohort)
+    assert list(out["location_name"]) == ["N04E"]
+
+
 if __name__ == "__main__":
     import traceback
 

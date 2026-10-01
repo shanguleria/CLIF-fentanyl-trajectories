@@ -58,13 +58,14 @@ echo "== Phase 0: build cohort (Python) =="
 "$PY" code/01_build_cohort.py
 
 # The trajectory-modelling scripts (tabled/gbmt_classes, lcmm_classes,
-# transition_model, outcomes) are TABLED as of 2026-09-23 and are deliberately
-# not run here. They carry no step number: the number line is this list.
+# transition_model, outcomes) are TABLED as of 2026-09-23, and tabled/landmark_cohort
+# joined them on 2026-09-30, so they are deliberately not run here. They carry no
+# step number: the number line is this list.
 # outcomes.R is an
 # unconditional stop(), so with `set -e` its presence in this list made the whole
 # pipeline exit non-zero every time -- the documented one-command build could not
 # succeed. Run a tabled script by hand if you need it: Rscript code/tabled/gbmt_classes.R
-for s in 02_descriptive_cohort 03_exemplar 04_delivery_states 05_titration 06_landmark_cohort; do
+for s in 02_descriptive_cohort 03_exemplar 04_delivery_states 05_titration 06_unit_variation; do
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done

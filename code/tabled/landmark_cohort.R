@@ -1,11 +1,25 @@
 # ==============================================================================
-# 06_landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
+# landmark_cohort.R  --  Phase 2 -- apply landmark T, retention reporting
 #
 # Purpose : Restrict to episodes alive and ventilated at landmark T; report the landmark flow, failed-extubation counts, the [0,T] dose curve and the T sensitivity sweep; write the analytic table Phases 3-6 read.
 # Author  : Shan Guleria
 # Created : 2026-09-05
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
-# Outputs : output/intermediate_phi/landmark_cohort.parquet; output/final_no_phi/04_landmark/
+# Outputs : output/intermediate_phi/landmark_cohort.parquet; output/final_no_phi/landmark/
+#
+# TABLED 2026-09-30 (SG), and moved here from code/06_landmark_cohort.R. It was
+# the last live step, and its only consumer of landmark_cohort.parquet is the
+# gbmt/lcmm pair -- already tabled since 2026-09-23. A live script existing
+# mainly to feed tabled work is the oddity this removes. Like every script in
+# this directory it carries NO step number and writes to an UNNUMBERED folder:
+# the number line belongs to the live pipeline. 06_unit_variation.R took the
+# slot it vacated, so nothing else renumbered.
+#
+# time_to_event.parquet is NOT affected -- it is a Phase 0 product that
+# 02_descriptive_cohort.R and 04_delivery_states.R still read, so the STROBE
+# landmark row survives. It now describes a cohort no live script analyses.
+#
+# Do not cite a number from this script without re-running it (principles.md S3).
 #
 # ==============================================================================
 
@@ -60,10 +74,10 @@ T_SWEEP <- sort(unique(c(24, 48, LANDMARK)))
 # One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
-dirs$phase <- phase_dir(dirs, "06_landmark")   # shareable outputs, subdivided by script
+dirs$phase <- phase_dir(dirs, "landmark")   # shareable outputs, subdivided by script
 prov <- provenance(config)
 
-message(sprintf("[06_landmark_cohort] site=%s  clif=%s  data=%s",
+message(sprintf("[landmark_cohort] site=%s  clif=%s  data=%s",
                 config$site_name, config$clif_version, config$data_directory))
 
 
@@ -89,9 +103,15 @@ OWNED <- list(
 # the prefix changed, so every old path is retired here -- otherwise the whole of
 # 03_landmark/ sits in the shareable tree forever, looking current.
 # Renumbered 03 -> 04 -> 05 -> 06 across 2026-09-23/24, as the exemplar and then
-# the titration analysis each took a slot ahead of it. Both old folders are retired, each built with paste0 so
-# a name-level find-and-replace cannot reach into the list of old names -- the
-# exact failure recorded as lessons.md #13.
+# the titration analysis each took a slot ahead of it, then UNNUMBERED on
+# 2026-09-30 when the script was tabled. Every old folder is retired, each built
+# with paste0 so a name-level find-and-replace cannot reach into the list of old
+# names -- the exact failure recorded as lessons.md #13.
+#
+# 06_landmark matters most of the four: 06_unit_variation.R now occupies the 06
+# slot, so an uncleared 06_landmark/ would sit beside it in the shareable tree
+# looking like a current sibling of the live step rather than the output of a
+# tabled one.
 RETIRED <- c(
   file.path("output", "final_no_phi", paste0("03_", "landmark"),
             paste0("phase2_", c(
@@ -102,7 +122,8 @@ RETIRED <- c(
               "pooling_continuous.csv", "pooling_categorical.csv",
               "provenance.json"))),
   file.path("output", "final_no_phi", paste0("04_", "landmark"), OWNED$phase),
-  file.path("output", "final_no_phi", paste0("05_", "landmark"), OWNED$phase))
+  file.path("output", "final_no_phi", paste0("05_", "landmark"), OWNED$phase),
+  file.path("output", "final_no_phi", paste0("06_", "landmark"), OWNED$phase))
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -439,7 +460,7 @@ write_out(dep, "dependence.csv")
 write_out(pooling_continuous, "pooling_continuous.csv")
 write_out(pooling_categorical, "pooling_categorical.csv")
 
-write_captions(file.path(dirs$phase, "captions.md"), "06_landmark_cohort.R",
+write_captions(file.path(dirs$phase, "captions.md"), "landmark_cohort.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
@@ -453,8 +474,8 @@ cat("written: provenance.json\n")
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),
-    paste("Script :", "code/06_landmark_cohort.R"),
+    paste("Script :", "code/tabled/landmark_cohort.R"),
     "",
     capture.output(sessionInfo())),
-  here("logs", "06_landmark_cohort_sessioninfo.txt")
+  here("logs", "landmark_cohort_sessioninfo.txt")
 )

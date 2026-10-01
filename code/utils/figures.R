@@ -78,6 +78,32 @@ STATE_COLOURS <- c(
   "discharged alive"   = "#86667b",
   "died"               = "#8c2f18")
 
+# The three titration series in 06_unit_variation.R: an initiation, an
+# uptitration, and the two pooled. Categorical, not ordered -- "any increase" is
+# the union of the other two, not a third level of something.
+#
+# A SEPARATE PALETTE FROM STATE_COLOURS, DELIBERATELY. The nearest state hues
+# (continuous only #14427e, bolus only #eb6834, extubated #09b3a6) separate
+# beautifully -- worst all-pairs CVD dE 14.5 -- but two of the three fail the
+# per-colour checks against the #fcfcfb ground: #14427e sits at OKLCH L 0.384,
+# below the 0.43 light-mode floor, and #09b3a6 reaches only 2.55:1 contrast,
+# under the 3.0 minimum. Those failures are invisible inside a
+# stacked area, where a large filled region carries its own weight, and matter
+# here because these are 2mm dots and thin interval bars.
+#
+# Re-stepped with the validator to the NEAREST passing triple rather than the
+# most separated one -- maximising dE alone returns an electric blue and a brown
+# and throws the house look away. Total OKLab drift from the state hues is
+# 0.100, most of it in the blue and the teal; the orange moves 0.006.
+#   every colour   L in [0.43,0.77], C >= 0.10, contrast >= 3.0 vs #fcfcfb  PASS
+#   worst CVD pair uptitration <-> any increase   dE 13.2 (target 8)
+#   worst normal   any increase <-> initiation    dE 26.1 (floor 15)
+# Re-step with the validator, not by eye, if these ever move.
+SERIES_COLOURS <- c(
+  "initiation"   = "#234e90",
+  "uptitration"  = "#ed6531",
+  "any increase" = "#39a390")
+
 # The intensity-band definition. The four bands ARE ordered, so they get a
 # sequential ramp rather than categorical hues, and the three terminal states
 # are inherited from above so the two state figures agree about what leaving

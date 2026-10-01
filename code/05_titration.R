@@ -60,6 +60,20 @@ stopifnot("the primary window must be one of the sensitivity widths" = WIN_MIN %
 
 EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
 
+# The indication question: was the dose change prompted by anything documented?
+IND <- COV$indication
+stopifnot("covariates.json must declare an `indication` block" = !is.null(IND))
+PAIN_THRESH <- unlist(IND$pain_instruments)        # NVPS 4, CPOT 3
+SED_THRESH  <- unlist(IND$sedation_instruments)    # RASS 1
+IND_WIN_H   <- as.numeric(IND$indication_window_hours)
+IND_SWEEP_H <- sort(unique(c(as.numeric(unlist(IND$indication_window_sensitivity_hours)),
+                             IND_WIN_H)))
+stopifnot(
+  "at least one pain instrument must be declared" = length(PAIN_THRESH) >= 1,
+  "at least one sedation instrument must be declared" = length(SED_THRESH) >= 1,
+  "the primary indication window must be one of the sweep widths" =
+    IND_WIN_H %in% IND_SWEEP_H)
+
 
 # ---- 3. Paths and provenance -------------------------------------------------
 
@@ -78,8 +92,12 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(
-  out_phi = c("titration_adherence.parquet"),
+  out_phi = c("titration_adherence.parquet",
+              "titration_events_classified.parquet",
+              "indication_events.parquet"),
   phase   = c("coadministration.csv", "window_sensitivity.csv",
+              "indication.csv", "indication_window_sensitivity.csv",
+              "indication.png",
               "charting_precision.csv", "rate_change_magnitude.csv",
               "charting_agreement.csv", "adherence_distribution.csv",
               "coadministration.png", "window_sensitivity.png",
@@ -100,6 +118,18 @@ frac_sub <- mean(rate$t_hr %% 1 != 0)
 stopifnot(
   "rate events look hour-binned, not charted -- the grid has leaked in" = frac_sub > 0.5,
   "the clock must be relative hours" = is.numeric(rate$t_hr) && min(rate$t_hr) >= 0)
+
+asm <- as.data.frame(read_parquet(file.path(dirs$out_phi, "assessment_events.parquet")))
+# Scales are NOT comparable across instruments (NVPS 0-10, CPOT 0-8, RASS -5..+4)
+# and must never be pooled as raw values. Each is cut at its OWN declared
+# threshold; after the cut every instrument contributes the same yes/no.
+declared <- c(names(PAIN_THRESH), names(SED_THRESH))
+absent <- setdiff(declared, unique(asm$instrument))
+if (length(absent))
+  cat(sprintf("  NOTE declared but not charted at this site: %s\n",
+              paste(absent, collapse = ", ")))
+stopifnot("no declared indication instrument is present in the export" =
+            length(setdiff(declared, absent)) >= 1)
 
 long <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "trajectory_long.parquet"),
@@ -314,6 +344,117 @@ cat(sprintf("\nPer-encounter adherence (episodes with >= %g increases)\n", MIN_E
 print(adh_dist, row.names = FALSE)
 
 
+# ---- 8b. Was the dose change indicated? --------------------------------------
+# The other half of the titration question. Coadministration above asks whether
+# a bolus ACCOMPANIED an increase; this asks whether anything documented
+# PROMPTED it -- a pain score at or above its instrument threshold, or agitation
+# at or above the RASS threshold.
+#
+# A LEVEL, NOT A CHANGE. An NVPS of 4 held across three consecutive readings
+# counts at every one of them; a rise from 0 to 3 counts at none. That is the
+# right reading of "was there an indication" -- a patient in pain is in pain
+# whether or not it is new -- but it is not what "change" means, and the caption
+# says LEVEL.
+#
+# HOURS, NOT MINUTES. Assessments are charted hourly to q4h while titrations are
+# charted to roughly the nearest 5 minutes, so the +/-30 min bolus window would
+# find almost nothing here and the nothing would be an artifact of cadence.
+
+# Times at which each class of instrument was ABOVE THRESHOLD, and at which it
+# was recorded at all. Split once per episode; the same shape paired_within()
+# uses for boluses.
+qualifying_times <- function(a, thresholds) {
+  hit <- rep(FALSE, nrow(a))
+  for (nm in names(thresholds)) {
+    i <- a$instrument == nm
+    hit[i] <- a$value[i] >= thresholds[[nm]]
+  }
+  split(a$t_hr[hit], a$encounter_block[hit])
+}
+recorded_times <- function(a, thresholds) {
+  i <- a$instrument %in% names(thresholds)
+  split(a$t_hr[i], a$encounter_block[i])
+}
+
+# TRUE when the episode has at least one listed time within the window of the
+# event. `back_only` restricts to times at or before the event, which is the
+# literal causal reading -- an indication precedes its titration.
+near_any <- function(events, times, hours, back_only = FALSE) {
+  vapply(seq_len(nrow(events)), function(i) {
+    tt <- times[[as.character(events$encounter_block[i])]]
+    if (is.null(tt)) return(FALSE)
+    d <- tt - events$t_hr[i]
+    if (back_only) any(d <= 0 & d >= -hours) else any(abs(d) <= hours)
+  }, logical(1))
+}
+
+PAIN_HIT <- qualifying_times(asm, PAIN_THRESH); PAIN_ANY <- recorded_times(asm, PAIN_THRESH)
+SED_HIT  <- qualifying_times(asm, SED_THRESH);  SED_ANY  <- recorded_times(asm, SED_THRESH)
+# "either" is not a merge of the two lists -- it is the same functions over the
+# union of the threshold maps. Each instrument is still cut at its OWN value;
+# merging the split lists by name would drop any episode present in one and not
+# the other.
+BOTH_THRESH <- c(PAIN_THRESH, SED_THRESH)
+BOTH_HIT <- qualifying_times(asm, BOTH_THRESH); BOTH_ANY <- recorded_times(asm, BOTH_THRESH)
+
+# Boluses are events here too: SG asked for increases AND boluses.
+ev_sets <- list(increase = inc,
+                bolus    = data.frame(encounter_block = bol$encounter_block,
+                                      t_hr = bol$t_hr))
+
+# TWO DENOMINATORS, the same distinction F3/F5 draw. Against ALL events the
+# indicated fraction conflates "no score was taken" with "a score was taken and
+# did not justify it"; against events WITH an assessment in the window it
+# separates documentation from indication. Neither alone answers the question.
+indication_row <- function(d, hours, event_type, class_name, hit, anyrec) {
+  ind  <- near_any(d, hit, hours)
+  asr  <- near_any(d, anyrec, hours)
+  back <- near_any(d, hit, hours, back_only = TRUE)
+  data.frame(
+    event_type = event_type, class = class_name, window_hours = hours,
+    n_events = nrow(d),
+    n_episodes = length(unique(d$encounter_block)),
+    n_assessed = sum(asr),
+    pct_assessed = round(100 * mean(asr), 1),
+    n_indicated = sum(ind),
+    pct_indicated_all = round(100 * mean(ind), 1),
+    pct_indicated_of_assessed = if (sum(asr)) round(100 * sum(ind & asr) / sum(asr), 1) else NA_real_,
+    pct_indicated_backward_only = round(100 * mean(back), 1))
+}
+
+ind_rows <- list()
+for (w in IND_SWEEP_H) {
+  for (etype in names(ev_sets)) {
+    d <- ev_sets[[etype]]
+    ind_rows[[length(ind_rows) + 1]] <- rbind(
+      indication_row(d, w, etype, "pain", PAIN_HIT, PAIN_ANY),
+      indication_row(d, w, etype, "sedation", SED_HIT, SED_ANY),
+      indication_row(d, w, etype, "either", BOTH_HIT, BOTH_ANY))
+  }
+}
+ind_sens <- do.call(rbind, ind_rows)
+ind_sens$class <- factor(ind_sens$class, levels = c("pain", "sedation", "either"))
+ind <- ind_sens[ind_sens$window_hours == IND_WIN_H, ]
+
+# The accounting must close, and a wider window can only ADD qualifying scores.
+# A fall as the window widens means the join is wrong, not that practice changed.
+stopifnot(
+  "indicated exceeds the event total" = all(ind_sens$n_indicated <= ind_sens$n_events),
+  "assessed exceeds the event total"  = all(ind_sens$n_assessed <= ind_sens$n_events),
+  "backward-only exceeds symmetric"   =
+    all(ind_sens$pct_indicated_backward_only <= ind_sens$pct_indicated_all + 1e-9))
+for (k in split(ind_sens, list(ind_sens$event_type, ind_sens$class), drop = TRUE)) {
+  k <- k[order(k$window_hours), ]
+  stopifnot("the indicated fraction fell as the window widened" =
+              all(diff(k$n_indicated) >= 0))
+}
+
+cat("\n", sprintf("Documented indication within +/-%gh of the dose change\n", IND_WIN_H))
+print(ind[, c("event_type", "class", "n_events", "pct_assessed",
+              "pct_indicated_all", "pct_indicated_of_assessed",
+              "pct_indicated_backward_only")], row.names = FALSE)
+
+
 # ---- 9. Figures --------------------------------------------------------------
 
 register_caption("coadministration.png",
@@ -393,6 +534,54 @@ ggsave(file.path(dirs$phase, "window_sensitivity.png"), p_sens,
        width = 7.5, height = 4.4, dpi = 200)
 
 
+register_caption("indication.png",
+  "Was the dose change indicated? Documented pain or agitation at a fentanyl increase or bolus",
+  paste(
+    sprintf(paste0("Share of events with a qualifying score within +/-W hours, ",
+                   "against window width. Pain is %s; sedation is %s. Each ",
+                   "instrument is cut at ITS OWN threshold -- the scales are not ",
+                   "comparable and raw values are never pooled -- after which ",
+                   "every instrument contributes the same yes/no."),
+            paste(sprintf("%s >= %g", names(PAIN_THRESH), PAIN_THRESH), collapse = ", "),
+            paste(sprintf("%s >= %g", names(SED_THRESH), SED_THRESH), collapse = ", ")),
+    paste0("THIS IS A LEVEL, NOT A CHANGE. A score held above threshold across ",
+           "consecutive readings qualifies at every one of them; a rise that ",
+           "stays below threshold qualifies at none."),
+    sprintf(paste0("THE WINDOW IS HOURS, NOT MINUTES, because assessments are ",
+                   "charted hourly to q4h while titrations are charted to ",
+                   "roughly the nearest 5 minutes -- the +/-%g min bolus window ",
+                   "would measure charting cadence rather than indication. The ",
+                   "primary window is %gh."), WIN_MIN, IND_WIN_H),
+    paste0("The denominator is ALL events. indication.csv also reports the ",
+           "fraction among events that had any assessment in the window, which ",
+           "separates documentation from indication, and a backward-only ",
+           "variant restricted to scores at or before the event."),
+    if (length(absent))
+      sprintf("Declared but not charted at this site: %s.", paste(absent, collapse = ", "))
+    else ""))
+
+p_ind <- house(
+  ggplot(ind_sens[ind_sens$class != "either", ],
+         aes(window_hours, pct_indicated_all, colour = class,
+             linetype = event_type)) +
+    geom_vline(xintercept = IND_WIN_H, colour = MUTED, linetype = "22",
+               linewidth = 0.4) +
+    geom_line(linewidth = 0.7) + geom_point(size = 1.6) +
+    scale_colour_manual(
+      values = c(pain = STATE_COLOURS[["bolus only"]],
+                 sedation = STATE_COLOURS[["continuous only"]]),
+      labels = c(pain = "Pain score", sedation = "Agitation (RASS)"), name = NULL) +
+    scale_linetype_manual(values = c(increase = "solid", bolus = "42"),
+                          labels = c(increase = "Rate increase", bolus = "Bolus"),
+                          name = NULL) +
+    scale_x_continuous(breaks = IND_SWEEP_H) +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
+    labs(x = "Window, +/- hours",
+         y = "% of EVENTS with a qualifying score"))
+ggsave(file.path(dirs$phase, "indication.png"), p_ind,
+       width = 7.5, height = 4.4, dpi = 200)
+
+
 # ---- 10. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
@@ -421,9 +610,83 @@ write_out(prec, "charting_precision.csv")
 write_out(mag,  "rate_change_magnitude.csv")
 write_out(agree, "charting_agreement.csv")
 write_out(adh_dist, "adherence_distribution.csv")
+write_out(ind, "indication.csv")
+write_out(ind_sens, "indication_window_sensitivity.csv")
 
 write_parquet(adh, file.path(dirs$out_phi, "titration_adherence.parquet"))
 cat("written: titration_adherence.parquet (PHI -- per encounter)\n")
+
+# The classified events themselves, for code/06_unit_variation.R. Handed off
+# rather than re-derived: the event definition (section 6) and the pairing window
+# are this script's, and a second implementation of "what counts as an
+# uptitration" is a drift hazard with no upside. 06 splits these events by unit
+# and by year; it must not redefine them.
+#
+# A relative clock, and nothing else -- the same contract Phase 0 holds for the
+# raw events this was built from.
+ev_out <- ev[, c("encounter_block", "t_hr", "kind", "paired", "on_hour")]
+stopifnot(
+  "classified events carry a datetime" =
+    !any(vapply(ev_out, inherits, logical(1), what = c("POSIXct", "POSIXt", "Date"))),
+  "classified events fall outside the grid" =
+    min(ev_out$t_hr) >= 0 && max(ev_out$t_hr) <= EXTENT_H,
+  "an event is unclassified" = all(ev_out$kind %in% EVENT_LEVELS)
+)
+write_parquet(ev_out, file.path(dirs$out_phi, "titration_events_classified.parquet"))
+cat(sprintf("written: titration_events_classified.parquet (PHI -- %d events, %d episodes)\n",
+            nrow(ev_out), length(unique(ev_out$encounter_block))))
+
+# The per-event indication flags, for code/06_unit_variation.R. Handed off
+# rather than re-derived, for the same reason the classified events are: the
+# thresholds and the window are this script's, and a second implementation of
+# "was this indicated" would drift from the first with nothing to catch it.
+#
+# The PRIMARY window only. The 1-4h sweep is this script's question; 06 asks a
+# per-unit question at one window, and shipping all four would invite a reader
+# to pick the flattering one.
+#
+# Boluses travel in the SAME file with event_type, and deliberately NOT inside
+# titration_events_classified.parquet: 06 selects increases from that file with
+# `kind != "downtitration"`, so a bolus row added there would be silently
+# counted as a rate increase.
+ind_ev <- rbind(
+  data.frame(encounter_block = inc$encounter_block, t_hr = inc$t_hr,
+             event_type = "increase", kind = as.character(inc$kind),
+             stringsAsFactors = FALSE),
+  data.frame(encounter_block = bol$encounter_block, t_hr = bol$t_hr,
+             event_type = "bolus", kind = NA_character_,
+             stringsAsFactors = FALSE))
+ind_ev$pain_indicated     <- near_any(ind_ev, PAIN_HIT, IND_WIN_H)
+ind_ev$sedation_indicated <- near_any(ind_ev, SED_HIT,  IND_WIN_H)
+ind_ev$any_indicated      <- near_any(ind_ev, BOTH_HIT, IND_WIN_H)
+ind_ev$any_assessed       <- near_any(ind_ev, BOTH_ANY, IND_WIN_H)
+
+stopifnot(
+  "indication events carry a datetime" =
+    !any(vapply(ind_ev, inherits, logical(1), what = c("POSIXct", "POSIXt", "Date"))),
+  "indication events fall outside the grid" =
+    min(ind_ev$t_hr) >= 0 && max(ind_ev$t_hr) <= EXTENT_H,
+  "an event is neither an increase nor a bolus" =
+    all(ind_ev$event_type %in% c("increase", "bolus")),
+  # any_indicated is the union of the two classes, so it can never be smaller.
+  "any_indicated is not the union of pain and sedation" =
+    all(ind_ev$any_indicated >= (ind_ev$pain_indicated | ind_ev$sedation_indicated)),
+  "an indicated event was never assessed" =
+    all(!ind_ev$any_indicated | ind_ev$any_assessed))
+
+# The handoff must reproduce the table this script just printed, or 06 and 05
+# would report different numbers for the same quantity.
+for (et in c("increase", "bolus")) {
+  here <- 100 * mean(ind_ev$any_indicated[ind_ev$event_type == et])
+  there <- ind$pct_indicated_all[ind$event_type == et & ind$class == "either"]
+  stopifnot("the handoff disagrees with indication.csv" = abs(here - there) < 0.05)
+}
+
+write_parquet(ind_ev, file.path(dirs$out_phi, "indication_events.parquet"))
+cat(sprintf("written: indication_events.parquet (PHI -- %s events, %s increases, %s boluses)\n",
+            format(nrow(ind_ev), big.mark = ","),
+            format(sum(ind_ev$event_type == "increase"), big.mark = ","),
+            format(sum(ind_ev$event_type == "bolus"), big.mark = ",")))
 
 write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)

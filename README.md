@@ -38,7 +38,7 @@ values below were verified against `clifpy`'s bundled schemas.
 |---|---|---|
 | `patient` | `patient_id`, `sex_category`, `race_category`, `ethnicity_category`, `birth_date` | `death_dttm` exists but is **unstable across CLIF sites** and is deliberately not used; mortality comes from `hospitalization.discharge_category` |
 | `hospitalization` | `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admission_type_category`, `discharge_category` | mortality from `discharge_category` ∈ {`Expired`, `Hospice`} |
-| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm` | encounter stitching and `hospital_id_admission` / `_discharge`. **`location_category` is not read** — the pipeline has no ICU flag |
+| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`, `location_category`, `location_name`, `location_type` | encounter stitching, `hospital_id_admission` / `_discharge`, and the ICU stays `06_unit_variation.R` attributes titration events to. `location_category` selects ICU rows; `location_type` is the mCIDE unit taxonomy and is the only unit key another site can pool on; `location_name` is optional site-local free text |
 
 ### Exposure — fentanyl dosing
 
@@ -79,9 +79,9 @@ its internal consistency.
 | `respiratory_support` | **all columns** | FiO₂ waterfall + `device_category` for `imv_status`. Load every column — the waterfall needs `device_name`, `mode_category`, `lpm_set`, `peep_set` to build its blocks |
 | `crrt_therapy` | `hospitalization_id`, `recorded_dttm`, `crrt_mode_category` | `crrt_status`. **Point-in-time table, no start/stop** — interval reconstruction, not a lookup |
 | `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format`, `poa_present` | Charlson Comorbidity Index |
-| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); `RASS` → `rass` (**min**, deepest sedation in the window); `NVPS` → `nvps` (**max**, worst pain). Both are ordinal, so neither is averaged — see design notes §11. **Category names are matched literally and are case-sensitive**: UCMC charts `RASS` and `NVPS` capitalised but `gcs_total` lowercase. A site charting CPOT rather than NVPS needs its own entry in `covariates.json` |
+| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); `RASS` → `rass` (**min**, deepest sedation in the window); `NVPS` → `nvps` (**max**, worst pain). Both are ordinal, so neither is averaged — see design notes §11. **Category names are matched literally and are case-sensitive**: UCMC charts `RASS` and `NVPS` capitalised but `gcs_total` lowercase. **Also the indication instruments** declared in `covariates.json` → `indication`: `NVPS` (≥4) and `CPOT` (≥3) for pain, `RASS` (≥+1) for agitation, used to ask whether a dose change had a documented trigger. These are read through a **tolerant** path — a declared instrument that is not charted prints a zero-record line and the build continues, unlike a `time_varying` covariate, which raises. CPOT is not charted at UCMC |
 | `patient` | `patient_id`, `sex_category`, `race_category` | sex; **race — Table 1 reporting only, not a model covariate** |
-| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm` | `hospital_id_admission` / `_discharge` and encounter stitching; **`hospital_id` is required by `stitch_encounters`**. `location_category` is **not** read — there is no ICU flag in the pipeline, and "in the ICU" is proxied by `imv_status` wherever an at-risk denominator needs it |
+| `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`, `location_category`, `location_name`, `location_type` | `hospital_id_admission` / `_discharge` and encounter stitching; **`hospital_id` is required by `stitch_encounters`**. The `location_*` trio was added 2026-09-30 and feeds `icu_intervals.parquet`, which credits each titration event to the unit the patient was in when it was charted. **It is a STRATIFIER, never a cohort filter**: "in the ICU" is still proxied by `imv_status` wherever an at-risk denominator needs it, and no episode is excluded for its location |
 
 **Encounter blocks are the unit of analysis.** Hospitalizations are stitched with
 clifpy `stitch_encounters(..., time_interval=6)`: a `hospitalization_id` is one
@@ -212,18 +212,22 @@ What each script writes:
 
 | Script | Files |
 |---|---|
-| `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json`; PHI handoffs include `titration_{rate,bolus}_events.parquet` (raw charted timestamps — the titration analysis never uses the hourly grid) at the root of `final_no_phi/` |
+| `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json`; PHI handoffs include `titration_{rate,bolus}_events.parquet` (raw charted timestamps — the titration analysis never uses the hourly grid) and `care_intervals.parquet` (attributed care-location stays — ICU and ED — on the relative clock, so the attribution rule can change without a Phase 0 rebuild) at the root of `final_no_phi/` |
 | `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
 | `03_exemplar.R` | `03_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
 | `04_delivery_states.R` | `04_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
-| `05_titration.R` | `05_titration/` — `coadministration.csv`, `window_sensitivity.csv`, `charting_precision.csv`, `rate_change_magnitude.csv`, `charting_agreement.csv`, `adherence_distribution.csv`, `provenance.json`, `captions.md`; figures `coadministration.png`, `window_sensitivity.png`; PHI handoff `output/intermediate_phi/titration_adherence.parquet` (per-encounter adherence; only its distribution ships) |
-| `06_landmark_cohort.R` | `06_landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| `05_titration.R` | `05_titration/` — `coadministration.csv`, `window_sensitivity.csv`, `charting_precision.csv`, `rate_change_magnitude.csv`, `charting_agreement.csv`, `adherence_distribution.csv`, `provenance.json`, `captions.md`; figures `coadministration.png`, `window_sensitivity.png`; the indication analysis `indication.csv`, `indication_window_sensitivity.csv`, `indication.png`; PHI handoffs `output/intermediate_phi/titration_adherence.parquet` (per-encounter adherence; only its distribution ships), `titration_events_classified.parquet` and `indication_events.parquet` (the classified events and per-event indication flags `06_unit_variation.R` splits, so each definition has one home) |
+| `06_unit_variation.R` | `06_unit_variation/` — `unit_adherence.csv`, `year_adherence.csv`, `attribution_funnel.csv`, `provenance.json`, `captions.md`; ten figures, named by metric: `coadmin_*` (was a bolus given with the increase?) and `indication_*` (was there a documented pain score or agitation?), each as `_caterpillar_<key>.png`, `_funnel_<key>.png` and `_year.png` — one pair of caterpillar/funnel per `unit_variation.unit_keys` (`care_setting`, `location_name`). Writes no PHI handoff |
+| `tabled/landmark_cohort.R` | **Tabled 2026-09-30, not run by the runners.** `landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 
 The two `pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
 so a coordinating centre can compute an exact pooled mean and SD without a
 median, which cannot be pooled. Cells below `reporting.small_cell_min_den` are
-suppressed.
+suppressed. Only `02_descriptive_cohort.R` emits them now — the landmark script
+that was the second producer was tabled on 2026-09-30, and
+`tests/test_pooling.py` was narrowed to match rather than left to skip
+vacuously.
 
 `manifest.json` is written **last** and is what marks the Phase 0 outputs
 complete and current. Every R script calls `require_manifest()` first, which
@@ -278,13 +282,18 @@ python3 code/check_config.py
 | 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
 | 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and NVPS. The episode is **drawn at random from those meeting the pre-specified rule** in `covariates.json` → `exemplar`, never chosen by inspection |
 | 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
-| 4 | R | `code/05_titration.R` | **Bolus co-administration at uptitration** — how often an infusion rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid. Rate decreases are reported as a negative control |
-| 5 | R | `code/06_landmark_cohort.R` | Apply landmark `T`, report retention and failed-extubation counts |
+| 4 | R | `code/05_titration.R` | **Titration practice, both halves.** *Response*: how often a rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid, with rate decreases as a negative control. *Indication*: how often an increase or a bolus had a qualifying pain score or agitation within ±1 h, swept to 4 h — a level at each instrument's own threshold, never a change |
+| 5 | R | `code/06_unit_variation.R` | **Variation in both step-4 metrics** — co-administration and documented indication, each split by the ICU unit the patient was in when the event was charted and by calendar year. Caterpillar and funnel views per unit key, with cluster-bootstrap intervals that resample episodes rather than events. Describes variation; models no association |
 
 These six steps are the current analysis and are exactly what the runners
-execute. The **tabled** trajectory-modelling scripts moved to `code/tabled/` on
-2026-09-23 (`gbmt_classes.R`, `lcmm_classes.R`, `transition_model.R`,
-`outcomes.R`) — see **Objective**. They still run, but by hand:
+execute. The **tabled** scripts moved to `code/tabled/` on 2026-09-23
+(`gbmt_classes.R`, `lcmm_classes.R`, `transition_model.R`, `outcomes.R`), joined
+by `landmark_cohort.R` on 2026-09-30 — see **Objective**. The landmark script's
+only consumer of `landmark_cohort.parquet` was the already-tabled gbmt/lcmm
+pair, so a live step existed largely to feed tabled work; `06_unit_variation.R`
+took the slot it vacated and nothing else renumbered. `time_to_event.parquet` is
+unaffected — it is a Phase 0 product that steps 1 and 3 still read, so the STROBE
+landmark row survives. They still run, but by hand:
 `Rscript code/tabled/gbmt_classes.R`. Their names and output folders carry **no
 step number**: the number line belongs to the live pipeline, and while these
 scripts kept their old numbers two different scripts claimed 04 and two claimed
@@ -313,11 +322,12 @@ CLIF-fentanyl-trajectories/
 │   ├── 03_exemplar.R             # F1: one ventilation course in detail
 │   ├── 04_delivery_states.R      # delivery states: prevalence, transitions, figures
 │   ├── 05_titration.R            # bolus co-administration at uptitration
-│   ├── 06_landmark_cohort.R      # landmark T (available, not the current analysis)
-│   ├── tabled/                   # trajectory modelling, parked -- not in the runners
+│   ├── 06_unit_variation.R       # variation by ICU unit and calendar year
+│   ├── tabled/                   # parked -- not in the runners
 │   │   ├── gbmt_classes.R        # -> output/final_no_phi/gbmt/
 │   │   ├── lcmm_classes.R        # -> lcmm/
 │   │   ├── transition_model.R    # -> transitions/
+│   │   ├── landmark_cohort.R     # -> landmark/   (tabled 2026-09-30)
 │   │   └── outcomes.R            #    unnumbered: the number line is the live pipeline's
 │   └── utils/
 │       ├── doses.py              # dose unit conversion (not clifpy's)
@@ -337,10 +347,12 @@ CLIF-fentanyl-trajectories/
 │   ├── test_build_cohort.py      # Phase 0 logic on synthetic frames
 │   ├── test_paths.py             # the PHI boundary, and paths.R == paths.py
 │   ├── test_waterfall_cache.py   # the cache key covers every input
+│   ├── test_pooling.py           # pooling exports are exactly poolable
 │   └── test_doses.py             # every charted dose unit converts correctly
 ├── docs/
 │   ├── principles.md            # the question, the frame, principles, rejected options
-│   └── references.md            # literature, with DOIs
+│   ├── references.md            # literature, with DOIs
+│   └── unit_adjustment_design.md # DAG + model for the deferred adjusted unit comparison
 ├── output/
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
