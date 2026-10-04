@@ -39,11 +39,6 @@ if ! "$PY" tests/test_doses.py; then
   echo "ERROR: dose unit conversion failed its tests. Nothing was run." >&2
   exit 1
 fi
-if ! "$PY" tests/test_pooling.py; then
-  echo "ERROR: the federated-pooling exports are not poolable. Nothing was run." >&2
-  exit 1
-fi
-
 if ! "$PY" tests/test_paths.py; then
   echo "ERROR: output locations failed their tests. Nothing was run." >&2
   exit 1
@@ -69,5 +64,20 @@ for s in 02_descriptive_cohort 03_exemplar 04_delivery_states 05_titration 06_un
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done
+
+# tests/test_pooling.py validates PRODUCED OUTPUTS, so it runs here and not in
+# the preflight. In the preflight it deadlocked the pipeline two ways: on a
+# fresh clone the exports do not exist yet, so the suite failed and nothing ever
+# ran; and once a check caught a real defect in a shipped file, the only thing
+# that could regenerate that file was the run the check was blocking.
+# Failing HERE is the useful place to fail -- the outputs exist and are wrong,
+# so the actionable instruction is "do not upload", which is what it says.
+echo "== Verifying the shareable outputs =="
+if ! "$PY" tests/test_pooling.py; then
+  echo "ERROR: the federated-pooling exports did not pass their checks." >&2
+  echo "       Do NOT upload output/final_no_phi/ until this is resolved." >&2
+  exit 1
+fi
+echo
 
 echo "Pipeline complete. Review output/final_no_phi/ before sharing."

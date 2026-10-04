@@ -235,8 +235,9 @@ refuses to read tables produced by a different code version or a drifted config.
 Note that it digests whole config files, so editing even a comment in
 `config/covariates.json` invalidates the build.
 
-Shareable outputs carry a provenance block from `provenance()`: `site_name`,
-`clif_version`, `dataset_version`, `code_version` (git describe), `generated`.
+Shareable outputs carry a provenance block from `provenance()` — see
+[Definitions and provenance](#definitions-and-provenance) for the fields and
+how a coordinating centre confirms that several sites ran the same analysis.
 
 ## Prerequisites
 
@@ -265,14 +266,20 @@ Rscript -e 'install.packages("renv"); renv::restore()'
 ```
 
 Both runners run the preflight (`code/check_config.py`) first, then execute the
-steps below in order, stopping on first error. The preflight confirms the config
-is complete and that `data_directory` actually holds the tables named in
-`tables_in_use` — it checks by filename and opens nothing, so a bad path fails in
-a second rather than an hour into Phase 0. Run it on its own at any time:
+steps below in order, stopping on first error, and finish by **verifying the
+shareable outputs**. The preflight confirms the config is complete and that
+`data_directory` actually holds the tables named in `tables_in_use` — it checks
+by filename and opens nothing, so a bad path fails in a second rather than an
+hour into Phase 0. Run it on its own at any time:
 
 ```bash
 python3 code/check_config.py
 ```
+
+The preflight suites test **config files and pure functions only**.
+`tests/test_pooling.py` reads produced outputs, so it runs at the end instead:
+in the preflight it failed on a clean clone, where those files do not exist
+yet, and aborted the run before anything could create them.
 
 ## Pipeline steps
 
@@ -317,6 +324,7 @@ CLIF-fentanyl-trajectories/
 │   └── config.json               # gitignored, site-local
 ├── code/
 │   ├── check_config.py           # preflight: is config.json usable?
+│   ├── check_provenance.py       # coordinating centre: did all sites run the same code?
 │   ├── 01_build_cohort.py        # build the analytic tables (Python / clifpy)
 │   ├── 02_descriptive_cohort.R   # cohort description + dose curves
 │   ├── 03_exemplar.R             # F1: one ventilation course in detail
@@ -384,9 +392,46 @@ CLIF-fentanyl-trajectories/
   SD that is exactly zero for a near-all-zero indicator, without raising. This
   pipeline uses `scaling = 0`; the mechanism is in design notes §3.
 
-Shareable outputs carry a provenance block from `provenance()`: `site_name`,
-`clif_version`, `dataset_version`, `code_version` (`git describe --always
---dirty`, so a dirty tree is visible), `generated`.
+### The provenance block
+
+Every directory under `output/final_no_phi/` carries a `provenance.json` from
+`provenance()` (`code/utils/paths.py`, mirrored in `paths.R`):
+
+| Field | Meaning |
+|---|---|
+| `site_name` | from `config.json` |
+| `clif_version` | the CLIF **spec** version |
+| `dataset_version` | a conversion/ETL release, e.g. a MIMIC build |
+| `definition_versions` | one entry per protocol file — they are bumped independently |
+| `code_version` | `git describe --always --dirty`; **advisory only** |
+| `code_digest` | SHA-256 over the code the runner executes — the authoritative "same code?" answer |
+| `protocol_digests` | `covariates.json` + `outlier_config.json`; **must be identical across sites** |
+| `site_config_digest` | `config.json`; **expected to differ** (it holds `site_name` and `data_directory`) |
+| `file_digests` | one digest per covered file, so a divergence can be named |
+| `generated` | local timestamp |
+
+`code_version` is advisory because `git describe` answers the question only
+where a checkout exists, carries a tag and is clean — it returns `"unknown"` for
+a ZIP download and a bare `-dirty` for an uncommitted edit. `code_digest` is
+content-based, so it works in all three cases and compares by equality. Both
+languages must produce the same digest; `tests/test_paths.py` asserts it.
+
+### Confirming that several sites ran the same analysis
+
+At the coordinating centre, over the uploaded bundles:
+
+```bash
+python3 code/check_provenance.py uploads/site_a uploads/site_b uploads/site_c
+```
+
+It reports one row per site and then separates the two kinds of divergence:
+
+- **Protocol** (`protocol_digests`, `definition_versions`, `clif_version`) —
+  exits non-zero. A pooled estimate across different protocol versions is not
+  an estimate of one quantity.
+- **Code** (`code_digest`) — reported, never fatal, and named down to the file.
+  A site may legitimately have had to extend `_to_mcg_hr` with a locally charted
+  dose unit to run at all; this pipeline's own error message instructs it to.
 
 ## Contributing
 
@@ -408,10 +453,22 @@ contents are aggregate by construction and PHI-checked at assembly.
 
 ## Onboarding a new site
 
-1. Clone the repo; `cp config/config_template.json config/config.json`.
+1. Clone the repo **at the release tag the study is using** — `git clone` rather
+   than a ZIP download, so `code_version` resolves. `cp
+   config/config_template.json config/config.json`.
 2. Set `site_name`, `clif_version`, `data_directory`, `filetype` and `timezone`.
-3. Install pinned dependencies (see Prerequisites).
+   Leave everything else alone: `cohort`, `outcomes` and `model` in
+   `config.json`, and all of `covariates.json` and `outlier_config.json`, define
+   the measurement. If two sites set them differently the pooled result is not
+   meaningful.
+3. Install pinned dependencies (see Prerequisites). `clifpy` must be the pinned
+   version exactly — its minor releases have changed CLIF datetime tz handling.
 4. Run `python3 code/check_config.py` until it prints `READY.`
 5. Probe your `med_category` values and update `config.medications`.
-6. Run the pipeline.
-7. Review `output/final_no_phi/` and send only that.
+6. Run the pipeline. Expect it to halt at least once on something real about
+   your data — an unhandled fentanyl dose unit, a device value outside the
+   schema. Those are findings, not obstacles; fix them at the named line rather
+   than dropping the rows, and note what you changed.
+7. Review `output/final_no_phi/` and send only that. Its `provenance.json` files
+   are what the coordinating centre uses to confirm every site ran the same
+   analysis (`code/check_provenance.py`).

@@ -23,8 +23,6 @@ if ($LASTEXITCODE -ne 0) { Write-Error "outlier bounds failed their tests. Nothi
 if ($LASTEXITCODE -ne 0) { Write-Error "the waterfall cache failed its tests. Nothing was run." }
 & $py tests/test_doses.py
 if ($LASTEXITCODE -ne 0) { Write-Error "dose unit conversion failed its tests. Nothing was run." }
-& $py tests/test_pooling.py
-if ($LASTEXITCODE -ne 0) { Write-Error "the federated-pooling exports are not poolable" }
 & $py tests/test_paths.py
 if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Nothing was run." }
 & $py tests/test_build_cohort.py
@@ -46,5 +44,17 @@ foreach ($s in $steps) {
   & Rscript "code/$s.R"
   if ($LASTEXITCODE -ne 0) { Write-Error "$s failed" }
 }
+
+# tests/test_pooling.py validates PRODUCED OUTPUTS, so it runs here and not in
+# the preflight. In the preflight it deadlocked the pipeline two ways: on a
+# fresh clone the exports do not exist yet, so the suite failed and nothing ever
+# ran; and once a check caught a real defect in a shipped file, the only thing
+# that could regenerate that file was the run the check was blocking.
+Write-Host "== Verifying the shareable outputs =="
+& $py tests/test_pooling.py
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "the federated-pooling exports did not pass their checks. Do NOT upload output/final_no_phi/ until this is resolved."
+}
+Write-Host ""
 
 Write-Host "Pipeline complete. Review output/final_no_phi/ before sharing."
