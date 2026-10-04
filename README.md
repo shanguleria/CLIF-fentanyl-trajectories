@@ -11,11 +11,13 @@ neither — and how that delivery pattern changes over the ventilation course.
 
 The pipeline is **descriptive**: cohort-level dosing curves with balanced-panel
 overlays, delivery-state prevalence and transitions, and a landmarked view of the
-first 72 hours. The question, the measurement frame, the standing principles and
-the options considered and rejected are in
-[`docs/principles.md`](docs/principles.md); literature in
-[`docs/references.md`](docs/references.md). **Definitions live in `config/`**, not
-in either document.
+first 72 hours.
+
+**Definitions live in `config/`.** `covariates.json` is the covariate and
+exposure protocol, `outlier_config.json` the bounds; both are tracked, both
+carry their rationale in `_why` keys, and both are the source of truth for any
+question about what a number means. The project's guiding principles, the
+literature and the design notes are kept outside the repository.
 
 > **Scope change, 2026-09-23.** This project began as a trajectory-modelling
 > study: find latent classes of fentanyl exposure with `gbmt`/`lcmm`, then use
@@ -357,10 +359,6 @@ CLIF-fentanyl-trajectories/
 │   ├── test_waterfall_cache.py   # the cache key covers every input
 │   ├── test_pooling.py           # pooling exports are exactly poolable
 │   └── test_doses.py             # every charted dose unit converts correctly
-├── docs/
-│   ├── principles.md            # the question, the frame, principles, rejected options
-│   ├── references.md            # literature, with DOIs
-│   └── unit_adjustment_design.md # DAG + model for the deferred adjusted unit comparison
 ├── output/
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
@@ -441,8 +439,7 @@ banner, the `requireNamespace` + `library(p, character.only = TRUE)` package
 loop, `here()` for all paths (never `setwd()`), and a `sessionInfo()` provenance
 write at the end of each script.
 
-**Any generated code must be read by a human before it is run or committed.** See
-[`docs/code_review_checklist.md`](docs/code_review_checklist.md).
+**Any generated code must be read by a human before it is run or committed.**
 
 ## Data safety
 

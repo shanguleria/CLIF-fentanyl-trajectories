@@ -9,7 +9,7 @@
 # Outputs : output/final_no_phi/03_exemplar/ : the files listed in OWNED
 #
 # Modelled on Baker et al. Sci Rep 2020;10:10718 Figure 1, with four deliberate
-# departures -- see docs/references.md, the F1 entry, which is the binding spec:
+# departures:
 #   * stacked facets on ONE shared x axis, never Baker's three overlaid y-axes
 #   * a rate and an amount never share a numeric axis, so boluses get their own
 #     panel rather than riding on the infusion scale
@@ -147,8 +147,11 @@ exemplar_diagnostics(series, meta, CAP_H)
 # ONE panel, three y scales -- fentanyl on the left, RASS and NVPS on two right
 # spines -- mirroring Baker et al. Figure 1 (glucose left, insulin and D50
 # right). SG, 2026-09-24, choosing compaction over the four stacked panels this
-# script drew first. See docs/references.md, the F1 entry, which records what
-# that trades away.
+# script drew first. What that trades away: the left axis now reads "mcg/hr
+# infused, mcg per bolus", so a rate and an amount share a numeric axis -- the
+# axis title names both rather than hiding it behind a unit fitting neither,
+# and the caption says so. Acceptable on a single-patient qualitative figure;
+# it would not be on an aggregate one.
 #
 # The assessments OVERLAY the fentanyl across the whole panel height, as Baker's
 # insulin and dextrose overlay his glucose (SG, 2026-09-24). An earlier version

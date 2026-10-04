@@ -39,8 +39,17 @@ validation/
 # ---- reference material: local reading copies, never committed ----
 # Publisher PDFs and working notes. A bare `references/` like `output/` above:
 # git does not descend into an excluded directory. Nothing in the repo may depend
-# on a file here -- see docs/references.md for the citations themselves.
+# on a file here -- where a pointer stood in for a citation, the citation itself
+# was inlined at the point of use instead.
 references/
+
+# ---- project documentation: local, never committed (SG, 2026-10-04) ----
+# Principles, literature, design notes and the cohort/output specification.
+# These carry unpublished measured results, and the repo is public. The repo
+# ships a RUNNABLE ARTIFACT: code, config, tests and the README. Same rule as
+# `references/` above -- nothing tracked may depend on a file here, so a pointer
+# into docs/ from code, config or the README is a defect, not a cross-reference.
+docs/
 
 # ---- site config (contains local paths) ----
 config/config.json

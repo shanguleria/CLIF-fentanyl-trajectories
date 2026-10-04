@@ -27,8 +27,8 @@ EXEMPLAR_LABELS <- c(infusion = "Fentanyl infusion\n(mcg/hr)",
 
 # A step asserts the last value persisted. Across a gap longer than the LOCF cap
 # that assertion is false, so the step must BREAK rather than carry a score over
-# hours nobody documented. Baker draws missingness as nothing at all; this is the
-# one place F1 deliberately departs (docs/references.md, F1 entry).
+# hours nobody documented. Baker et al. (Sci Rep 2020;10:10718, Fig 1) draw
+# missingness as nothing at all; this is the one place F1 deliberately departs.
 #
 # Implemented by inserting an NA immediately after the last observation before
 # each over-long gap: ggplot breaks a line or step on NA.
