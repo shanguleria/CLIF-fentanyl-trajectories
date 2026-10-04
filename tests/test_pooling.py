@@ -153,6 +153,125 @@ def test_categorical_counts_sum_to_their_denominator():
         )
 
 
+def test_the_categorical_export_carries_every_stratum_the_continuous_one_does():
+    """Both exports describe the same cohort under the same Table 1
+    stratification, so their baseline stratum sets must agree.
+
+    This fired on 2026-10-02 with 13 rows where 65 were expected. `pool_cat`
+    built its stratum list as `c("overall", sort(unique(strata)))`, and `c()`
+    dispatches on its first argument -- a character -- so a FACTOR `strata` was
+    coerced to its INTEGER CODES. `strata == "1"` then matched nothing and every
+    named stratum was silently dropped. The continuous twin was unaffected
+    because its caller loops over `levels()`, which is already character, so the
+    two files disagreed while each looked internally consistent and the counts
+    that were present were all correct.
+
+    Deliberately agnostic to which strata they are and how many, for the same
+    reason as test_the_strata_pool_back_to_the_overall_row.
+    """
+    for fc, fk in zip(ALL_CONT, ALL_CAT):
+        dc, dk = _skip_if_absent(fc), _skip_if_absent(fk)
+        if dc is None or dk is None:
+            continue
+        want = set(dc.loc[dc["scope"] == "baseline", "stratum"].dropna())
+        have = set(dk["stratum"].dropna())
+        assert want <= have, (
+            f"{fk.name} is missing stratum/strata {sorted(want - have)} and "
+            f"carries only {sorted(have)}. A pooled categorical Table 1 cannot "
+            f"be built without them."
+        )
+
+
+def test_no_suppressed_cell_is_recoverable_by_subtraction():
+    """A suppressed cell that arithmetic recovers is not suppressed.
+
+    Measured 2026-10-02: it recovered ALL FOUR. pooling_categorical.csv published
+    a variable in two overlapping views (7-level Race, 4-level Race (collapsed))
+    across two overlapping partitions (4 bands, overall), giving two systems of
+    linear constraints on four unknowns. A brute-force solve returned exactly one
+    consistent assignment, so every withheld count was determined.
+
+    This reproduces the attack rather than trusting the fix: propagate the
+    "a constraint with exactly one unknown determines it" rule to a fixpoint,
+    which is precisely how the original leak unwound.
+    """
+    d = _skip_if_absent(CAT)
+    if d is None:
+        return
+    cmap = json.loads((REPO / "config" / "covariates.json").read_text())
+    collapse = cmap["time_invariant"]["race"]["reporting_collapse"]
+    named = {k: v for k, v in collapse.items() if not k.startswith("_")}
+
+    known: dict[tuple, float] = {}
+    unknown: set[tuple] = set()
+    for _, r in d.iterrows():
+        key = (r["variable"], r["stratum"], r["level"])
+        if r["n_suppressed_small_cell"] == 1 or pd.isna(r["n"]):
+            unknown.add(key)
+        else:
+            known[key] = float(r["n"])
+
+    # (total, [cells]) for every published identity the table exposes.
+    cons: list[tuple[float, list[tuple]]] = []
+    for (var, st), g in d.groupby(["variable", "stratum"]):
+        # levels in a stratum sum to that stratum's published denominator
+        cons.append((float(g["denominator"].iloc[0]),
+                     [(var, st, lv) for lv in g["level"]]))
+    strata = sorted(set(d["stratum"]) - {"overall"})
+    for var, g in d.groupby("variable"):
+        present = sorted(set(g["stratum"]) - {"overall"})
+        if present != strata:
+            continue          # not published per stratum, so nothing to sum
+        for lv in sorted(set(g["level"])):
+            if ("overall" in set(g["stratum"])):
+                # named strata sum to overall, within a level
+                cons.append(("overall_of", [(var, "overall", lv)]
+                             + [(var, s, lv) for s in strata]))
+    for st in sorted(set(d["stratum"])):
+        src = d[(d.variable == "Race") & (d.stratum == st)]
+        coll = d[(d.variable == "Race (collapsed)") & (d.stratum == st)]
+        if src.empty or coll.empty:
+            continue          # the overall-only rule has removed the overlap
+        for _, c in coll.iterrows():
+            members = [("Race", st, lv) for lv in src["level"]
+                       if (named.get(lv, collapse["_default"])
+                           if lv != "Missing" else "Missing") == c["level"]]
+            if members and not pd.isna(c["n"]):
+                cons.append((float(c["n"]), members))
+
+    # Propagate to a fixpoint: a constraint with one unknown determines it.
+    leaked = []
+    changed = True
+    while changed:
+        changed = False
+        for total, cells in cons:
+            missing = [c for c in cells if c in unknown]
+            if len(missing) != 1:
+                continue
+            if total == "overall_of":
+                head, rest = cells[0], cells[1:]
+                if head in unknown or any(c in unknown for c in rest):
+                    if missing[0] == head:
+                        val = sum(known[c] for c in rest)
+                    else:
+                        val = known[head] - sum(known[c] for c in rest
+                                                if c != missing[0])
+                else:
+                    continue
+            else:
+                val = total - sum(known[c] for c in cells if c != missing[0])
+            known[missing[0]] = val
+            unknown.discard(missing[0])
+            leaked.append((missing[0], val))
+            changed = True
+
+    assert not leaked, (
+        "suppressed cells are recoverable by subtraction, so they are not "
+        "suppressed:\n  " + "\n  ".join(
+            f"{v} / {s} / {lv} = {val:g}" for (v, s, lv), val in leaked)
+    )
+
+
 def test_the_collapsed_race_matches_the_full_categories_level_by_level():
     """Collapsing must MERGE, not reshuffle.
 
@@ -171,18 +290,52 @@ def test_the_collapsed_race_matches_the_full_categories_level_by_level():
     cmap = json.loads((REPO / "config" / "covariates.json").read_text())
     cmap = cmap["time_invariant"]["race"]["reporting_collapse"]
     named = {k: v for k, v in cmap.items() if not k.startswith("_")}
-    for st in full.stratum.unique():
-        f = full[full.stratum == st].set_index("level")["n"]
+    # The two views no longer span the same strata: covariates.json
+    # disclosure.full_levels_strata_scope ships the FULL levels at `overall`
+    # only, so the collapse can be checked against its sources exactly where
+    # both are published. Deriving the overlap rather than assuming it is what
+    # keeps this a test of the invariant and not of today's disclosure policy.
+    overlap = sorted(set(full["stratum"]) & set(coll["stratum"]))
+    assert overlap, (
+        "Race and Race (collapsed) share no stratum, so the collapse is never "
+        "checked against its source levels anywhere"
+    )
+    n_checked = 0
+    checked_strata = set()
+    for st in overlap:
+        g = full[full.stratum == st]
         c = coll[coll.stratum == st].set_index("level")["n"]
         expected: dict[str, int] = {}
-        for lvl, k in f.items():
+        # A suppressed SOURCE level makes its target unverifiable from the
+        # published file -- that is what suppression means. Only the stratum
+        # `overall` is fully unsuppressed at UCMC, so without this the check
+        # would crash on NaN at a site with any rare category inside a band.
+        dirty: set[str] = set()
+        for _, row in g.iterrows():
+            lvl = row["level"]
             tgt = named.get(lvl, cmap["_default"]) if lvl != "Missing" else "Missing"
-            expected[tgt] = expected.get(tgt, 0) + int(k)
+            if row["n_suppressed_small_cell"] == 1 or pd.isna(row["n"]):
+                dirty.add(tgt)
+                continue
+            expected[tgt] = expected.get(tgt, 0) + int(row["n"])
         for tgt, k in expected.items():
+            if tgt in dirty:
+                continue
             assert int(c.get(tgt, 0)) == k, (
                 f"{st}/{tgt}: collapsed says {c.get(tgt)}, the full categories "
                 f"sum to {k}"
             )
+            n_checked += 1
+            checked_strata.add(st)
+    # A level-by-level check that skipped every level would pass vacuously, which
+    # is the failure this suite has hit before. The bound is the strata where
+    # both views are published -- every one of them must contribute.
+    missed = sorted(set(overlap) - checked_strata)
+    assert not missed and n_checked, (
+        f"verified {n_checked} collapsed level(s); strata published in both "
+        f"views but never checked: {missed or 'none, but nothing was checked'} "
+        f"-- the check is skipping, not passing"
+    )
 
 
 def test_the_collapsed_race_preserves_the_total():

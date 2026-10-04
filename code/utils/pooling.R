@@ -34,18 +34,38 @@ pool_row <- function(scope, variable, unit, stratum, w, hr, v, min_cell) {
 
 # Level counts per stratum. `strata` is a vector as long as `v`; an "overall"
 # row is always emitted alongside the named strata.
-pool_cat <- function(variable, v, strata, min_cell) {
-  levels_of <- c("overall", sort(unique(strata)))
+# `strata_scope`: "all" emits overall plus every named stratum; "overall" emits
+# the overall row only. Config: covariates.json disclosure.full_levels_strata_scope
+# -- a categorical published in BOTH a full and a collapsed form ships the full
+# form at overall only, because publishing the two views over the same strata
+# makes each suppressed cell recoverable by subtraction.
+pool_cat <- function(variable, v, strata, min_cell, strata_scope = "all") {
+  # as.character FIRST: c("overall", <factor>) dispatches on the character and
+  # coerces the factor to its INTEGER CODES, so every named stratum then matches
+  # nothing and only the overall rows survive. Table 1's `grp` is a factor.
+  strata <- as.character(strata)
+  stopifnot("strata_scope must be 'all' or 'overall'" =
+              strata_scope %in% c("all", "overall"))
+  levels_of <- if (identical(strata_scope, "overall")) "overall"
+               else c("overall", sort(unique(strata)))
   do.call(rbind, lapply(levels_of, function(st) {
     x <- if (st == "overall") v else v[strata == st]
     tb <- table(x)
+    k <- as.integer(tb)
+    names(k) <- names(tb)
+    sup <- k > 0 & k < min_cell
+    # A row of counts sums to its PUBLISHED denominator, so ONE suppressed cell
+    # is just denominator minus the rest. Suppress the next-smallest as well.
+    if (sum(sup) == 1L) {
+      rest <- which(!sup & k > 0)
+      if (length(rest)) sup[rest[which.min(k[rest])]] <- TRUE
+    }
     do.call(rbind, lapply(names(tb), function(l) {
-      k <- as.integer(tb[[l]])
-      small <- k > 0 && k < min_cell
+      small <- unname(sup[[l]])
       data.frame(variable = variable, level = l, stratum = st,
-                 n = if (small) NA_integer_ else k,
+                 n = if (small) NA_integer_ else unname(k[[l]]),
                  denominator = length(x),
-                 pct = if (small) NA_real_ else round(100 * k / length(x), 2),
+                 pct = if (small) NA_real_ else round(100 * k[[l]] / length(x), 2),
                  n_suppressed_small_cell = as.integer(small),
                  stringsAsFactors = FALSE)
     }))

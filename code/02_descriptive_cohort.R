@@ -66,9 +66,18 @@ SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
 MIN_CELL <- config$reporting$small_cell_min_den
 
-# Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
-# pooling_categorical.csv. Map lives in covariates.json, not here.
+# Race is collapsed for DISPLAY; the full CLIF granularity reaches
+# pooling_categorical.csv at the `overall` stratum. Map lives in
+# covariates.json, not here.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
+
+# Where a categorical ships in BOTH a full and a collapsed form, the full form
+# is published at `overall` only -- publishing both views over the same strata
+# made each suppressed cell recoverable by subtraction. See
+# covariates.json disclosure._MEASURED_2026_10_02.
+FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
+stopifnot("covariates.json must declare disclosure.full_levels_strata_scope" =
+            !is.null(FULL_SCOPE))
 
 POOL <- list()
 POOL_CAT <- list()
@@ -411,7 +420,11 @@ row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
 
 row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
   raw <- ifelse(is.na(v), "Missing", as.character(v))
-  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<- pool_cat(label, raw, grp, MIN_CELL)
+  # A categorical with no collapsed twin is the ONLY view of itself, so it still
+  # ships per stratum; the overall-only rule applies where two views overlap.
+  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<-
+    pool_cat(label, raw, grp, MIN_CELL,
+             strata_scope = if (is.null(collapse)) "all" else FULL_SCOPE)
   v <- if (is.null(collapse)) raw else collapse_levels(raw, collapse)
   if (!identical(v, raw)) POOL_CAT[[length(POOL_CAT) + 1]] <<-
     pool_cat(paste(label, "(collapsed)"), v, grp, MIN_CELL)
