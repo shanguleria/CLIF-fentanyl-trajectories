@@ -83,8 +83,78 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
 }
 
 
-# The block stamped onto every shareable output.
+# Mirrors paths.py. CODE_GLOBS, PROTOCOL_FILES and SITE_CONFIG must match it
+# exactly or the two languages stamp different digests for the same tree;
+# tests/test_paths.py asserts they agree.
+CODE_GLOBS <- c("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
+PROTOCOL_FILES <- c("covariates.json", "outlier_config.json")
+SITE_CONFIG <- "config.json"
+
+# sha256 of a STRING. tools::sha256sum only takes file paths, and `digest` is not
+# in the renv library, so the string goes via a tempfile. Base R only, by design.
+.sha_string <- function(s) {
+  tmp <- tempfile()
+  on.exit(unlink(tmp), add = TRUE)
+  # writeChar without the trailing NUL, so the bytes match Python's .encode()
+  con <- file(tmp, "wb"); writeChar(s, con, eos = NULL); close(con)
+  substr(tools::sha256sum(tmp), 1, 16)
+}
+
+.sha_file <- function(p) substr(tools::sha256sum(p), 1, 16)
+
+# Content fingerprint of the code that produced a run: list(overall, per_file).
+# Content-based rather than git-based -- see the docstring in paths.py.
+code_digests <- function(root = here::here()) {
+  files <- unique(unlist(lapply(CODE_GLOBS,
+                                function(g) Sys.glob(file.path(root, g)))))
+  rel <- substring(files, nchar(root) + 2L)
+  # method = "radix" is C-locale BYTE order, which is what Python's sorted()
+  # gives. R's DEFAULT sort uses locale collation and ordered paths.py before
+  # paths.R (collating case-insensitively, 'p' < 'r') where Python puts paths.R
+  # first ('R' = 0x52 < 'p' = 0x70). Identical tree, different overall digest --
+  # measured 2026-10-02, and invisible in the per-file digests, which matched.
+  o <- order(rel, method = "radix")
+  files <- files[o]
+  rel <- rel[o]
+  per <- setNames(vapply(files, .sha_file, character(1)), rel)
+  # The overall digest hashes the (path, digest) PAIRS, so a rename moves it too.
+  joined <- paste(sprintf("%s %s", rel, unname(per)), collapse = "\n")
+  list(overall = .sha_string(joined), per_file = as.list(per))
+}
+
+# The protocol version each config declares. One field per file, not one
+# overall: they are bumped independently.
+definition_versions <- function(root = here::here()) {
+  out <- list()
+  for (n in PROTOCOL_FILES) {
+    p <- file.path(root, "config", n)
+    if (file.exists(p)) {
+      v <- jsonlite::fromJSON(p)$definition_version
+      out[[n]] <- if (is.null(v)) "" else v
+    }
+  }
+  out
+}
+
+# SHA-256 of every file that governs what the outputs contain. Used by
+# require_manifest() for WITHIN-site staleness; provenance() splits the same
+# digests into protocol-vs-site for the CROSS-site check.
+config_digests <- function(root = here::here()) {
+  out <- list()
+  for (n in c(SITE_CONFIG, PROTOCOL_FILES)) {
+    p <- file.path(root, "config", n)
+    # tools::sha256sum is base R; it matches Python's hashlib.sha256 of the same
+    # bytes, verified 2026-09-07.
+    if (file.exists(p)) out[[n]] <- .sha_file(p)
+  }
+  out
+}
+
+# The block stamped onto every shareable output. `code_digest` is the
+# authoritative answer to "did two sites run the same code?"; `code_version` is
+# the human-readable git label and may be "unknown".
 provenance <- function(config) {
+  root <- here::here()
   # `git describe` exits non-zero outside a checkout AND in a repo with no commits
   # yet. system(intern = TRUE) signals that as a WARNING, not an error, so
   # tryCatch(error=) alone does not catch it -- it returns character(0) and prints
@@ -94,11 +164,18 @@ provenance <- function(config) {
       system("git describe --always --dirty", intern = TRUE, ignore.stderr = TRUE)),
     error = function(e) character(0)
   )
+  cd <- code_digests(root)
+  cfg <- config_digests(root)
   list(
     site_name       = config$site_name,
     clif_version    = config$clif_version,     # CLIF SPEC version
     dataset_version = if (is.null(config$dataset_version)) "" else config$dataset_version,
+    definition_versions = definition_versions(root),
     code_version    = if (length(git_sha)) git_sha[1] else "unknown",
+    code_digest     = cd$overall,
+    protocol_digests = cfg[PROTOCOL_FILES],
+    site_config_digest = if (is.null(cfg[[SITE_CONFIG]])) "" else cfg[[SITE_CONFIG]],
+    file_digests    = cd$per_file,
     generated       = format(Sys.time(), tz = config$timezone, usetz = TRUE)
   )
 }
@@ -114,20 +191,31 @@ require_manifest <- function(dirs, root) {
          "files that may still be on disk.", call. = FALSE)
   }
   m <- jsonlite::fromJSON(f)
-  now <- vapply(c("config.json", "covariates.json", "outlier_config.json"),
-                function(n) {
-                  p <- file.path(root, "config", n)
-                  # tools::sha256sum is base R; it matches Python's
-                  # hashlib.sha256 of the same bytes, verified 2026-09-07.
-                  if (file.exists(p)) substr(tools::sha256sum(p), 1, 16)
-                  else NA_character_
-                }, character(1))
   was <- unlist(m$config_digests)
+  # REQUIRED, not optional: a manifest with no digests cannot be checked against
+  # the config on disk, and treating an absent block as empty made this guard
+  # pass vacuously -- the same hole as a test that cannot fail.
+  if (!length(was)) {
+    stop("manifest.json carries no config_digests, so the tables on disk ",
+         "cannot be checked against the current config. ",
+         "Re-run code/01_build_cohort.py.", call. = FALSE)
+  }
+  now <- unlist(config_digests(root))
   drift <- names(was)[!is.na(now[names(was)]) & now[names(was)] != was]
   if (length(drift)) {
     stop("config has changed since Phase 0 ran: ", paste(drift, collapse = ", "),
          ". Re-run code/01_build_cohort.py rather than analysing stale tables.",
          call. = FALSE)
+  }
+  # Code drift is RECORDED, never refused (SG, 2026-10-02): a site may have to
+  # edit _to_mcg_hr to run at all. The digest in each provenance.json is what
+  # the coordinating centre compares.
+  if (!is.null(m$code_digest)) {
+    nowc <- code_digests(root)$overall
+    if (!identical(as.character(m$code_digest), nowc)) {
+      cat(sprintf("  NOTE code changed since Phase 0 ran (%s -> %s); these outputs mix two code versions\n",
+                  m$code_digest, nowc))
+    }
   }
   m
 }

@@ -56,8 +56,71 @@ def phase_dir(dirs: dict[str, Path], name: str) -> Path:
     return d
 
 
+# The code the runner executes. code/tabled/ is excluded because the runner never
+# calls it; tests/ because it produces no output.
+CODE_GLOBS = ("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
+# Protocol. MUST be byte-identical across sites or a pooled result is not
+# meaningful. config.json is deliberately NOT here: it carries site_name and
+# data_directory, so its digest is EXPECTED to differ between sites, and treating
+# it as a cross-site equality check would flag every site as divergent.
+PROTOCOL_FILES = ("covariates.json", "outlier_config.json")
+SITE_CONFIG = "config.json"
+
+
+def _repo() -> Path:
+    """This file is code/utils/paths.py, so the repo is two levels up.
+
+    Resolved here rather than passed in: provenance() has twelve callers across
+    both languages and none of them had a repo argument.
+    """
+    return Path(__file__).resolve().parents[2]
+
+
+def _sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()[:16]
+
+
+def code_digests(repo: Path | None = None) -> tuple[str, dict[str, str]]:
+    """Content fingerprint of the code that produced a run: (overall, per file).
+
+    Content-based rather than git-based. `git describe` answers "which code?"
+    only where a checkout exists, carries a tag and is clean; it returns
+    "unknown" for a ZIP download and a bare "-dirty" for an uncommitted edit.
+    A digest works in all three cases and is comparable across sites by equality.
+
+    The overall digest hashes the (path, digest) PAIRS, so a rename moves it too.
+    """
+    repo = repo or _repo()
+    files = sorted({p for g in CODE_GLOBS for p in repo.glob(g)},
+                   key=lambda p: p.relative_to(repo).as_posix())
+    per = {p.relative_to(repo).as_posix(): _sha(p.read_bytes()) for p in files}
+    joined = "\n".join(f"{k} {v}" for k, v in per.items())
+    return _sha(joined.encode()), per
+
+
+def definition_versions(repo: Path | None = None) -> dict[str, str]:
+    """The protocol version each config declares.
+
+    One field per file, not one overall: they are bumped independently --
+    covariates.json is at 0.6.0 while outlier_config.json is at 0.3.0 -- so a
+    single `definition_version` would be ambiguous about which it meant.
+    """
+    repo = repo or _repo()
+    out = {}
+    for name in PROTOCOL_FILES:
+        f = repo / "config" / name
+        if f.exists():
+            out[name] = json.loads(f.read_text()).get("definition_version", "")
+    return out
+
+
 def provenance(config: dict) -> dict:
-    """The block stamped onto every shareable output."""
+    """The block stamped onto every shareable output.
+
+    `code_digest` is the authoritative answer to "did two sites run the same
+    code?". `code_version` is the human-readable git label and may be "unknown".
+    """
+    repo = _repo()
     try:
         sha = subprocess.check_output(
             ["git", "describe", "--always", "--dirty"], text=True,
@@ -65,22 +128,34 @@ def provenance(config: dict) -> dict:
         ).strip()
     except Exception:
         sha = "unknown"
+    digest, per_file = code_digests(repo)
+    cfg = config_digests(repo)
     return {
         "site_name": config["site_name"],
         "clif_version": config["clif_version"],          # CLIF SPEC version
         "dataset_version": config.get("dataset_version", ""),  # conversion/ETL release
+        "definition_versions": definition_versions(repo),
         "code_version": sha,
+        "code_digest": digest,
+        "protocol_digests": {k: v for k, v in cfg.items() if k in PROTOCOL_FILES},
+        "site_config_digest": cfg.get(SITE_CONFIG, ""),
+        "file_digests": per_file,
         "generated": datetime.now(ZoneInfo(config["timezone"])).isoformat(),
     }
 
 
 def config_digests(repo: Path) -> dict[str, str]:
-    """SHA-256 of every file that governs what the outputs contain."""
+    """SHA-256 of every file that governs what the outputs contain.
+
+    Used by require_manifest() for WITHIN-site staleness. provenance() splits the
+    same digests into protocol-vs-site for the CROSS-site check; both read this
+    one function, so the two views cannot disagree numerically.
+    """
     out = {}
-    for name in ("config.json", "covariates.json", "outlier_config.json"):
+    for name in (SITE_CONFIG,) + PROTOCOL_FILES:
         f = repo / "config" / name
         if f.exists():
-            out[name] = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+            out[name] = _sha(f.read_bytes())
     return out
 
 
@@ -143,13 +218,29 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
             f"files that may still be on disk."
         )
     m = json.loads(f.read_text())
+    # REQUIRED, not .get(): a manifest without digests cannot be checked against
+    # the config on disk, and reading an absent block as {} made this guard pass
+    # vacuously -- the same shape of hole as a test that cannot fail.
+    stamped = m.get("config_digests")
+    if not stamped:
+        raise SystemExit(
+            f"{MANIFEST} carries no config_digests, so the tables on disk cannot "
+            f"be checked against the current config. Re-run code/01_build_cohort.py."
+        )
     now = config_digests(repo)
-    drift = {k: (v, now.get(k)) for k, v in m.get("config_digests", {}).items()
-             if now.get(k) != v}
+    drift = {k: (v, now.get(k)) for k, v in stamped.items() if now.get(k) != v}
     if drift:
         raise SystemExit(
             f"config has changed since Phase 0 ran: "
             + ", ".join(f"{k} {a} -> {b}" for k, (a, b) in drift.items())
             + ". Re-run code/01_build_cohort.py rather than analysing stale tables."
         )
+    # Code drift is RECORDED, never refused (SG, 2026-10-02). A site may have to
+    # edit _to_mcg_hr to run at all, and blocking there would wall it off while
+    # it follows this pipeline's own error message. The digest in each
+    # provenance.json is what the coordinating centre compares.
+    was = m.get("code_digest")
+    if was and was != code_digests(repo)[0]:
+        print(f"  NOTE code changed since Phase 0 ran ({was} -> "
+              f"{code_digests(repo)[0]}); these outputs mix two code versions")
     return m

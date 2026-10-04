@@ -46,9 +46,13 @@ def test_paths_r_and_paths_py_expose_the_same_surface():
     r_fns = set(re.findall(r"^(\w+)\s*<-\s*function", r, re.M))
     py = (REPO / "code" / "utils" / "paths.py").read_text()
     py_fns = set(re.findall(r"^def (\w+)", py, re.M))
-    # config_digests and write_manifest are Python-only by design: only Phase 0
-    # writes the manifest. Everything else must exist on both sides.
-    py_only_by_design = {"config_digests", "write_manifest"}
+    # Private helpers are excluded on both sides: Python marks them with a
+    # leading _ and R with a leading . (which the \w+ patterns above already
+    # miss), so the two conventions differ and neither is part of the surface.
+    py_fns = {f for f in py_fns if not f.startswith("_")}
+    # write_manifest is Python-only by design: only Phase 0 writes the manifest.
+    # Everything else must exist on both sides.
+    py_only_by_design = {"write_manifest"}
     missing_in_r = py_fns - r_fns - py_only_by_design
     assert not missing_in_r, (
         f"paths.py has {sorted(missing_in_r)} and paths.R does not; either port "
@@ -69,6 +73,66 @@ def test_the_two_site_dirs_return_the_same_key_set():
         f"paths.R site_dirs returns {sorted(r_keys)}; paths.py returns "
         f"{sorted(site_dirs(REPO))}"
     )
+
+
+def test_the_two_languages_stamp_the_SAME_code_digest():
+    """code_digest is the cross-site "did we run the same code?" check, so a
+    Python/R disagreement makes every R-written provenance block incomparable to
+    every Python-written one -- and the pipeline writes both in a single run.
+
+    They disagreed on first implementation (2026-10-02), and the PER-FILE digests
+    matched, which is what made it invisible: R's default sort() uses LOCALE
+    collation and put code/utils/paths.py before paths.R, while Python's sorted()
+    is byte order and gives paths.R first ('R' 0x52 < 'p' 0x70). Only the overall
+    digest moved. Fixed with order(method = "radix").
+    """
+    from utils.paths import code_digests
+
+    py_digest, py_files = code_digests(REPO)
+    r = subprocess.run(
+        ["Rscript", "-e",
+         'suppressMessages(library(here)); source("code/utils/paths.R"); '
+         'cd <- code_digests(); cat(cd$overall, length(cd$per_file))'],
+        cwd=REPO, capture_output=True, text=True)
+    assert r.returncode == 0, (
+        "Rscript failed, so this check cannot run -- and it is the only thing "
+        f"holding the two digests together:\n{r.stderr[-500:]}"
+    )
+    out = r.stdout.strip().split()
+    assert out[0] == py_digest, (
+        f"code_digest disagrees across languages: Python {py_digest}, R {out[0]}. "
+        f"Compare CODE_GLOBS and the sort order in paths.py and paths.R."
+    )
+    assert int(out[1]) == len(py_files), (
+        f"the two halves digest a different NUMBER of files: Python "
+        f"{len(py_files)}, R {out[1]} -- CODE_GLOBS has drifted"
+    )
+
+
+def test_the_code_digest_moves_when_any_covered_file_changes():
+    """A fingerprint that does not move is worse than none: it would certify two
+    different code bases as identical. Checked by perturbing a real covered file
+    in a temp copy rather than by reasoning about the hash."""
+    import shutil
+    import tempfile
+
+    from utils.paths import code_digests
+
+    base, files = code_digests(REPO)
+    assert files, "code_digests covered no files at all"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "repo"
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / rel, root / rel)
+        assert code_digests(root)[0] == base, (
+            "a faithful copy of the covered files must digest identically"
+        )
+        victim = root / sorted(files)[0]
+        victim.write_text(victim.read_text() + "\n# one added comment\n")
+        assert code_digests(root)[0] != base, (
+            f"editing {sorted(files)[0]} did not move the code digest"
+        )
 
 
 def test_no_source_file_writes_to_a_retired_directory():
