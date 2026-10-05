@@ -663,6 +663,15 @@ p_ind <- house(
                           name = NULL) +
     scale_x_continuous(breaks = IND_SWEEP_H) +
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
+    # ORDER IS REQUIRED, not cosmetic. This is the only figure in the live
+    # pipeline with two legends, and with both left at the default order = 0
+    # ggplot2 placed them in an order that VARIED BETWEEN R SESSIONS: the same
+    # data and the same code produced two different PNGs, the colour and
+    # linetype boxes swapping sides. Measured 2026-10-05 -- 5 sessions gave one
+    # byte-identical file with these two lines, two distinct files without them.
+    # A figure a site cannot reproduce by checksum is a federation problem.
+    guides(colour = guide_legend(order = 1),
+           linetype = guide_legend(order = 2)) +
     labs(x = "Window, +/- hours",
          y = "% of EVENTS with a qualifying score"))
 ggsave(file.path(dirs$phase, "indication.png"), p_ind,

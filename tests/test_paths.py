@@ -109,6 +109,40 @@ def test_the_two_languages_stamp_the_SAME_code_digest():
     )
 
 
+def test_the_r_staleness_guard_does_not_cry_wolf_on_an_unchanged_tree():
+    """require_manifest() in paths.R compares the manifest's code_digest to the
+    tree's. .sha_string() returns a NAMED character, so identical() compared the
+    names attribute too and was FALSE for equal digests: every R script printed
+    `NOTE code changed since Phase 0 ran (424e4460bc02333e -> 424e4460bc02333e)`
+    -- the same hash twice -- on every run from 2026-10-02 to 2026-10-05.
+
+    A guard that can never say "no drift" cannot report drift either, so the
+    bug disabled the check rather than just adding noise. The Python twin at
+    paths.py:243 compares plain strings and was always right, which is how the
+    two functions paths.R calls mirrors diverged unnoticed.
+
+    This asserts the COMPARISON, not the digest value -- the existing
+    cross-language test already covers the value and passed throughout.
+    """
+    r = subprocess.run(
+        ["Rscript", "-e",
+         'suppressMessages(library(here)); source("code/utils/paths.R"); '
+         'cd <- code_digests(); '
+         'cat(identical(as.character(cd$overall), unname(cd$overall)))'],
+        cwd=REPO, capture_output=True, text=True)
+    assert r.returncode == 0, (
+        f"Rscript failed, so this check cannot run:\n{r.stderr[-500:]}")
+    assert r.stdout.strip() == "TRUE", (
+        "code_digests()$overall still carries attributes that make identical() "
+        "false against its own string value, so require_manifest() reports code "
+        "drift on an unchanged tree. Keep the unname() in paths.R.")
+
+    src = (REPO / "code" / "utils" / "paths.R").read_text()
+    assert "unname(code_digests(root)$overall)" in src, (
+        "require_manifest() must unname() the digest before identical(), or the "
+        "staleness NOTE fires on every run and stops meaning anything")
+
+
 def test_the_code_digest_moves_when_any_covered_file_changes():
     """A fingerprint that does not move is worse than none: it would certify two
     different code bases as identical. Checked by perturbing a real covered file

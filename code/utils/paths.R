@@ -211,7 +211,14 @@ require_manifest <- function(dirs, root) {
   # edit _to_mcg_hr to run at all. The digest in each provenance.json is what
   # the coordinating centre compares.
   if (!is.null(m$code_digest)) {
-    nowc <- code_digests(root)$overall
+    # unname() IS LOAD-BEARING. .sha_string() returns a NAMED character, so
+    # identical() compared the names attribute too and was FALSE for equal
+    # digests -- the NOTE fired on every run of every R script, printing the
+    # same hash twice ("424e4460bc02333e -> 424e4460bc02333e"). A guard that
+    # can never say "no drift" cannot report drift either. Measured and fixed
+    # 2026-10-05. The Python twin at paths.py:243 compares plain strings and
+    # was always correct, so the two mirrors had silently diverged.
+    nowc <- unname(code_digests(root)$overall)
     if (!identical(as.character(m$code_digest), nowc)) {
       cat(sprintf("  NOTE code changed since Phase 0 ran (%s -> %s); these outputs mix two code versions\n",
                   m$code_digest, nowc))
