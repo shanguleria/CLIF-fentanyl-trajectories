@@ -430,6 +430,7 @@ overdispersion <- function(d, p0, trim) {
   # proportional to n_events, so the weighted mean is p0 by construction and
   # the DL Q is the same statistic as sum(z^2) rather than a second quantity.
   w <- 1 / v
+  tau2 <- max(0, (q_stat - (i_n - 1)) / (sum(w) - sum(w^2) / sum(w)))
   data.frame(
     n_units = i_n,
     q_stat = q_stat,
@@ -441,7 +442,12 @@ overdispersion <- function(d, p0, trim) {
     # so the threshold must carry the same divisor or the comparison is off by
     # I/(I-1) -- 20% at six units.
     phi_crit_95 = qchisq(0.95, i_n - 1L) / i_n,
-    tau2 = max(0, (q_stat - (i_n - 1)) / (sum(w) - sum(w^2) / sum(w))),
+    tau2 = tau2,
+    mean_binomial_var = mean(v),
+    # The share of between-unit spread that is NOT sampling error. This is what
+    # the funnel's volume axis exists to ask -- "are the small units just
+    # noisy?" -- answered as a number rather than left to the eye.
+    share_not_sampling = tau2 / (tau2 + mean(v)),
     stringsAsFactors = FALSE)
 }
 
@@ -473,7 +479,9 @@ rownames(od_tbl) <- NULL
 stopifnot(
   "the over-dispersion diagnostic produced no rows" = nrow(od_tbl) > 0,
   "phi cannot be negative" = all(od_tbl$phi >= 0),
-  "tau2 cannot be negative" = all(od_tbl$tau2 >= 0)
+  "tau2 cannot be negative" = all(od_tbl$tau2 >= 0),
+  "share_not_sampling must be a proportion" =
+    all(od_tbl$share_not_sampling >= 0 & od_tbl$share_not_sampling <= 1)
 )
 
 cat("\n  Over-dispersion (measured, applied nowhere; trim =",
@@ -665,6 +673,12 @@ for (m in METRICS) {
     S_VAL <- setNames(ifelse(is_comb, 2.90, 1.70), spec$series)
     L_VAL <- setNames(ifelse(is_comb, 0.70, 0.40), spec$series)
 
+    # How many ORDERED-ADJACENT pairs have overlapping intervals. Computed, not
+    # asserted: it is the number that says how much of the ordering a reader may
+    # actually read, and it has to come from the run that drew the panel.
+    n_adj_overlap <- if (n_units > 1L)
+      sum(ord$ci_lo[-1] <= ord$ci_hi[-n_units]) else 0L
+
     fn <- paste0(m, "_caterpillar_", k, ".png")
     register_caption(fn, sprintf("%s, by %s", spec$title, k),
       paste(METRIC_NOTE[[m]], SERIES_NOTE[[m]],
@@ -688,7 +702,27 @@ for (m in METRICS) {
                     length(unique(unit_tbl$unit[unit_tbl$metric == m &
                                                 unit_tbl$unit_key == k])),
                     format(n_unatt_m, big.mark = ","), key_label(k)),
-            deff_note(deff_m)))
+            deff_note(deff_m),
+            sprintf(paste0("WHAT THE INTERVALS ARE FOR. Ordering by rate ",
+                           "invites reading the rank itself as the result, and ",
+                           "the intervals are what say how much of that ",
+                           "ordering is resolvable: %d of the %d ordered-",
+                           "adjacent pairs here OVERLAP. Read the panel as the ",
+                           "extremes being far apart with the middle a cluster, ",
+                           "not as a step per unit. Overlap is an informal ",
+                           "read and NOT a pairwise test -- there is no ",
+                           "multiplicity control across %d units and none is ",
+                           "intended. The interval covers SAMPLING ONLY: it is ",
+                           "silent on whether the charting behind the numerator ",
+                           "is accurate, which is a larger source of doubt than ",
+                           "its width suggests. A narrow interval means the ",
+                           "rate is precisely measured, not that it reflects ",
+                           "how the unit practises rather than whom it admits."),
+                    n_adj_overlap, max(n_units - 1L, 0L), n_units),
+            paste0("This panel and the funnel beside it ask different ",
+                   "questions. The funnel asks whether the spread is explained ",
+                   "by how much each unit contributes; this one asks how much ",
+                   "of the resulting ordering can be resolved.")))
 
     # One layer per geom, with alpha/size/linewidth MAPPED rather than split into
     # separate layers per series: position_dodge divides the slot by the number
@@ -732,6 +766,31 @@ for (m in METRICS) {
       data.frame(n = grid_n, lo = pooled_m - Z_OUTER * se,
                  hi = pooled_m + Z_OUTER * se, band = "99.8%"))
 
+    # The diagnostic for THIS panel's series, quoted in its caption. A site with
+    # fewer than three units gets no row (section 8b skips it), and then the
+    # sentence is simply omitted rather than printing a blank number.
+    od_mk <- od_tbl[od_tbl$metric == m & od_tbl$unit_key == k &
+                      od_tbl$series == spec$combined, ]
+    od_note <- if (nrow(od_mk) == 1L)
+      sprintf(paste0("WHAT THIS PANEL ANSWERS, as a number: the volume axis ",
+                     "exists to ask whether the spread is just low-volume ",
+                     "units being noisy, and it is not -- %.1f%% of the ",
+                     "variation across units is NOT sampling error ",
+                     "(between-unit SD %.2f pp against a mean within-unit ",
+                     "binomial SD of %.2f pp). The spread is real, and that is ",
+                     "this figure's contribution; the caterpillar beside it ",
+                     "then shows how much of the ordering can be resolved. ",
+                     "Over-dispersion is correspondingly large -- Winsorised ",
+                     "phi %.1f against a 95%% reference of %.2f -- and is ",
+                     "reported in overdispersion.csv, NOT corrected for. ",
+                     "Inflating the envelope by sqrt(phi) would widen it past ",
+                     "the whole observed range and past 0%%, which removes the ",
+                     "figure's ability to say anything rather than making it ",
+                     "cautious."),
+              100 * od_mk$share_not_sampling, sqrt(od_mk$tau2),
+              sqrt(od_mk$mean_binomial_var), od_mk$phi_winsorised,
+              od_mk$phi_crit_95) else ""
+
     fn <- paste0(m, "_funnel_", k, ".png")
     register_caption(fn, sprintf("%s -- funnel against unit volume, by %s",
                                  spec$title, k),
@@ -766,7 +825,8 @@ for (m in METRICS) {
                            "that visible. Only the pooled series is drawn -- ",
                            "overlapping funnels defeat the envelope reading. ",
                            "Labels are %s."),
-                    pooled_m, ev_per_ep, key_label(k))))
+                    pooled_m, ev_per_ep, key_label(k)),
+            od_note))
 
     lab <- funnel_labels(dcomb$n_events, dcomb$pct_paired, as.character(dcomb$unit),
                          xr = range(grid_n),

@@ -657,6 +657,36 @@ def test_over_dispersion_is_measured_declared_and_owned():
         "unit is pulled to the median and phi reads 0 whatever the data says.")
 
 
+def test_the_caterpillar_caption_refuses_to_be_read_as_a_ranking():
+    """Ordering units by rate invites reading the rank as the result. The
+    intervals are what say how much of the ordering is resolvable -- at UCMC
+    4 of 6 ordered-adjacent pairs overlap on co-administration -- so the caption
+    has to state both the count and that overlap is not a pairwise test.
+
+    The count must be COMPUTED by the run that draws the panel. A hardcoded
+    number goes stale the first time a site has different units, and would be
+    the worst kind of stale: still plausible, and about the figure's own
+    interpretation."""
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+
+    assert "n_adj_overlap <- " in src, (
+        "the caterpillar must compute its ordered-adjacent overlap count")
+    assert "ord$ci_lo[-1] <= ord$ci_hi[-n_units]" in src, (
+        "the overlap count must come from the ordered intervals actually drawn")
+    assert "n_adj_overlap," in src, (
+        "n_adj_overlap is computed but never reaches the caption -- the same "
+        "declared-but-unconsumed failure this suite exists to catch")
+
+    low = src.lower()
+    assert "not a pairwise test" in low, (
+        "the caterpillar caption must say overlap is not a pairwise test: "
+        f"{COV['unit_variation']['_INTERVALS_DESCRIBE_THEY_DO_NOT_ADJUST'][:60]}...")
+    assert "sampling only" in low, (
+        "the caption must say the interval covers sampling only -- it is silent "
+        "on whether the charting behind the numerator is accurate, which the ED "
+        "and procedural findings showed is the larger doubt")
+
+
 # ------------------------------------------------------------- indication
 # Was the dose change prompted by anything documented? Thresholds and the
 # window are protocol: two sites cutting NVPS at different values, or looking
