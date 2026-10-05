@@ -79,7 +79,7 @@ STATE_COLOURS <- c(
   "died"               = "#8c2f18")
 
 # The three titration series in 06_unit_variation.R: an initiation, an
-# uptitration, and the two pooled. Categorical, not ordered -- "any increase" is
+# uptitration, and the two combined. Categorical, not ordered -- "any increase" is
 # the union of the other two, not a third level of something.
 #
 # A SEPARATE PALETTE FROM STATE_COLOURS, DELIBERATELY. The nearest state hues

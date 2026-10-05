@@ -630,8 +630,13 @@ def test_the_funnel_limits_claim_no_adjustment_they_do_not_make():
         "the funnel envelope must be unadjusted binomial, but something "
         f"applies sqrt(deff) again: {applied[:2]}")
 
+    # Target the AFFIRMATIVE constructions only. A bare "widened by" ban fired
+    # on a caption that DENIES the widening ("no bar was widened by this
+    # number") -- honest text tripping a keyword. The sqrt(deff) check above is
+    # the robust guard; these catch the old wording coming back verbatim.
     low = "\n".join(code).lower()
-    for claim in ("widened by", "same clustering correction"):
+    for claim in ("limits widened", "widened by sqrt",
+                  "carry the same clustering correction"):
         assert claim not in low, (
             f"06_unit_variation.R says the limits are {claim!r}; they are "
             "unadjusted binomial. Fix the code or the caption, not both ways.")

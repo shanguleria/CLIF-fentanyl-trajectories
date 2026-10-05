@@ -165,7 +165,7 @@ boot_group <- function(d, group_col, seed, outcome, episodes, n_resamples) {
   # which intervals a reader sees.
   set.seed(seed)
   reps <- matrix(NA_real_, nrow = n_resamples, ncol = G)
-  pooled <- numeric(n_resamples)
+  overall <- numeric(n_resamples)
   for (b in seq_len(n_resamples)) {
     mult <- tabulate(sample.int(n_ep, n_ep, replace = TRUE), nbins = n_ep)
     w <- mult[cell$ei]
@@ -174,7 +174,7 @@ boot_group <- function(d, group_col, seed, outcome, episodes, n_resamples) {
     ib <- as.integer(rownames(sb))
     num[ib] <- sb[, 1]; den[ib] <- sb[, 2]
     reps[b, ] <- ifelse(den > 0, 100 * num / den, NA_real_)
-    pooled[b] <- 100 * sum(num) / sum(den)
+    overall[b] <- 100 * sum(num) / sum(den)
   }
 
   out <- data.frame(
@@ -185,14 +185,23 @@ boot_group <- function(d, group_col, seed, outcome, episodes, n_resamples) {
     stringsAsFactors = FALSE)
   out$n_episodes <- as.vector(tapply(d$encounter_block, g,
                                      function(x) length(unique(x)))[out$group])
-  # PER-GROUP design effect, so a coordinating centre can widen the interval on
-  # the specific proportion it is pooling rather than on a cohort-wide average.
+  # PER-GROUP design effect. Read by SINGLE-GROUP callers -- 05_titration.R
+  # passes g = "all", so this column is the design effect of the overall rate
+  # and is what that script ships.
+  #
+  # MULTI-GROUP callers deliberately discard it: 06_unit_variation.R overwrites
+  # the column with the overall attribute below, because a per-unit deff would
+  # only be needed to combine a NAMED unit across sites, and
+  # docs/cohort_and_outputs.md section 8.7 forbids that -- care_setting level
+  # sets differ by site by construction, so the centre pools the between-unit
+  # spread or an ICC, never the named units. Do not "fix" that overwrite by
+  # shipping both; the per-unit column would have no permitted consumer.
   naive <- out$pct_paired * (100 - out$pct_paired) / out$n_events
   out$deff <- apply(reps, 2, stats::var, na.rm = TRUE) / naive
 
   p0 <- 100 * sum(point_k) / sum(point_n)
-  attr(out, "pooled_pct") <- p0
-  attr(out, "deff") <- stats::var(pooled) / (p0 * (100 - p0) / sum(point_n))
+  attr(out, "overall_pct") <- p0
+  attr(out, "deff") <- stats::var(overall) / (p0 * (100 - p0) / sum(point_n))
   out
 }
 

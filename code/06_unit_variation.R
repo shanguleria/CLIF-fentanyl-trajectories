@@ -1,7 +1,7 @@
 # ==============================================================================
 # 06_unit_variation.R  --  bolus co-administration by ICU unit and by calendar year
 #
-# Purpose : Split 05_titration.R's single pooled number by WHERE and WHEN. Which ICU was the patient in when the rate change was charted, and what calendar year was it? Caterpillar and funnel views per unit, and the metric across the years the extract spans.
+# Purpose : Split 05_titration.R's single overall number by WHERE and WHEN. Which ICU was the patient in when the rate change was charted, and what calendar year was it? Caterpillar and funnel views per unit, and the metric across the years the extract spans.
 # Author  : Shan Guleria
 # Created : 2026-09-30
 # Inputs  : output/intermediate_phi/titration_events_classified.parquet, icu_intervals.parquet, trajectory_long.parquet
@@ -308,7 +308,7 @@ for (m in METRICS) {
                       k, SEED, outcome = spec$outcome, episodes = eps,
                       n_resamples = B_RESAMP)
       r$metric <- m; r$unit_key <- k; r$series <- sname
-      r$pooled_pct <- attr(r, "pooled_pct"); r$deff <- attr(r, "deff")
+      r$overall_pct <- attr(r, "overall_pct"); r$deff <- attr(r, "deff")
       r
     }))
   }))
@@ -319,7 +319,7 @@ for (m in METRICS) {
   y <- boot_group(a$att, "anchor_year", SEED, outcome = spec$outcome,
                   episodes = eps, n_resamples = B_RESAMP)
   y$metric <- m
-  y$pooled_pct <- attr(y, "pooled_pct"); y$deff <- attr(y, "deff")
+  y$overall_pct <- attr(y, "overall_pct"); y$deff <- attr(y, "deff")
   names(y)[names(y) == "group"] <- "year"
   y$year <- as.integer(y$year)
   YEAR[[m]] <- y[order(y$year), ]
@@ -337,8 +337,8 @@ for (m in METRICS) {
 
   for (sname in spec$series) {
     r <- u[u$series == sname, ]
-    cat(sprintf("  %-11s %-14s pooled %5.1f%%   design effect %.2f\n",
-                m, sname, r$pooled_pct[1], r$deff[1]))
+    cat(sprintf("  %-11s %-14s overall %5.1f%%   design effect %.2f\n",
+                m, sname, r$overall_pct[1], r$deff[1]))
   }
 }
 
@@ -395,9 +395,9 @@ plot_units <- unit_tbl[unit_tbl$n_suppressed_small_cell == 0, ]
 # rather than absorbed into the limits.
 #
 # Spiegelhalter, Qual Saf Health Care 2005;14:347-51, "Estimating an
-# over-dispersion factor". z is a unit's deviation from the pooled rate in null
+# over-dispersion factor". z is a unit's deviation from the overall rate in null
 # binomial SEs; Q = sum(z^2) is chi-square on I-1 df when every unit truly sits
-# at the pooled rate; phi = Q/I is the multiplicative factor that WOULD widen
+# at the overall rate; phi = Q/I is the multiplicative factor that WOULD widen
 # the limits by sqrt(phi) if we chose to adjust.
 #
 # THIS IS A DIFFERENT QUANTITY FROM THE DEFF. phi is BETWEEN-unit spread; the
@@ -457,7 +457,7 @@ for (m in METRICS) {
     for (sname in ANALYSES[[m]]$series) {
       d <- plot_units[plot_units$metric == m & plot_units$unit_key == k &
                         plot_units$series == sname, ]
-      p0 <- unit_tbl$pooled_pct[unit_tbl$metric == m &
+      p0 <- unit_tbl$overall_pct[unit_tbl$metric == m &
                                   unit_tbl$series == sname][1]
       # Below three units Q has 0 or 1 df and Winsorising 10% of them moves
       # nothing, so the row would read as a measurement without being one.
@@ -587,15 +587,26 @@ funnel_labels <- function(x, y, lab, xr, yr) {
   out
 }
 
-deff_note <- function(x) sprintf(
+# `n_overall` is a REQUIRED argument, not read from the caller's scope: this is
+# called from inside two nested loops and reaching out for m/k/spec would be the
+# same closure-over-a-global hazard lessons.md #26 records about boot_group().
+deff_note <- function(x, n_overall) sprintf(
   paste0("Intervals are 2.5th-97.5th percentiles of %s bootstrap resamples of ",
          "EPISODES (seed %s), which keeps an episode's events together because ",
-         "they cluster within it; the measured design effect is %.2f. The ",
-         "interval says how much the observed rate would wobble if the care ",
-         "process re-ran. IT DOES NOT ADJUST FOR CASE MIX: a unit's rate ",
-         "reflects who it admits as much as how it practises, and no ",
-         "association between unit and this metric is modelled here."),
-  format(B_RESAMP, big.mark = ","), format(SEED), x)
+         "they cluster within it. The interval says how much the observed rate ",
+         "would wobble if the care process re-ran. The design effect of %.2f is ",
+         "a property of the OVERALL rate and of no interval drawn here -- each ",
+         "unit's interval is its own bootstrap percentile carrying its own ",
+         "clustering, and no bar's width comes from it. It is reported ",
+         "because a coordinating centre combining this site's overall rate with ",
+         "another site's needs it: on the overall rate, %s events carry the ",
+         "precision of roughly %s independent ones. IT DOES NOT ADJUST FOR ",
+         "CASE MIX: a unit's rate reflects who it admits as much as how it ",
+         "practises, and no association between unit and this metric is ",
+         "modelled here."),
+  format(B_RESAMP, big.mark = ","), format(SEED), x,
+  format(n_overall, big.mark = ","),
+  format(round(n_overall / x), big.mark = ","))
 
 METRIC_NOTE <- list(
   coadmin = sprintf(
@@ -619,10 +630,10 @@ METRIC_NOTE <- list(
 SERIES_NOTE <- list(
   coadmin = paste0("THREE SERIES PER UNIT: an **initiation** (a rise from a ",
                    "documented zero), an **uptitration** (a rise in a running ",
-                   "infusion), and **any increase**, the two pooled rather than ",
+                   "infusion), and **any increase**, the two combined rather than ",
                    "a third kind of event."),
   indication = paste0("TWO SERIES PER UNIT: a rate **increase** and a **bolus**, ",
-                      "plus **any escalation**, the two pooled rather than a ",
+                      "plus **any escalation**, the two combined rather than a ",
                       "third kind of event."))
 
 key_label <- function(k) if (k == "care_setting")
@@ -633,7 +644,7 @@ key_label <- function(k) if (k == "care_setting")
 
 for (m in METRICS) {
   spec <- ANALYSES[[m]]
-  pooled_m <- unit_tbl$pooled_pct[unit_tbl$metric == m &
+  overall_m <- unit_tbl$overall_pct[unit_tbl$metric == m &
                                   unit_tbl$series == spec$combined][1]
   deff_m <- unit_tbl$deff[unit_tbl$metric == m &
                           unit_tbl$series == spec$combined][1]
@@ -665,7 +676,7 @@ for (m in METRICS) {
                                  format(ord$n_events, big.mark = ",", trim = TRUE)),
                          as.character(ord$unit))
 
-    # The pooled series is the finding; the components are the decomposition.
+    # The combined series is the finding; the components are the decomposition.
     # Opaque and large for the first, lighter and smaller for the rest, so the
     # eye lands on the combined point and the components read as support.
     is_comb <- spec$series == spec$combined
@@ -682,12 +693,12 @@ for (m in METRICS) {
     fn <- paste0(m, "_caterpillar_", k, ".png")
     register_caption(fn, sprintf("%s, by %s", spec$title, k),
       paste(METRIC_NOTE[[m]], SERIES_NOTE[[m]],
-            paste0("The pooled series is drawn opaque and larger; the ",
+            paste0("The combined series is drawn opaque and larger; the ",
                    "components are lighter and smaller, so the panel reads as ",
                    "one estimate per unit with its decomposition beside it."),
-            sprintf(paste0("The pooled series necessarily lies between its ",
+            sprintf(paste0("The combined series necessarily lies between its ",
                            "components, at their event-weighted mean. Units are ",
-                           "ordered by it and the dashed rule is its pooled rate ",
+                           "ordered by it and the dashed rule is its overall rate ",
                            "(%.1f%%). %s units shown of %s; %s event(s) were ",
                            "charted while the patient was ventilated but in a ",
                            "care location this analysis does not attribute -- ",
@@ -698,11 +709,11 @@ for (m in METRICS) {
                            "%s. The number in brackets on the axis is the ",
                            "unit's total event count; per-series counts are in ",
                            "unit_adherence.csv."),
-                    pooled_m, n_units,
+                    overall_m, n_units,
                     length(unique(unit_tbl$unit[unit_tbl$metric == m &
                                                 unit_tbl$unit_key == k])),
                     format(n_unatt_m, big.mark = ","), key_label(k)),
-            deff_note(deff_m),
+            deff_note(deff_m, sum(dcomb$n_events)),
             sprintf(paste0("WHAT THE INTERVALS ARE FOR. Ordering by rate ",
                            "invites reading the rank itself as the result, and ",
                            "the intervals are what say how much of that ",
@@ -731,7 +742,7 @@ for (m in METRICS) {
     dodge <- position_dodge(width = 0.62)
     pl <- house(
       ggplot(d, aes(pct_paired, unit, colour = series, group = series)) +
-        geom_vline(xintercept = pooled_m, colour = MUTED, linetype = "22",
+        geom_vline(xintercept = overall_m, colour = MUTED, linetype = "22",
                    linewidth = 0.4) +
         geom_errorbar(aes(xmin = ci_lo, xmax = ci_hi, alpha = series,
                           linewidth = series),
@@ -759,12 +770,12 @@ for (m in METRICS) {
     # MEASURED in overdispersion.csv and adjusted for nowhere.
     grid_n <- seq(max(1, min(dcomb$n_events) * 0.6), max(dcomb$n_events) * 1.15,
                   length.out = 200)
-    se <- sqrt(pooled_m * (100 - pooled_m) / grid_n)
+    se <- sqrt(overall_m * (100 - overall_m) / grid_n)
     lim <- rbind(
-      data.frame(n = grid_n, lo = pooled_m - Z_INNER * se,
-                 hi = pooled_m + Z_INNER * se, band = "95%"),
-      data.frame(n = grid_n, lo = pooled_m - Z_OUTER * se,
-                 hi = pooled_m + Z_OUTER * se, band = "99.8%"))
+      data.frame(n = grid_n, lo = overall_m - Z_INNER * se,
+                 hi = overall_m + Z_INNER * se, band = "95%"),
+      data.frame(n = grid_n, lo = overall_m - Z_OUTER * se,
+                 hi = overall_m + Z_OUTER * se, band = "99.8%"))
 
     # The diagnostic for THIS panel's series, quoted in its caption. A site with
     # fewer than three units gets no row (section 8b skips it), and then the
@@ -796,20 +807,20 @@ for (m in METRICS) {
                                  spec$title, k),
       paste(METRIC_NOTE[[m]],
             sprintf(paste0("Each point is one unit, labelled beside it; the ",
-                           "horizontal rule is the pooled rate (%.1f%%) and the ",
+                           "horizontal rule is the overall rate (%.1f%%) and the ",
                            "envelopes are 95%% and 99.8%% control limits, the ",
                            "two-sided p < 0.05 and p < 0.002 pair of ",
                            "Spiegelhalter (Qual Saf Health Care ",
                            "2005;14:347-51). THE LIMITS ARE UNADJUSTED ",
                            "BINOMIAL -- p0 +/- z*sqrt(p0(100-p0)/n) over a grid ",
-                           "of n, centred on the pooled rate. They therefore ",
+                           "of n, centred on the overall rate. They therefore ",
                            "assume events are independent within a unit, which ",
                            "is NOT true here: this series averages %.2f events ",
                            "per episode and the habit is correlated inside one. ",
                            "No over-dispersion factor and no clustering ",
                            "correction is applied, and the proportions are not ",
                            "risk-adjusted, so a unit outside the envelope ",
-                           "differs from the pooled rate by more than sampling ",
+                           "differs from the overall rate by more than sampling ",
                            "alone -- it does not follow that it differs in ",
                            "practice. Both quantities are MEASURED and shipped ",
                            "rather than applied: the design effect in ",
@@ -821,11 +832,11 @@ for (m in METRICS) {
                            "caterpillar interval is uncertainty about one unit. ",
                            "Volume on the x axis is why this view sits beside ",
                            "the ordered one: a small unit sits far from the ",
-                           "pooled rate more easily, and the envelope makes ",
-                           "that visible. Only the pooled series is drawn -- ",
+                           "overall rate more easily, and the envelope makes ",
+                           "that visible. Only the combined series is drawn -- ",
                            "overlapping funnels defeat the envelope reading. ",
                            "Labels are %s."),
-                    pooled_m, ev_per_ep, key_label(k)),
+                    overall_m, ev_per_ep, key_label(k)),
             od_note))
 
     lab <- funnel_labels(dcomb$n_events, dcomb$pct_paired, as.character(dcomb$unit),
@@ -835,7 +846,7 @@ for (m in METRICS) {
       ggplot(lim, aes(n)) +
         geom_line(aes(y = lo, linetype = band), colour = MUTED, linewidth = 0.4) +
         geom_line(aes(y = hi, linetype = band), colour = MUTED, linewidth = 0.4) +
-        geom_hline(yintercept = pooled_m, colour = MUTED, linewidth = 0.4) +
+        geom_hline(yintercept = overall_m, colour = MUTED, linewidth = 0.4) +
         geom_point(data = dcomb, aes(x = n_events, y = pct_paired), size = 2.1,
                    colour = pal[[spec$combined]]) +
         geom_segment(data = lab[lab$lead, ],
@@ -852,12 +863,12 @@ for (m in METRICS) {
   # Year. Every event carries a year, attributed or not, so this view uses the
   # whole denominator rather than the ICU-attributed subset.
   yt <- year_tbl[year_tbl$metric == m, ]
-  ypool <- yt$pooled_pct[1]
+  ypool <- yt$overall_pct[1]
   fn <- paste0(m, "_year.png")
   register_caption(fn, sprintf("%s, by calendar year", spec$title),
     paste(METRIC_NOTE[[m]],
           sprintf(paste0("One point per calendar year of the ventilation ",
-                         "anchor, %d to %d, with the pooled rate (%.1f%%) as a ",
+                         "anchor, %d to %d, with the overall rate (%.1f%%) as a ",
                          "dashed rule. THE DENOMINATOR HERE IS ALL %s EVENTS, ",
                          "not only the ICU-attributed ones the unit figures use, ",
                          "because every event carries a year. Year counts follow ",
@@ -866,7 +877,7 @@ for (m in METRICS) {
                          "pipeline, so an end year may be partial."),
                   min(yt$year), max(yt$year), ypool,
                   format(sum(yt$n_events), big.mark = ",")),
-          deff_note(yt$deff[1])))
+          deff_note(yt$deff[1], sum(yt$n_events))))
 
   pl <- house(
     ggplot(yt, aes(year, pct_paired)) +
@@ -889,20 +900,20 @@ for (m in METRICS) {
 # name. unit_adherence covers attributed events only -- an event in no ICU or ED
 # interval cannot be credited to a unit -- while year_adherence covers all
 # events, because every event has a year. At UCMC that is 13.17% against 13.53%:
-# the same metric, two correct numbers, and a reader given one `pooled_pct`
+# the same metric, two correct numbers, and a reader given one `overall_pct`
 # column has no way to tell which they are holding.
-unit_tbl$pooled_pct_attributed <- unit_tbl$pooled_pct
-year_tbl$pooled_pct_all_events <- year_tbl$pooled_pct
+unit_tbl$overall_pct_attributed <- unit_tbl$overall_pct
+year_tbl$overall_pct_all_events <- year_tbl$overall_pct
 
 cols <- c("metric", "unit_key", "unit", "series", "n_events", "n_episodes",
-          "n_paired", "pct_paired", "ci_lo", "ci_hi", "pooled_pct_attributed",
+          "n_paired", "pct_paired", "ci_lo", "ci_hi", "overall_pct_attributed",
           "deff", "n_suppressed_small_cell")
 write.csv(unit_tbl[order(unit_tbl$metric, unit_tbl$unit_key,
                          unit_tbl$unit, unit_tbl$series), cols],
           file.path(dirs$phase, "unit_adherence.csv"), row.names = FALSE)
 write.csv(year_tbl[order(year_tbl$metric, year_tbl$year),
                    c("metric", "year", "n_events", "n_episodes", "n_paired",
-                     "pct_paired", "ci_lo", "ci_hi", "pooled_pct_all_events",
+                     "pct_paired", "ci_lo", "ci_hi", "overall_pct_all_events",
                      "deff")],
           file.path(dirs$phase, "year_adherence.csv"), row.names = FALSE)
 write.csv(funnel_tbl, file.path(dirs$phase, "attribution_funnel.csv"),
