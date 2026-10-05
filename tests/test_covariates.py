@@ -614,6 +614,49 @@ def test_the_unit_split_is_never_called_a_quality_measure():
             f"{stripped[:70]}")
 
 
+def test_the_funnel_limits_claim_no_adjustment_they_do_not_make():
+    """Until 2026-10-05 the envelope was binomial limits * sqrt(deff). deff
+    measures WITHIN-episode clustering and is grouping-invariant; Spiegelhalter's
+    phi measures BETWEEN-unit over-dispersion. Same algebra, different quantity,
+    under a citation that implied the other one -- and with nothing
+    risk-adjusted, widening absorbed the variation the figure exists to show.
+    Both are now measured and applied nowhere. This guards the exact regression:
+    re-introducing the factor, or a caption that claims it."""
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+    code = [ln for ln in src.splitlines() if not ln.strip().startswith("#")]
+
+    applied = [ln.strip() for ln in code if "sqrt(deff" in ln.replace(" ", "")]
+    assert not applied, (
+        "the funnel envelope must be unadjusted binomial, but something "
+        f"applies sqrt(deff) again: {applied[:2]}")
+
+    low = "\n".join(code).lower()
+    for claim in ("widened by", "same clustering correction"):
+        assert claim not in low, (
+            f"06_unit_variation.R says the limits are {claim!r}; they are "
+            "unadjusted binomial. Fix the code or the caption, not both ways.")
+
+
+def test_over_dispersion_is_measured_declared_and_owned():
+    """The funnel's limits assume independence between units, so whether that
+    holds has to be reported rather than assumed. A diagnostic that is computed
+    but never written cannot be read; an output written but not OWNED survives
+    clear_owned_outputs() and goes stale inside the upload set."""
+    src = (REPO / "code" / "06_unit_variation.R").read_text()
+
+    owned = src.split("OWNED <- list(")[1].split("))")[0]
+    assert "overdispersion.csv" in owned, (
+        "overdispersion.csv must be in OWNED, or the first re-run leaves a "
+        "stale copy in output/final_no_phi/")
+    assert 'file.path(dirs$phase, "overdispersion.csv")' in src, (
+        "overdispersion.csv is OWNED but nothing writes it")
+
+    trim = COV["unit_variation"]["overdispersion_trim"]
+    assert 0 <= trim < 0.5, (
+        "overdispersion_trim is a Winsorisation fraction PER END. At 0.5 every "
+        "unit is pulled to the median and phi reads 0 whatever the data says.")
+
+
 # ------------------------------------------------------------- indication
 # Was the dose change prompted by anything documented? Thresholds and the
 # window are protocol: two sites cutting NVPS at different values, or looking

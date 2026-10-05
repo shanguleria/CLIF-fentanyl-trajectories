@@ -66,6 +66,7 @@ UNIT_KEYS <- unlist(SPEC$unit_keys)
 MIN_UNIT  <- as.numeric(SPEC$min_events_per_unit)
 B_RESAMP  <- as.integer(SPEC$bootstrap_resamples)
 YEAR_FROM <- as.character(SPEC$year_from)
+OD_TRIM   <- as.numeric(SPEC$overdispersion_trim)
 
 TSPEC <- COV$titration
 stopifnot("covariates.json must declare a `titration` block" = !is.null(TSPEC))
@@ -82,7 +83,11 @@ IND_WIN_H <- as.numeric(ISPEC$indication_window_hours)
 stopifnot(
   "at least one unit key must be declared" = length(UNIT_KEYS) >= 1,
   "min_events_per_unit must clear the disclosure floor" = MIN_UNIT >= MIN_CELL,
-  "bootstrap_resamples must be a positive whole number" = B_RESAMP > 0
+  "bootstrap_resamples must be a positive whole number" = B_RESAMP > 0,
+  # Winsorising at 0.5 per end would pull every unit to the median and report
+  # phi = 0 regardless of the data, so the upper bound is not cosmetic.
+  "overdispersion_trim must be a fraction per end, in [0, 0.5)" =
+    is.finite(OD_TRIM) && OD_TRIM >= 0 && OD_TRIM < 0.5
 )
 
 EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
@@ -122,6 +127,7 @@ FIGS <- c(as.vector(outer(METRICS, UNIT_KEYS,
           paste0(METRICS, "_year.png"))
 OWNED <- list(
   phase = c("unit_adherence.csv", "year_adherence.csv", "attribution_funnel.csv",
+            "overdispersion.csv",
             FIGS, "provenance.json", "captions.md"))
 # Renamed 2026-09-30 when the indication metric joined: "unit_caterpillar" did
 # not say a caterpillar OF WHAT, which was merely terse with one metric and
@@ -345,7 +351,11 @@ stopifnot(
   "a bootstrap interval does not contain its point estimate" =
     all(unit_tbl$ci_lo <= unit_tbl$pct_paired & unit_tbl$pct_paired <= unit_tbl$ci_hi) &&
     all(year_tbl$ci_lo <= year_tbl$pct_paired & year_tbl$pct_paired <= year_tbl$ci_hi),
-  "the design effect is below 1, so clustering cannot be what widened it" =
+  # deff widens nothing since 2026-10-05 -- it is reported, not applied -- but a
+  # value below 1 would mean the episode bootstrap is not measuring clustering
+  # at all: negative intracluster correlation, or Monte Carlo noise at a true
+  # deff near 1. Either way the number we ship for pooling would mislead.
+  "the design effect is below 1, so the bootstrap is not measuring clustering" =
     all(unit_tbl$deff >= 1) && all(year_tbl$deff >= 1)
 )
 
@@ -377,6 +387,107 @@ for (m in METRICS) {
   }
 }
 plot_units <- unit_tbl[unit_tbl$n_suppressed_small_cell == 0, ]
+
+
+# ---- 8b. Over-dispersion, measured and never applied -------------------------
+# The envelope at section 9 is unadjusted binomial, so "is the spread across
+# units wider than binomial sampling allows?" has to be answered out loud
+# rather than absorbed into the limits.
+#
+# Spiegelhalter, Qual Saf Health Care 2005;14:347-51, "Estimating an
+# over-dispersion factor". z is a unit's deviation from the pooled rate in null
+# binomial SEs; Q = sum(z^2) is chi-square on I-1 df when every unit truly sits
+# at the pooled rate; phi = Q/I is the multiplicative factor that WOULD widen
+# the limits by sqrt(phi) if we chose to adjust.
+#
+# THIS IS A DIFFERENT QUANTITY FROM THE DEFF. phi is BETWEEN-unit spread; the
+# episode-cluster deff is WITHIN-episode correlation and is grouping-invariant.
+# Neither substitutes for the other and neither is applied to anything.
+#
+# Computed on plot_units, i.e. AFTER suppression, so the diagnostic describes
+# the units the figure actually draws rather than a set no reader can see.
+
+# Winsorise rather than trim: Spiegelhalter's reason is that divergent units
+# otherwise inflate the estimate of the very null they are judged against. The
+# formal test below uses the UN-Winsorised Q -- Winsorising sizes the inflation
+# robustly, it does not test whether there is one.
+winsorise <- function(z, trim) {
+  if (trim <= 0) return(z)
+  q <- quantile(z, c(trim, 1 - trim), names = FALSE)
+  pmin(pmax(z, q[1]), q[2])
+}
+
+overdispersion <- function(d, p0, trim) {
+  # Null binomial variance on the PERCENTAGE scale, which is the scale the
+  # envelope is drawn on -- the diagnostic has to describe the limits as drawn,
+  # not a proportion-scale twin of them.
+  v <- p0 * (100 - p0) / d$n_events
+  z <- (d$pct_paired - p0) / sqrt(v)
+  i_n <- length(z)
+  q_stat <- sum(z^2)
+  # DerSimonian-Laird on the same null variances, for the ADDITIVE random
+  # effects form the paper says it prefers. With null variances the weights are
+  # proportional to n_events, so the weighted mean is p0 by construction and
+  # the DL Q is the same statistic as sum(z^2) rather than a second quantity.
+  w <- 1 / v
+  data.frame(
+    n_units = i_n,
+    q_stat = q_stat,
+    q_df = i_n - 1L,
+    q_p = pchisq(q_stat, i_n - 1L, lower.tail = FALSE),
+    phi = q_stat / i_n,
+    phi_winsorised = sum(winsorise(z, trim)^2) / i_n,
+    # On phi's own scale. phi carries divisor I while Q is chi-square on I-1 df,
+    # so the threshold must carry the same divisor or the comparison is off by
+    # I/(I-1) -- 20% at six units.
+    phi_crit_95 = qchisq(0.95, i_n - 1L) / i_n,
+    tau2 = max(0, (q_stat - (i_n - 1)) / (sum(w) - sum(w^2) / sum(w))),
+    stringsAsFactors = FALSE)
+}
+
+OD <- list()
+for (m in METRICS) {
+  for (k in UNIT_KEYS) {
+    for (sname in ANALYSES[[m]]$series) {
+      d <- plot_units[plot_units$metric == m & plot_units$unit_key == k &
+                        plot_units$series == sname, ]
+      p0 <- unit_tbl$pooled_pct[unit_tbl$metric == m &
+                                  unit_tbl$series == sname][1]
+      # Below three units Q has 0 or 1 df and Winsorising 10% of them moves
+      # nothing, so the row would read as a measurement without being one.
+      if (nrow(d) < 3) {
+        cat(sprintf("  NOTE %s / %s / %s: %d unit(s), too few to test\n",
+                    m, k, sname, nrow(d)))
+        next
+      }
+      OD[[length(OD) + 1L]] <- cbind(
+        data.frame(metric = m, unit_key = k, series = sname,
+                   stringsAsFactors = FALSE),
+        overdispersion(d, p0, OD_TRIM))
+    }
+  }
+}
+od_tbl <- do.call(rbind, OD)
+rownames(od_tbl) <- NULL
+
+stopifnot(
+  "the over-dispersion diagnostic produced no rows" = nrow(od_tbl) > 0,
+  "phi cannot be negative" = all(od_tbl$phi >= 0),
+  "tau2 cannot be negative" = all(od_tbl$tau2 >= 0)
+)
+
+cat("\n  Over-dispersion (measured, applied nowhere; trim =",
+    sprintf("%.2f per end)\n", OD_TRIM))
+for (i in seq_len(nrow(od_tbl))) {
+  r <- od_tbl[i, ]
+  cat(sprintf(paste0("  %-11s %-14s %-15s I=%2d  phi=%6.2f  winsorised=%6.2f",
+                     "  (95%% crit %.2f)  tau=%5.2f pp  %s\n"),
+              r$metric, r$unit_key, r$series, r$n_units, r$phi,
+              r$phi_winsorised, r$phi_crit_95, sqrt(r$tau2),
+              if (r$phi_winsorised > r$phi_crit_95)
+                "OVER-DISPERSED" else "within binomial"))
+}
+cat("\n")
 
 
 # ---- 9. Figures --------------------------------------------------------------
@@ -519,6 +630,11 @@ for (m in METRICS) {
   deff_m <- unit_tbl$deff[unit_tbl$metric == m &
                           unit_tbl$series == spec$combined][1]
   n_unatt_m <- FUNNEL[[m]]$n_events[3]
+  # Events per episode on the series the funnel draws. The funnel's limits
+  # assume independence within a unit; this is the number that says how wrong
+  # that is, so the caption states it rather than leaving the reader to infer.
+  comb_ev <- series_subset(ATT[[m]][ATT[[m]]$attributed, ], spec, spec$combined)
+  ev_per_ep <- nrow(comb_ev) / length(unique(comb_ev$encounter_block))
   pal <- setNames(unname(SERIES_COLOURS)[seq_along(spec$series)], spec$series)
 
   for (k in UNIT_KEYS) {
@@ -601,9 +717,15 @@ for (m in METRICS) {
 
     # The funnel stays on the COMBINED series: its point is one mark per unit
     # against that unit's volume, and overlapping funnels defeat the envelope.
+    #
+    # UNADJUSTED binomial limits (SG, 2026-10-05). The envelope was previously
+    # widened by sqrt(deff). That factor measures WITHIN-EPISODE clustering,
+    # where Spiegelhalter's sqrt(phi) measures BETWEEN-UNIT over-dispersion --
+    # the same algebra applied to a different quantity. Over-dispersion is now
+    # MEASURED in overdispersion.csv and adjusted for nowhere.
     grid_n <- seq(max(1, min(dcomb$n_events) * 0.6), max(dcomb$n_events) * 1.15,
                   length.out = 200)
-    se <- sqrt(pooled_m * (100 - pooled_m) / grid_n) * sqrt(deff_m)
+    se <- sqrt(pooled_m * (100 - pooled_m) / grid_n)
     lim <- rbind(
       data.frame(n = grid_n, lo = pooled_m - Z_INNER * se,
                  hi = pooled_m + Z_INNER * se, band = "95%"),
@@ -616,19 +738,35 @@ for (m in METRICS) {
       paste(METRIC_NOTE[[m]],
             sprintf(paste0("Each point is one unit, labelled beside it; the ",
                            "horizontal rule is the pooled rate (%.1f%%) and the ",
-                           "envelopes are 95%% and 99.8%% control limits. The ",
-                           "limits are binomial limits WIDENED BY ",
-                           "sqrt(design effect) = %.2f, so they carry the same ",
-                           "clustering correction as the caterpillar's intervals ",
-                           "rather than assuming events are independent. Volume ",
-                           "on the x axis is why this view sits beside the ",
-                           "ordered one: a small unit sits far from the pooled ",
-                           "rate more easily, and the envelope makes that ",
-                           "visible. Only the pooled series is drawn -- ",
+                           "envelopes are 95%% and 99.8%% control limits, the ",
+                           "two-sided p < 0.05 and p < 0.002 pair of ",
+                           "Spiegelhalter (Qual Saf Health Care ",
+                           "2005;14:347-51). THE LIMITS ARE UNADJUSTED ",
+                           "BINOMIAL -- p0 +/- z*sqrt(p0(100-p0)/n) over a grid ",
+                           "of n, centred on the pooled rate. They therefore ",
+                           "assume events are independent within a unit, which ",
+                           "is NOT true here: this series averages %.2f events ",
+                           "per episode and the habit is correlated inside one. ",
+                           "No over-dispersion factor and no clustering ",
+                           "correction is applied, and the proportions are not ",
+                           "risk-adjusted, so a unit outside the envelope ",
+                           "differs from the pooled rate by more than sampling ",
+                           "alone -- it does not follow that it differs in ",
+                           "practice. Both quantities are MEASURED and shipped ",
+                           "rather than applied: the design effect in ",
+                           "unit_adherence.csv, over-dispersion in ",
+                           "overdispersion.csv. The caterpillar beside this ",
+                           "figure uses cluster-bootstrap intervals, so the two ",
+                           "panels imply DIFFERENT widths for the same data by ",
+                           "design -- an envelope is a null drawn as a shape, a ",
+                           "caterpillar interval is uncertainty about one unit. ",
+                           "Volume on the x axis is why this view sits beside ",
+                           "the ordered one: a small unit sits far from the ",
+                           "pooled rate more easily, and the envelope makes ",
+                           "that visible. Only the pooled series is drawn -- ",
                            "overlapping funnels defeat the envelope reading. ",
                            "Labels are %s."),
-                    pooled_m, sqrt(deff_m), key_label(k)),
-            deff_note(deff_m)))
+                    pooled_m, ev_per_ep, key_label(k))))
 
     lab <- funnel_labels(dcomb$n_events, dcomb$pct_paired, as.character(dcomb$unit),
                          xr = range(grid_n),
@@ -709,6 +847,13 @@ write.csv(year_tbl[order(year_tbl$metric, year_tbl$year),
           file.path(dirs$phase, "year_adherence.csv"), row.names = FALSE)
 write.csv(funnel_tbl, file.path(dirs$phase, "attribution_funnel.csv"),
           row.names = FALSE)
+# Rounded on write, unlike deff, because phi and tau2 are read by eye against a
+# threshold rather than recombined arithmetically by the coordinating centre.
+od_out <- od_tbl
+num <- vapply(od_out, is.numeric, logical(1)) & names(od_out) != "n_units" &
+       names(od_out) != "q_df"
+od_out[num] <- lapply(od_out[num], round, 6)
+write.csv(od_out, file.path(dirs$phase, "overdispersion.csv"), row.names = FALSE)
 
 write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
