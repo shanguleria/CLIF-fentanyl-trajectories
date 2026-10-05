@@ -32,12 +32,16 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "figures.R"))
+# pool_hist() and boot_group(), shared with 02 and 06 so the three cannot drift
+# in how they bin a distribution or bootstrap a clustered proportion.
+source(here("code", "utils", "pooling.R"))
 
 
 # ---- 2. Config ---------------------------------------------------------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+SEED <- config$model$seed
+set.seed(SEED)
 
 WINDOW_H <- config$cohort$window_hours
 EXTENT_H <- config$cohort$granular_extent_hours
@@ -55,8 +59,18 @@ WIN_SENS  <- sort(unique(c(as.numeric(unlist(SPEC$window_sensitivity_minutes)), 
 VENT_ONLY <- isTRUE(SPEC$ventilated_only)
 ADH_LM_H  <- as.numeric(SPEC$adherence_landmark_hours)
 MIN_EV    <- as.numeric(SPEC$min_events_for_adherence)
-stopifnot("the primary window must be one of the sensitivity widths" = WIN_MIN %in% WIN_SENS,
-          "the threshold must be positive" = MIN_DELTA > 0)
+BOOT_REPS <- as.integer(SPEC$bootstrap_resamples)
+# Histogram bins. Absolute and config-declared, never local quantiles -- a
+# site-specific binning cannot be summed with anyone else's.
+HSPEC <- COV$pooling$histograms$variables
+stopifnot("covariates.json must declare a `titration` block" = !is.null(SPEC),
+          "covariates.json must declare pooling.histograms.variables" = !is.null(HSPEC),
+          "the primary window must be one of the sensitivity widths" = WIN_MIN %in% WIN_SENS,
+          "the threshold must be positive" = MIN_DELTA > 0,
+          "bootstrap_resamples must be a positive whole number" = BOOT_REPS > 0)
+# This script owns the histograms the config assigns to it, and only those.
+HIST_MINE <- names(HSPEC)[vapply(HSPEC, function(s)
+  identical(as.character(s$owner), "05"), logical(1))]
 
 EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
 
@@ -100,6 +114,7 @@ OWNED <- list(
               "indication.png",
               "charting_precision.csv", "rate_change_magnitude.csv",
               "charting_agreement.csv", "adherence_distribution.csv",
+              "pooling_histograms.csv",
               "coadministration.png", "window_sensitivity.png",
               "provenance.json", "captions.md"))
 RETIRED <- character(0)          # new script on 2026-09-24
@@ -225,6 +240,21 @@ summarise_pairing <- function(d, by) {
   }))
 }
 
+# Interval and design effect for ONE clustered proportion. Events cluster
+# within episodes, so a binomial interval is far too narrow here; the deff is
+# what lets a coordinating centre widen the POOLED interval instead of assuming
+# independence across sites. The resampling universe is stated at every call --
+# the episodes contributing events to `d` and no others (lessons.md #26).
+boot_one <- function(d, outcome_col) {
+  eps <- sort(unique(d$encounter_block))
+  x <- data.frame(encounter_block = d$encounter_block, g = "all",
+                  y = as.integer(d[[outcome_col]]))
+  r <- boot_group(x, "g", SEED, outcome = "y", episodes = eps,
+                  n_resamples = BOOT_REPS)
+  data.frame(ci_lo = round(r$ci_lo[1], 1), ci_hi = round(r$ci_hi[1], 1),
+             deff = round(r$deff[1], 3))
+}
+
 coad <- summarise_pairing(ev, "kind")
 inc <- ev[ev$kind != "downtitration", ]
 coad <- rbind(
@@ -234,6 +264,9 @@ coad <- rbind(
              events_per_episode = round(nrow(inc) / length(unique(inc$encounter_block)), 2),
              n_paired = sum(inc$paired),
              pct_paired = round(100 * mean(inc$paired), 1)))
+coad <- cbind(coad, do.call(rbind, lapply(coad$group, function(g) {
+  boot_one(if (identical(g, "any increase")) inc else ev[ev$kind == g, ], "paired")
+})))
 coad$window_minutes <- WIN_MIN
 
 cat(sprintf("\nBolus within +/-%g min of the event\n", WIN_MIN))
@@ -298,13 +331,24 @@ print(reshape(agree, idvar = "action", timevar = "kind", direction = "wide"),
 # the site's own data rather than taken on trust.
 d_all <- abs(rate$delta[!is.na(rate$delta) & rate$delta != 0 &
                           !is_stop & !rate$first_of_block])
+# `value` carries two different units, so the unit is a column rather than
+# being implied by the one it used to be named after (`mcg_per_hr`, which was a
+# percentage on the share rows). `n` is the shared denominator -- every row is
+# over the same set of non-zero rate changes -- and `n_at_or_above` is the
+# numerator the share rows need in order to pool.
+.thr <- c(5, 10, 25, 50, 100)
 mag <- data.frame(
-  quantile = c("p10", "p25", "p50", "p75", "p90", "max"),
-  mcg_per_hr = round(unname(quantile(d_all, c(.1, .25, .5, .75, .9, 1))), 1))
+  statistic = c("p10", "p25", "p50", "p75", "p90", "max"),
+  value = round(unname(quantile(d_all, c(.1, .25, .5, .75, .9, 1))), 1),
+  unit = "mcg_per_hr",
+  n = length(d_all),
+  n_at_or_above = NA_integer_)
 mag <- rbind(mag, data.frame(
-  quantile = paste0("share >= ", c(5, 10, 25, 50, 100)),
-  mcg_per_hr = round(100 * vapply(c(5, 10, 25, 50, 100),
-                                  function(k) mean(d_all >= k), numeric(1)), 1)))
+  statistic = paste0("share >= ", .thr),
+  value = round(100 * vapply(.thr, function(k) mean(d_all >= k), numeric(1)), 1),
+  unit = "percent",
+  n = length(d_all),
+  n_at_or_above = vapply(.thr, function(k) sum(d_all >= k), integer(1))))
 cat(sprintf("\nMagnitude of non-zero rate changes (n = %s), threshold %g mcg/hr\n",
             format(length(d_all), big.mark = ","), MIN_DELTA))
 print(mag, row.names = FALSE)
@@ -337,11 +381,40 @@ adh_dist <- do.call(rbind, lapply(split(adh, adh$scope), function(x) {
              median_adherence = round(median(e$adherence), 3),
              q1 = round(quantile(e$adherence, .25), 3),
              q3 = round(quantile(e$adherence, .75), 3),
+             # The NUMERATORS behind the two percentages. Their denominator is
+             # n_episodes_ge_min_events, NOT n_episodes -- without the counts a
+             # site's rate cannot be pooled, only re-derived from a 1 dp value.
+             n_never = sum(e$adherence == 0),
+             n_always = sum(e$adherence == 1),
              pct_never = round(100 * mean(e$adherence == 0), 1),
              pct_always = round(100 * mean(e$adherence == 1), 1))
 }))
 cat(sprintf("\nPer-encounter adherence (episodes with >= %g increases)\n", MIN_EV))
 print(adh_dist, row.names = FALSE)
+
+
+# ---- 8b. Pooling histograms --------------------------------------------------
+# A median has no closed form across sites; counts on FIXED absolute bins do.
+# Config: covariates.json pooling.histograms. This script emits the two
+# variables that block assigns to it, and asserts it emitted all of them -- a
+# declared variable nobody writes is the config-integrity failure CLAUDE.md
+# names first.
+hist_rows <- list()
+if ("rate_change_magnitude" %in% HIST_MINE) {
+  hist_rows[["rate_change_magnitude"]] <-
+    pool_hist("rate_change_magnitude", d_all, HSPEC$rate_change_magnitude)
+}
+if ("episode_adherence" %in% HIST_MINE) {
+  e_all <- adh[adh$scope == "overall" & adh$n_events >= MIN_EV, ]
+  hist_rows[["episode_adherence"]] <-
+    pool_hist("episode_adherence", e_all$adherence, HSPEC$episode_adherence)
+}
+pool_histograms <- do.call(rbind, hist_rows)
+stopifnot(
+  "05 must emit every histogram the config assigns it" =
+    setequal(unique(pool_histograms$variable), HIST_MINE))
+cat(sprintf("\nPooling histograms: %s (%d bins total)\n",
+            paste(HIST_MINE, collapse = ", "), nrow(pool_histograms)))
 
 
 # ---- 8b. Was the dose change indicated? --------------------------------------
@@ -435,6 +508,20 @@ for (w in IND_SWEEP_H) {
 ind_sens <- do.call(rbind, ind_rows)
 ind_sens$class <- factor(ind_sens$class, levels = c("pain", "sedation", "either"))
 ind <- ind_sens[ind_sens$window_hours == IND_WIN_H, ]
+
+# Bootstrap the PRIMARY window only. The sweep's 24 rows would say nothing
+# further about the clustering and would cost 24 x BOOT_REPS to learn it. The
+# interval is on pct_indicated_all, which is why the columns say so -- this row
+# carries four different percentages and a bare `ci_lo` would be ambiguous.
+IND_HIT <- list(pain = PAIN_HIT, sedation = SED_HIT, either = BOTH_HIT)
+ind <- cbind(ind, do.call(rbind, lapply(seq_len(nrow(ind)), function(i) {
+  d <- ev_sets[[as.character(ind$event_type[i])]]
+  b <- boot_one(data.frame(encounter_block = d$encounter_block,
+                           y = near_any(d, IND_HIT[[as.character(ind$class[i])]],
+                                        IND_WIN_H)), "y")
+  names(b) <- paste0("indicated_", names(b))
+  b
+})))
 
 # The accounting must close, and a wider window can only ADD qualifying scores.
 # A fall as the window widens means the join is wrong, not that practice changed.
@@ -610,6 +697,7 @@ write_out(prec, "charting_precision.csv")
 write_out(mag,  "rate_change_magnitude.csv")
 write_out(agree, "charting_agreement.csv")
 write_out(adh_dist, "adherence_distribution.csv")
+write_out(pool_histograms, "pooling_histograms.csv")
 write_out(ind, "indication.csv")
 write_out(ind_sens, "indication_window_sensitivity.csv")
 

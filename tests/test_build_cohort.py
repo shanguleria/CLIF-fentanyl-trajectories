@@ -147,7 +147,7 @@ def test_missingness_denominator_is_alive_admitted_rows_only():
     df.loc[df["window_idx"] >= 10, "alive_admitted"] = False
     df["lactate"] = np.nan
     _, rep, _ = B.apply_missingness(df)
-    assert rep[rep["variable"] == "lactate"].iloc[0]["n_alive_admitted"] == 10
+    assert rep[rep["variable"] == "lactate"].iloc[0]["denominator"] == 10
 
 
 def test_report_separates_pre_locf_from_final_missingness():
@@ -161,7 +161,7 @@ def test_report_separates_pre_locf_from_final_missingness():
     assert r["n_missing_pre_locf"] == B.N_WINDOWS - 1
     assert r["n_filled_by_locf"] == 6
     assert r["n_missing_final"] == B.N_WINDOWS - 7
-    assert r["n_observed"] + r["n_filled_by_locf"] + r["n_missing_final"] == r["n_alive_admitted"]
+    assert r["n_observed"] + r["n_filled_by_locf"] + r["n_missing_final"] == r["denominator"]
 
 
 def test_report_shows_zero_by_rule_separately_from_missing():
@@ -182,7 +182,27 @@ def test_report_percentages_use_the_alive_admitted_denominator():
     df["bun"] = np.nan
     _, rep, _ = B.apply_missingness(df)
     r = rep[rep["variable"] == "bun"].iloc[0]
-    assert r["n_alive_admitted"] == 10 and r["pct_missing_final"] == 100.0
+    assert r["denominator"] == 10 and r["pct_missing_final"] == 100.0
+    assert r["denominator_unit"] == "alive_admitted_windows"
+
+
+def test_a_time_invariant_variable_is_counted_per_episode_not_per_window():
+    """Its denominator is EPISODES. Counted over the window grid, four episodes
+    missing an age read as "72 of 360" -- the percentage is identical and the
+    count is not interpretable. Both grains shared one column called
+    n_alive_admitted until 2026-10-04, so a reader could not tell which they
+    were holding."""
+    df = _long(n_blocks=5)
+    df["age"] = 60.0
+    df.loc[df["encounter_block"].isin(["b0", "b1"]), "age"] = np.nan
+    _, rep, _ = B.apply_missingness(df)
+    ti = rep[rep["kind"] == "time_invariant"]
+    assert len(ti), "the fixture must exercise the time_invariant path"
+    a = ti[ti["variable"] == "age"].iloc[0]
+    assert a["denominator_unit"] == "episodes"
+    assert a["denominator"] == 5, "five episodes, not 5 * N_WINDOWS rows"
+    assert a["n_missing_final"] == 2, "two EPISODES lack an age, not their windows"
+    assert a["pct_missing_final"] == 40.0
 
 
 def test_pattern_table_pools_small_cells():

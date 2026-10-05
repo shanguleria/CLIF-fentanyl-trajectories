@@ -72,6 +72,131 @@ pool_cat <- function(variable, v, strata, min_cell, strata_scope = "all") {
   }))
 }
 
+# ---- Histograms: the only way a median pools --------------------------------
+# A median has no closed form across sites, and for a skewed or zero-inflated
+# variable the mean is not an acceptable substitute. Counts on FIXED bins do
+# pool: sum them, then read any quantile off the pooled distribution, accurate
+# to within one bin width. Config: covariates.json pooling.histograms.
+#
+# `spec` is one entry from that block. Returns one row per bin, lowest first,
+# carrying numeric bin_lo/bin_hi so a pooler never has to parse a label.
+pool_hist <- function(variable, v, spec) {
+  v <- v[!is.na(v)]
+  from <- as.numeric(spec$from)
+  to   <- as.numeric(spec$to)
+  by   <- as.numeric(spec$by)
+  zero_bin <- isTRUE(spec$zero_bin)
+  open_top <- isTRUE(spec$open_top)
+  # round(): seq() accumulates float error at 0.05 steps, which would put an
+  # edge at 0.30000000000000004 and make two sites' nominally identical bins
+  # compare unequal. The bins are the federation contract, so they must be exact.
+  edges <- round(seq(from, to, by = by), 10)
+  stopifnot("a histogram needs at least two edges" = length(edges) >= 2)
+
+  lo <- numeric(0); hi <- numeric(0); cnt <- integer(0); lab <- character(0)
+  rest <- v
+  if (zero_bin) {
+    lo <- c(lo, from); hi <- c(hi, from)
+    cnt <- c(cnt, sum(rest == from)); lab <- c(lab, sprintf("%g", from))
+    rest <- rest[rest != from]
+  }
+  n_int <- length(edges) - 1L
+  for (i in seq_len(n_int)) {
+    a <- edges[i]; b <- edges[i + 1L]
+    # Half-open [a, b), matching windows.interval_convention -- except the final
+    # interval of a BOUNDED variable, which must close or its maximum falls out
+    # of every bin and the completeness assert below fires.
+    last_closed <- (i == n_int) && !open_top
+    sel <- if (last_closed) rest >= a & rest <= b else rest >= a & rest < b
+    lo <- c(lo, a); hi <- c(hi, b); cnt <- c(cnt, sum(sel))
+    lab <- c(lab, sprintf(if (last_closed) "[%g, %g]" else "[%g, %g)",
+                          if (zero_bin && i == 1L) from else a, b))
+  }
+  if (open_top) {
+    top <- edges[length(edges)]
+    lo <- c(lo, top); hi <- c(hi, Inf)
+    cnt <- c(cnt, sum(rest >= top)); lab <- c(lab, sprintf("[%g, Inf)", top))
+  }
+
+  # A value that lands in no bin is silently lost exposure, which is the whole
+  # failure mode this file exists to prevent.
+  stopifnot("every value must land in exactly one bin" = sum(cnt) == length(v))
+  data.frame(
+    variable = variable,
+    unit = if (is.null(spec$unit)) NA_character_ else as.character(spec$unit),
+    bin = seq_along(cnt), bin_label = lab, bin_lo = lo, bin_hi = hi,
+    n = as.integer(cnt),
+    pct = round(100 * cnt / max(length(v), 1), 3),
+    n_total = length(v),
+    stringsAsFactors = FALSE)
+}
+
+
+# ---- Cluster bootstrap for a clustered proportion ---------------------------
+# Events are clustered within episodes, so a naive binomial interval is too
+# narrow. Resamples EPISODES and reports both the interval and the design
+# effect -- how much wider the honest interval is than the naive one.
+#
+# Shared by 05_titration.R and 06_unit_variation.R. `n_resamples` and
+# `episodes` are REQUIRED arguments with no default: both are properties of the
+# calling analysis, not of this function, and a silent default for either is
+# exactly how one caller's universe leaked into another's (lessons.md #26).
+boot_group <- function(d, group_col, seed, outcome, episodes, n_resamples) {
+  n_ep <- length(episodes)
+  stopifnot("an event belongs to no episode in the resampling universe" =
+              all(d$encounter_block %in% episodes),
+            "n_resamples must be a positive whole number" =
+              is.numeric(n_resamples) && n_resamples > 0)
+  # Per (episode, group) counts, so a resample is a weighted sum rather than a
+  # re-tabulation of every event.
+  g <- factor(d[[group_col]])
+  cell <- data.frame(ei = match(d$encounter_block, episodes),
+                     gi = as.integer(g), n = 1L, k = as.integer(d[[outcome]]))
+  cell <- aggregate(cbind(n, k) ~ ei + gi, data = cell, FUN = sum)
+  G <- nlevels(g)
+
+  point_n <- numeric(G); point_k <- numeric(G)
+  s <- rowsum(as.matrix(cell[, c("k", "n")]), cell$gi, reorder = TRUE)
+  idx <- as.integer(rownames(s))
+  point_k[idx] <- s[, "k"]; point_n[idx] <- s[, "n"]
+
+  # Re-seeded immediately before the draw rather than relying on a seed set at
+  # the top of the script: any RNG consumed in between would silently change
+  # which intervals a reader sees.
+  set.seed(seed)
+  reps <- matrix(NA_real_, nrow = n_resamples, ncol = G)
+  pooled <- numeric(n_resamples)
+  for (b in seq_len(n_resamples)) {
+    mult <- tabulate(sample.int(n_ep, n_ep, replace = TRUE), nbins = n_ep)
+    w <- mult[cell$ei]
+    num <- numeric(G); den <- numeric(G)
+    sb <- rowsum(cbind(cell$k * w, cell$n * w), cell$gi, reorder = TRUE)
+    ib <- as.integer(rownames(sb))
+    num[ib] <- sb[, 1]; den[ib] <- sb[, 2]
+    reps[b, ] <- ifelse(den > 0, 100 * num / den, NA_real_)
+    pooled[b] <- 100 * sum(num) / sum(den)
+  }
+
+  out <- data.frame(
+    group = levels(g), n_events = point_n, n_paired = point_k,
+    pct_paired = 100 * point_k / point_n,
+    ci_lo = apply(reps, 2, quantile, probs = 0.025, na.rm = TRUE),
+    ci_hi = apply(reps, 2, quantile, probs = 0.975, na.rm = TRUE),
+    stringsAsFactors = FALSE)
+  out$n_episodes <- as.vector(tapply(d$encounter_block, g,
+                                     function(x) length(unique(x)))[out$group])
+  # PER-GROUP design effect, so a coordinating centre can widen the interval on
+  # the specific proportion it is pooling rather than on a cohort-wide average.
+  naive <- out$pct_paired * (100 - out$pct_paired) / out$n_events
+  out$deff <- apply(reps, 2, stats::var, na.rm = TRUE) / naive
+
+  p0 <- 100 * sum(point_k) / sum(point_n)
+  attr(out, "pooled_pct") <- p0
+  attr(out, "deff") <- stats::var(pooled) / (p0 * (100 - p0) / sum(point_n))
+  out
+}
+
+
 # Collapse category levels for display through a map declared in covariates.json.
 collapse_levels <- function(v, map) {
   # Look up through a NAMED VECTOR, not list subsetting. `unlist(map[v])` drops

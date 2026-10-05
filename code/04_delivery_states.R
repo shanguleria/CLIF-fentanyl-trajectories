@@ -93,6 +93,7 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
 
 OWNED <- list(phase = c(
   "state_prevalence.csv", "state_transitions.csv", "state_prevalence_at_risk.csv",
+  "state_transition_counts.csv", "dose_state_transition_counts.csv",
   "dose_state_prevalence.csv", "dose_state_transitions.csv",
   "state_prevalence.png", "state_alluvial.png", "state_prevalence_at_risk.png",
   "state_raster.png",
@@ -203,7 +204,8 @@ state_summary <- function(d, tag) {
   print(tmx, row.names = FALSE)
   cat("  terminal states verified absorbing\n")
 
-  list(prevalence = prevalence, matrix = tmx, data = d)
+  list(prevalence = prevalence, matrix = tmx, counts = transition_counts(tp),
+       data = d)
 }
 
 long  <- derive_states(long)                              # route definition
@@ -265,24 +267,27 @@ ds_file <- file.path(dirs$out_final, "02_descriptive", "dose_summary.csv")
 if (file.exists(ds_file)) {
   ds <- read.csv(ds_file)
   ds <- ds[ds$drug == "fentanyl" & ds$denominator == "all_ventilated",
-           c("window_idx", "n", "pct_receiving_any")]
+           c("window_idx", "n", "n_receiving")]
   exposed <- aggregate(
-    pct ~ window_idx,
+    n ~ window_idx,
     data = state_prevalence_at_risk[state_prevalence_at_risk$state != "no fentanyl", ],
     FUN = sum)
+  names(exposed)[names(exposed) == "n"] <- "n_exposed"
   chk <- merge(ds, exposed, by = "window_idx")
   n_here <- aggregate(n ~ window_idx, data = state_prevalence_at_risk, FUN = sum)
-  chk <- merge(chk, n_here, by = "window_idx", suffixes = c("_02", "_here"))
+  names(n_here)[names(n_here) == "n"] <- "n_here"
+  chk <- merge(chk, n_here, by = "window_idx")
   stopifnot(
     "every window must appear in both tables" = nrow(chk) == nrow(ds),
     "the at-risk denominator disagrees with dose_summary's all_ventilated n" =
-      all(chk$n_02 == chk$n_here),
-    # 0.1pp: dose_summary rounds pct_receiving_any to 1dp, and this sums three
-    # values each rounded to 2dp.
-    "exposed states do not sum to dose_summary's pct_receiving_any" =
-      max(abs(chk$pct - chk$pct_receiving_any)) <= 0.1)
-  cat(sprintf("  cross-check vs 02_descriptive/dose_summary.csv: %d windows agree, max gap %.2fpp\n",
-              nrow(chk), max(abs(chk$pct - chk$pct_receiving_any))))
+      all(chk$n == chk$n_here),
+    # EXACT, not within a tolerance. This carried a 0.1pp allowance while
+    # dose_summary shipped only a 1 dp percentage; it now ships the numerator,
+    # so the two counts must agree outright.
+    "exposed states do not sum to dose_summary's receiving count" =
+      all(chk$n_exposed == chk$n_receiving))
+  cat(sprintf("  cross-check vs 02_descriptive/dose_summary.csv: %d windows agree exactly\n",
+              nrow(chk)))
 } else {
   cat("  cross-check SKIPPED: 02_descriptive/dose_summary.csv not found -- run 02 first\n")
 }
@@ -551,6 +556,8 @@ if (!n_small) cat(sprintf("  all cells at or above %d\n", MIN_CELL))
 cat("\n")
 write_out(state_prevalence, "state_prevalence.csv")
 write_out(transition_matrix_tbl, "state_transitions.csv")
+write_out(route$counts, "state_transition_counts.csv")
+write_out(dose$counts,  "dose_state_transition_counts.csv")
 write_out(dose$prevalence, "dose_state_prevalence.csv")
 write_out(dose$matrix,     "dose_state_transitions.csv")
 write_out(state_prevalence_at_risk, "state_prevalence_at_risk.csv")

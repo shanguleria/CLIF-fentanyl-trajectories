@@ -1334,7 +1334,9 @@ def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
         k = int(mask.sum())
         rows.append({"variable": f"oxygenation absent: {label}",
                      "kind": "absence_reason", "class": why, "locf_cap_hours": "",
-                     "n_alive_admitted": n_alive_admitted, "n_observed": 0, "n_zero_by_rule": 0,
+                     "denominator": n_alive_admitted,
+                     "denominator_unit": "alive_admitted_windows",
+                     "n_observed": 0, "n_zero_by_rule": 0,
                      "n_missing_pre_locf": k,
                      "pct_missing_pre_locf": round(100.0 * k / n_alive_admitted, 2),
                      "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
@@ -1382,7 +1384,8 @@ def _sofa_report_row(long: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame([{
         "variable": "sofa_total", "kind": "derived",
         "class": "scored after all inputs are filled", "locf_cap_hours": "",
-        "n_alive_admitted": n, "n_observed": n - miss, "n_zero_by_rule": 0,
+        "denominator": n, "denominator_unit": "alive_admitted_windows",
+        "n_observed": n - miss, "n_zero_by_rule": 0,
         "n_missing_pre_locf": miss,
         "pct_missing_pre_locf": round(100.0 * miss / n, 2) if n else float("nan"),
         "n_filled_by_locf": 0, "pct_filled_by_locf": 0.0,
@@ -1595,7 +1598,8 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
             "kind": "time_varying",
             "class": COV["time_varying"][v]["missing_class"],
             "locf_cap_hours": cap if cap is not None else "",
-            "n_alive_admitted": n_alive_admitted,
+            "denominator": n_alive_admitted,
+            "denominator_unit": "alive_admitted_windows",
             "n_observed": observed[v],
             "n_zero_by_rule": zeroed.get(v, 0),
             "n_missing_pre_locf": pre[v],
@@ -1605,15 +1609,25 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
             "n_missing_final": post[v],
             "pct_missing_final": pct(post[v]),
         })
+    n_episodes = int(df["encounter_block"].nunique())
     for v in exposure + ti:
-        n_miss = int(df.loc[alive_admitted, v].isna().sum()) if v in exposure \
-            else int(df[v].isna().sum())
-        denom = n_alive_admitted if v in exposure else len(df)
+        if v in exposure:
+            n_miss = int(df.loc[alive_admitted, v].isna().sum())
+            denom, unit = n_alive_admitted, "alive_admitted_windows"
+        else:
+            # A time-invariant variable is a property of the EPISODE. Counted
+            # over the window grid, seven episodes missing an age read as "126
+            # of 268,146" -- the percentage is identical, the count is not
+            # interpretable, and until 2026-10-04 it sat in a column named
+            # n_alive_admitted while holding neither of that column's meanings.
+            n_miss = int(df.groupby("encounter_block")[v].first().isna().sum())
+            denom, unit = n_episodes, "episodes"
         rows.append({
             "variable": v,
             "kind": "exposure" if v in exposure else "time_invariant",
             "class": "", "locf_cap_hours": "",
-            "n_alive_admitted": denom,
+            "denominator": denom,
+            "denominator_unit": unit,
             "n_observed": denom - n_miss,
             "n_zero_by_rule": 0,
             "n_missing_pre_locf": n_miss,
@@ -2247,7 +2261,8 @@ def main() -> None:
               f"({100 * pl['oxygenation'].isna().mean():.1f}%)")
 
     long = long.drop(columns=[c for c in long.columns if c.startswith("_n_")])
-    cols = ["variable", "kind", "locf_cap_hours", "n_observed", "n_zero_by_rule",
+    cols = ["variable", "kind", "locf_cap_hours", "denominator",
+            "denominator_unit", "n_observed", "n_zero_by_rule",
             "pct_missing_pre_locf", "pct_filled_by_locf", "pct_missing_final"]
     print("\n  missingness, alive-admitted rows only")
     print(per_variable[cols].to_string(index=False))

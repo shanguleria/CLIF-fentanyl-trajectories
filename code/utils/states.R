@@ -100,6 +100,30 @@ transition_matrix <- function(d) {
         out)
 }
 
+# The same transitions in LONG form carrying COUNTS, which is what pools across
+# sites: sum n over (from, to), then recompute the percentage. The wide matrix
+# above ships row percentages rounded to 2 dp, so reconstructing a count from it
+# costs up to +/- 4.5 transitions at n_at_risk = 91,033. Both ship -- the matrix
+# is the readable artifact, this is the poolable one.
+transition_counts <- function(d) {
+  lv <- levels(d$state)
+  stopifnot("state and state_next must share a level set" =
+              identical(lv, levels(d$state_next)))
+  tm <- table(factor(d$state, levels = lv), factor(d$state_next, levels = lv))
+  tm <- tm[rowSums(tm) > 0, , drop = FALSE]
+  out <- as.data.frame(as.table(tm), stringsAsFactors = FALSE)
+  names(out) <- c("from", "to", "n")
+  out$n_at_risk <- as.integer(rowSums(tm)[out$from])
+  out$pct <- round(100 * out$n / out$n_at_risk, 2)
+  # Factors carrying the source level order, so a reader sorts the way the
+  # figures stack rather than alphabetically.
+  out$from <- factor(out$from, levels = lv[lv %in% rownames(tm)])
+  out$to   <- factor(out$to, levels = lv)
+  out <- out[order(out$from, out$to), c("from", "to", "n", "n_at_risk", "pct")]
+  rownames(out) <- NULL
+  out
+}
+
 # History features, so the model is not forced into a Markov assumption. Each is
 # computed from the past only -- nothing here may look forward.
 add_history <- function(d, id = "encounter_block", time = "window_idx",

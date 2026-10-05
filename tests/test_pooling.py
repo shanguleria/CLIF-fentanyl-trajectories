@@ -182,6 +182,66 @@ def test_the_categorical_export_carries_every_stratum_the_continuous_one_does():
         )
 
 
+HISTS = [OUT / "02_descriptive" / "pooling_histograms.csv",
+         OUT / "05_titration" / "pooling_histograms.csv"]
+
+
+def test_every_declared_histogram_is_emitted_exactly_once():
+    """A histogram declared in the config and written by nobody is the
+    config-integrity failure CLAUDE.md names first; one written by two scripts
+    would be double-counted the moment a centre concatenates the bundles."""
+    cfg = json.loads((REPO / "config" / "covariates.json").read_text())
+    declared = set(cfg["pooling"]["histograms"]["variables"])
+    emitted: list[str] = []
+    for f in HISTS:
+        d = _skip_if_absent(f)
+        if d is None:
+            continue
+        emitted += sorted(set(d["variable"]))
+    assert emitted, "no histograms were emitted at all"
+    assert set(emitted) == declared, (
+        f"declared but not emitted: {sorted(declared - set(emitted))}; "
+        f"emitted but not declared: {sorted(set(emitted) - declared)}"
+    )
+    dupes = [v for v in set(emitted) if emitted.count(v) > 1]
+    assert not dupes, f"emitted by more than one script: {sorted(dupes)}"
+
+
+def test_each_histogram_accounts_for_every_value():
+    """The bins must partition the data: a value in no bin is silently dropped
+    from the pooled distribution, and the pooled median moves with it.
+
+    n_total is the count of NON-MISSING values, which is why it differs between
+    variables measured at different rates (fentanyl 184,854 ventilated windows,
+    lactate 135,628). A pooled histogram therefore describes the distribution
+    among OBSERVED values -- pair it with missingness.csv, not with the window
+    count.
+    """
+    for f in HISTS:
+        d = _skip_if_absent(f)
+        if d is None:
+            continue
+        for v, g in d.groupby("variable"):
+            assert g["n"].sum() == g["n_total"].iloc[0], (
+                f"{f.name}/{v}: bins sum to {g['n'].sum()} against n_total "
+                f"{g['n_total'].iloc[0]} -- the bins do not partition the data"
+            )
+            assert g["n_total"].nunique() == 1, f"{v}: n_total is not constant"
+            assert (g["n"] >= 0).all(), f"{v}: a negative bin count"
+            # Contiguous and ordered, so a pooler can read a quantile off the
+            # cumulative sum without re-sorting or checking for gaps.
+            b = g.sort_values("bin")
+            assert list(b["bin"]) == list(range(1, len(b) + 1)), f"{v}: bins not 1..n"
+            lo, hi = b["bin_lo"].tolist(), b["bin_hi"].tolist()
+            # The first bin may be a degenerate [0, 0] zero bin, whose hi equals
+            # the next bin's lo -- that is the point of it.
+            for i in range(len(b) - 1):
+                assert hi[i] == lo[i + 1], (
+                    f"{v}: gap or overlap between bin {i+1} and {i+2}: "
+                    f"{hi[i]} then {lo[i+1]}"
+                )
+
+
 def test_no_suppressed_cell_is_recoverable_by_subtraction():
     """A suppressed cell that arithmetic recovers is not suppressed.
 

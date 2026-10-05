@@ -40,6 +40,9 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "figures.R"))
+# boot_group() lives in pooling.R so 05 and 06 cannot drift in how they
+# bootstrap the same clustered proportion.
+source(here("code", "utils", "pooling.R"))
 
 
 # ---- 2. Config ---------------------------------------------------------------
@@ -250,63 +253,7 @@ attribute <- function(d, what) {
 # carry NA weight. Passed in rather than inferred inside, so the caller has to
 # say which universe it means.
 
-boot_group <- function(d, group_col, seed, outcome = "paired", episodes) {
-  n_ep <- length(episodes)
-  stopifnot("an event belongs to no episode in the resampling universe" =
-              all(d$encounter_block %in% episodes))
-  # Per (episode, group) counts, so a resample is a weighted sum rather than a
-  # re-tabulation of every event.
-  g <- factor(d[[group_col]])
-  cell <- data.frame(
-    ei = match(d$encounter_block, episodes),
-    gi = as.integer(g),
-    n = 1L,
-    k = as.integer(d[[outcome]]))
-  cell <- aggregate(cbind(n, k) ~ ei + gi, data = cell, FUN = sum)
-  G <- nlevels(g)
-
-  point_n <- numeric(G); point_k <- numeric(G)
-  s <- rowsum(as.matrix(cell[, c("k", "n")]), cell$gi, reorder = TRUE)
-  idx <- as.integer(rownames(s))
-  point_k[idx] <- s[, "k"]; point_n[idx] <- s[, "n"]
-
-  # Re-seeded immediately before the draw rather than relying on the seed set at
-  # the top of the script: any RNG consumed in between would silently change
-  # which intervals a reader sees (the 04_delivery_states.R raster precedent).
-  set.seed(seed)
-  reps <- matrix(NA_real_, nrow = B_RESAMP, ncol = G)
-  pooled <- numeric(B_RESAMP)
-  for (b in seq_len(B_RESAMP)) {
-    mult <- tabulate(sample.int(n_ep, n_ep, replace = TRUE), nbins = n_ep)
-    w <- mult[cell$ei]
-    num <- numeric(G); den <- numeric(G)
-    sb <- rowsum(cbind(cell$k * w, cell$n * w), cell$gi, reorder = TRUE)
-    ib <- as.integer(rownames(sb))
-    num[ib] <- sb[, 1]; den[ib] <- sb[, 2]
-    reps[b, ] <- ifelse(den > 0, 100 * num / den, NA_real_)
-    pooled[b] <- 100 * sum(num) / sum(den)
-  }
-
-  out <- data.frame(
-    group = levels(g),
-    n_events = point_n,
-    n_paired = point_k,
-    pct_paired = 100 * point_k / point_n,
-    ci_lo = apply(reps, 2, quantile, probs = 0.025, na.rm = TRUE),
-    ci_hi = apply(reps, 2, quantile, probs = 0.975, na.rm = TRUE),
-    stringsAsFactors = FALSE)
-  out$n_episodes <- as.vector(tapply(d$encounter_block, g,
-                                     function(x) length(unique(x)))[out$group])
-
-  # Design effect: how much wider the clustered interval is than a naive
-  # binomial one would have been. Measured, never assumed, and reported so the
-  # funnel's widened limits are auditable rather than a black box.
-  p0 <- 100 * sum(point_k) / sum(point_n)
-  naive_var <- p0 * (100 - p0) / sum(point_n)
-  attr(out, "pooled_pct") <- p0
-  attr(out, "deff") <- var(pooled) / naive_var
-  out
-}
+# boot_group() is in code/utils/pooling.R -- shared with 05_titration.R.
 
 # Two metrics, one machine. Each declares its events, the 0/1 column, its
 # series, and which series is the COMBINED one -- the union of the others, used
@@ -352,7 +299,8 @@ for (m in METRICS) {
   u <- do.call(rbind, lapply(UNIT_KEYS, function(k) {
     do.call(rbind, lapply(spec$series, function(sname) {
       r <- boot_group(series_subset(a$att[a$att$attributed, ], spec, sname),
-                      k, SEED, outcome = spec$outcome, episodes = eps)
+                      k, SEED, outcome = spec$outcome, episodes = eps,
+                      n_resamples = B_RESAMP)
       r$metric <- m; r$unit_key <- k; r$series <- sname
       r$pooled_pct <- attr(r, "pooled_pct"); r$deff <- attr(r, "deff")
       r
@@ -363,7 +311,7 @@ for (m in METRICS) {
   UNIT[[m]] <- u
 
   y <- boot_group(a$att, "anchor_year", SEED, outcome = spec$outcome,
-                  episodes = eps)
+                  episodes = eps, n_resamples = B_RESAMP)
   y$metric <- m
   y$pooled_pct <- attr(y, "pooled_pct"); y$deff <- attr(y, "deff")
   names(y)[names(y) == "group"] <- "year"
@@ -739,15 +687,25 @@ for (m in METRICS) {
 
 # ---- 10. Write ---------------------------------------------------------------
 
+# The two files pool over DIFFERENT event sets, so the column cannot share a
+# name. unit_adherence covers attributed events only -- an event in no ICU or ED
+# interval cannot be credited to a unit -- while year_adherence covers all
+# events, because every event has a year. At UCMC that is 13.17% against 13.53%:
+# the same metric, two correct numbers, and a reader given one `pooled_pct`
+# column has no way to tell which they are holding.
+unit_tbl$pooled_pct_attributed <- unit_tbl$pooled_pct
+year_tbl$pooled_pct_all_events <- year_tbl$pooled_pct
+
 cols <- c("metric", "unit_key", "unit", "series", "n_events", "n_episodes",
-          "n_paired", "pct_paired", "ci_lo", "ci_hi", "pooled_pct", "deff",
-          "n_suppressed_small_cell")
+          "n_paired", "pct_paired", "ci_lo", "ci_hi", "pooled_pct_attributed",
+          "deff", "n_suppressed_small_cell")
 write.csv(unit_tbl[order(unit_tbl$metric, unit_tbl$unit_key,
                          unit_tbl$unit, unit_tbl$series), cols],
           file.path(dirs$phase, "unit_adherence.csv"), row.names = FALSE)
 write.csv(year_tbl[order(year_tbl$metric, year_tbl$year),
                    c("metric", "year", "n_events", "n_episodes", "n_paired",
-                     "pct_paired", "ci_lo", "ci_hi", "pooled_pct", "deff")],
+                     "pct_paired", "ci_lo", "ci_hi", "pooled_pct_all_events",
+                     "deff")],
           file.path(dirs$phase, "year_adherence.csv"), row.names = FALSE)
 write.csv(funnel_tbl, file.path(dirs$phase, "attribution_funnel.csv"),
           row.names = FALSE)

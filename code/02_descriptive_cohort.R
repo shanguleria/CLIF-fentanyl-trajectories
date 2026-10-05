@@ -79,6 +79,15 @@ FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
 stopifnot("covariates.json must declare disclosure.full_levels_strata_scope" =
             !is.null(FULL_SCOPE))
 
+# Histogram bins, so a coordinating centre can pool a median that has no closed
+# form. Absolute and config-declared, never local quantiles -- a site-specific
+# binning cannot be summed with anyone else's.
+HSPEC <- COV$pooling$histograms$variables
+stopifnot("covariates.json must declare pooling.histograms.variables" =
+            !is.null(HSPEC))
+HIST_MINE <- names(HSPEC)[vapply(HSPEC, function(s)
+  identical(as.character(s$owner), "02"), logical(1))]
+
 POOL <- list()
 POOL_CAT <- list()
 
@@ -108,6 +117,7 @@ OWNED <- list(phase = c(
   "dose_summary.csv", "balanced_panels.csv",
   "imv_encounter_duration.csv",
   "pooling_continuous.csv", "pooling_categorical.csv",
+  "pooling_histograms.csv",
   "provenance.json",
   "fentanyl_curves.png", "fentanyl_balanced_panels.png",
   "sedative_curves.png", "captions.md"))
@@ -218,11 +228,21 @@ summarise_dose <- function(v, drug, denom, w, hr) {
   v <- v[!is.na(v)]
   if (!length(v)) return(NULL)
   q <- unname(quantile(v, c(0.25, 0.5, 0.75)))
+  # n_receiving is the NUMERATOR behind pct_receiving_any. Without it the
+  # proportion cannot be pooled exactly across sites, only reconstructed as
+  # n * pct/100 with the rounding error of a 1 dp percentage.
+  k <- sum(v > 0)
+  # Under receivers_only the subset is already filtered to v > 0, so the
+  # percentage is structurally 100 and carries no information. NA rather than a
+  # constant, which invites being pooled as though it meant something.
+  receivers <- identical(denom, "receivers_only")
   data.frame(drug = drug, unit = UNITS[[drug]], denominator = denom,
              window_idx = w, window_start_hr = hr, n = length(v),
+             n_receiving = k,
              median = round(q[2], 3), q1 = round(q[1], 3), q3 = round(q[3], 3),
              mean = round(mean(v), 3), sd = round(stats::sd(v), 3),
-             pct_receiving_any = round(100 * mean(v > 0), 1))
+             pct_receiving_any = if (receivers) NA_real_
+                                 else round(100 * k / length(v), 1))
 }
 
 dose_summary <- do.call(rbind, lapply(names(DRUGS), function(drug) {
@@ -498,6 +518,32 @@ cat("\nBaseline characteristics\n")
 print(baseline, row.names = FALSE)
 
 
+# ---- 12b. Pooling histograms -------------------------------------------------
+# A median has no closed form across sites, and for a variable that is skewed
+# or sits on a point mass at zero the mean is not an acceptable substitute
+# either. Counts on FIXED absolute bins do pool. Config:
+# covariates.json pooling.histograms.
+pool_histograms <- do.call(rbind, lapply(HIST_MINE, function(v) {
+  spec <- HSPEC[[v]]
+  col <- sub("^trajectory_long\\.", "", as.character(spec$source))
+  stopifnot("a declared histogram names a column trajectory_long does not carry" =
+              col %in% names(long))
+  x <- if (identical(as.character(spec$restrict), "one row per episode")) {
+    # One value per EPISODE. Taken off the window grid unfiltered it would
+    # repeat 18 times and weight a long stay eighteen-fold.
+    long[[col]][!duplicated(long$encounter_block)]
+  } else {
+    long[[col]][long$ventilated]
+  }
+  pool_hist(v, x, spec)
+}))
+stopifnot(
+  "02 must emit every histogram the config assigns it" =
+    setequal(unique(pool_histograms$variable), HIST_MINE))
+cat(sprintf("\nPooling histograms: %d variables, %d bins total\n",
+            length(HIST_MINE), nrow(pool_histograms)))
+
+
 # ---- 13. Figures -------------------------------------------------------------
 
 # FENTANYL IS THE STUDY. It gets the primary figures; propofol, midazolam and
@@ -665,6 +711,7 @@ pooling_continuous <- do.call(rbind, POOL)
 pooling_categorical <- do.call(rbind, POOL_CAT)
 write_out(pooling_continuous, "pooling_continuous.csv")
 write_out(pooling_categorical, "pooling_categorical.csv")
+write_out(pool_histograms, "pooling_histograms.csv")
 
 write_captions(file.path(dirs$phase, "captions.md"), "02_descriptive_cohort.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
