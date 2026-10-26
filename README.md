@@ -510,11 +510,16 @@ It reports one row per site and then separates the two kinds of divergence:
 
 ## Contributing
 
-R scripts follow the house style in
-`~/Desktop/Research/CLIF/R_setup.R` — a Purpose/Author/Created/Inputs/Outputs
-banner, the `requireNamespace` + `library(p, character.only = TRUE)` package
-loop, `here()` for all paths (never `setwd()`), and a `sessionInfo()` provenance
-write at the end of each script.
+R scripts follow a house style, which any script in `code/` demonstrates — read
+`code/05_titration.R` as the reference. It is: a Purpose/Author/Created/Inputs/
+Outputs banner; the `requireNamespace` + `library(p, character.only = TRUE)`
+package loop; `here()` for every path and never `setwd()`; and a `sessionInfo()`
+provenance write at the end.
+
+(This previously pointed at `R_setup.R` under a home directory, which resolves
+only on the original author's machine — a documented path that cannot work at
+another site is worse than no pointer, since the reader cannot tell whether they
+are missing a file or the reference is stale.)
 
 **Any generated code must be read by a human before it is run or committed.**
 
