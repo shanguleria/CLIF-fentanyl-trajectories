@@ -63,7 +63,7 @@ CODE_GLOBS = ("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
 # meaningful. config.json is deliberately NOT here: it carries site_name and
 # data_directory, so its digest is EXPECTED to differ between sites, and treating
 # it as a cross-site equality check would flag every site as divergent.
-PROTOCOL_FILES = ("covariates.json", "outlier_config.json")
+PROTOCOL_FILES = ("protocol.json", "outlier_config.json")
 SITE_CONFIG = "config.json"
 
 
@@ -102,7 +102,7 @@ def definition_versions(repo: Path | None = None) -> dict[str, str]:
     """The protocol version each config declares.
 
     One field per file, not one overall: they are bumped independently --
-    covariates.json is at 0.6.0 while outlier_config.json is at 0.3.0 -- so a
+    protocol.json is at 0.6.0 while outlier_config.json is at 0.3.0 -- so a
     single `definition_version` would be ambiguous about which it meant.
     """
     repo = repo or _repo()

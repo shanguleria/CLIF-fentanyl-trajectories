@@ -27,7 +27,7 @@ def one(drug, dose, unit, weight=W):
 
 def test_targets_are_declared_for_every_nee_drug():
     import json
-    cov = json.loads((REPO / "config" / "covariates.json").read_text())
+    cov = json.loads((REPO / "config" / "protocol.json").read_text())
     for drug in cov["time_varying"]["nee"]["coefficients"]:
         assert drug in TARGET_OF, f"{drug} has no target unit"
     assert TARGET_OF["vasopressin"] == "u/min"
@@ -73,7 +73,7 @@ def test_the_reference_dimensional_check_reproduces():
     angiotensin 10 ng/kg/min -> 0.01 mcg/kg/min, x10 = 0.1 NEE.
     vasopressin 0.04 U/min, x2.5 = 0.1 NEE."""
     import json
-    coef = json.loads((REPO / "config" / "covariates.json").read_text()
+    coef = json.loads((REPO / "config" / "protocol.json").read_text()
                       )["time_varying"]["nee"]["coefficients"]
     assert abs(one("angiotensin", 10.0, "ng/kg/min")[0] * coef["angiotensin"] - 0.1) < 1e-12
     assert abs(one("vasopressin", 0.04, "units/min")[0] * coef["vasopressin"] - 0.1) < 1e-12
@@ -109,14 +109,14 @@ def test_every_sedative_charted_unit_at_ucmc_resolves():
             val, _ = one(drug, 1.0, unit, weight=70.0)
             assert val is not None and not pd.isna(val), (
                 f"{drug} charted in {unit} does not convert; add it to "
-                f"covariates.json dose_units"
+                f"protocol.json dose_units"
             )
 
 
 def test_the_sedative_target_units_are_the_ones_the_protocol_declares():
     """dose_units decides what the converter produces; exposure.sedatives.units
     is what the protocol and the docs promise. A divergence is silent."""
-    cov = json.loads((REPO / "config" / "covariates.json").read_text())
+    cov = json.loads((REPO / "config" / "protocol.json").read_text())
     declared = cov["exposure"]["sedatives"]["units"]
     for col, unit in declared.items():
         drug = col.removesuffix("_dose")

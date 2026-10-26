@@ -9,7 +9,7 @@
 #
 # NOT A QUALITY MEASURE. No evidence establishes that pairing a bolus with an
 # up-titration is better care. This describes VARIATION IN PRACTICE. A unit with
-# a lower rate is not thereby worse, and tests/test_covariates.py bans the words
+# a lower rate is not thereby worse, and tests/test_protocol.py bans the words
 # quality, performance and benchmark from this file for that reason.
 #
 # THE EVENTS ARE NOT REDEFINED HERE. 05_titration.R owns what counts as an
@@ -22,7 +22,7 @@
 # would wobble if the care process re-ran. It does NOT adjust for case mix -- a
 # unit's rate reflects who it admits as much as how it practises -- and the
 # association between unit and adherence is deliberately not modelled (SG,
-# 2026-09-30). See covariates.json unit_variation._STATUS_model for what the
+# 2026-09-30). See protocol.json unit_variation._STATUS_model for what the
 # deferred method is and how its estimand differs from this one.
 # ==============================================================================
 
@@ -48,19 +48,19 @@ source(here("code", "utils", "pooling.R"))
 # ---- 2. Config ---------------------------------------------------------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-SEED <- config$model$seed
+COV <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+SEED <- COV$model$seed
 set.seed(SEED)
 
-WINDOW_H <- config$cohort$window_hours
-EXTENT_H <- config$cohort$granular_extent_hours
-MIN_CELL <- config$reporting$small_cell_min_den
+WINDOW_H <- COV$cohort$window_hours
+EXTENT_H <- COV$cohort$granular_extent_hours
+MIN_CELL <- COV$reporting$small_cell_min_den
 
-COV <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 # Read from the config, never defaulted here: the attribution rule and the
 # resample count are federation-critical, and a local default is how a site
 # keeps computing on the old numbers after the consortium moves them.
 SPEC <- COV$unit_variation
-stopifnot("covariates.json must declare a `unit_variation` block" = !is.null(SPEC))
+stopifnot("protocol.json must declare a `unit_variation` block" = !is.null(SPEC))
 ATTR_CATS <- unlist(SPEC$attributed_location_categories)
 UNIT_KEYS <- unlist(SPEC$unit_keys)
 MIN_UNIT  <- as.numeric(SPEC$min_events_per_unit)
@@ -69,7 +69,7 @@ YEAR_FROM <- as.character(SPEC$year_from)
 OD_TRIM   <- as.numeric(SPEC$overdispersion_trim)
 
 TSPEC <- COV$titration
-stopifnot("covariates.json must declare a `titration` block" = !is.null(TSPEC))
+stopifnot("protocol.json must declare a `titration` block" = !is.null(TSPEC))
 WIN_MIN   <- as.numeric(TSPEC$bolus_window_minutes)
 MIN_DELTA <- as.numeric(TSPEC$min_rate_change_mcg_hr)
 
@@ -77,7 +77,7 @@ MIN_DELTA <- as.numeric(TSPEC$min_rate_change_mcg_hr)
 # indication_events.parquet were computed at this window, and a caption naming
 # a different one would be wrong in the direction nobody checks.
 ISPEC <- COV$indication
-stopifnot("covariates.json must declare an `indication` block" = !is.null(ISPEC))
+stopifnot("protocol.json must declare an `indication` block" = !is.null(ISPEC))
 IND_WIN_H <- as.numeric(ISPEC$indication_window_hours)
 
 stopifnot(
@@ -120,6 +120,33 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
 # cannot leave a figure unowned and therefore uncleared. CLAUDE.md's first
 # config-integrity rule: iterate the keys rather than restating them.
 METRICS <- c("coadmin", "indication")
+
+# WHICH UNIT KEYS CAN THIS SITE ACTUALLY GROUP BY? care_setting is derived from
+# location_type coalesced to location_category, both REQUIRED mCIDE columns, so
+# it reproduces everywhere. location_name is OPTIONAL in the CLIF adt schema
+# (required: False, no permissible values) and a site may simply not have it.
+# Until 2026-10-26 an absent key tripped a stopifnot after every figure had been
+# written -- a hard stop at the end of a long run, fixable only by editing the
+# protocol, which would then break the cross-site digest equality the whole
+# provenance scheme rests on. So: discover availability HERE, from the schema
+# only, before the owned-output list is derived from it. Reading names costs no
+# rows and touches no patient data.
+.ci_path <- file.path(dirs$out_phi, "care_intervals.parquet")
+if (file.exists(.ci_path)) {
+  .have <- names(arrow::open_dataset(.ci_path))
+  .gone <- setdiff(UNIT_KEYS, .have)
+  if (length(.gone)) {
+    cat(sprintf(paste0("\n  NOTE unit key(s) not present in care_intervals and ",
+                       "therefore SKIPPED: %s\n        present: %s\n",
+                       "        This is expected where CLIF's optional ",
+                       "location_name is not populated.\n"),
+                paste(.gone, collapse = ", "), paste(.have, collapse = ", ")))
+    UNIT_KEYS <- intersect(UNIT_KEYS, .have)
+  }
+  stopifnot("no declared unit key is present in care_intervals -- there is nothing to group by" =
+              length(UNIT_KEYS) >= 1)
+}
+
 FIGS <- c(as.vector(outer(METRICS, UNIT_KEYS,
                           function(m, k) paste0(m, "_caterpillar_", k, ".png"))),
           as.vector(outer(METRICS, UNIT_KEYS,
@@ -172,7 +199,10 @@ stopifnot(
     all(c("encounter_block", "t_hr", "event_type", "any_indicated") %in% names(ind_ev)),
   "an indication event is neither an increase nor a bolus" =
     all(ind_ev$event_type %in% c("increase", "bolus")),
-  "care_intervals is missing a declared unit key" = all(UNIT_KEYS %in% names(icu)),
+  # UNIT_KEYS was already narrowed to what the schema carries, so this can only
+  # fail if the frame read here is not the one whose schema was inspected.
+  "care_intervals is missing a unit key that its own schema advertised" =
+    all(UNIT_KEYS %in% names(icu)),
   "care_intervals carries a location_category the config does not attribute" =
     all(tolower(icu$location_category) %in% tolower(ATTR_CATS)),
   "a care interval is zero-width or inverted" = all(icu$t_end_hr > icu$t_start_hr),
@@ -188,7 +218,7 @@ stopifnot(
 # hospitalizations do, over their longer span -- two denominators, not one
 # number). An episode-level label would credit every one of that episode's
 # events to whichever unit held the most time.
-# See covariates.json unit_variation._why_event_level.
+# See protocol.json unit_variation._why_event_level.
 #
 # Written once and applied per metric: a bolus carries an encounter_block and a
 # t_hr exactly as a rate change does, so the same interval join credits it.
@@ -355,9 +385,21 @@ stopifnot(
   # value below 1 would mean the episode bootstrap is not measuring clustering
   # at all: negative intracluster correlation, or Monte Carlo noise at a true
   # deff near 1. Either way the number we ship for pooling would mislead.
+  # NA is tolerated and counted below, not asserted on: deff is var/naive and
+  # `naive` is zero when a proportion sits exactly at 0% or 100%, which is a
+  # degenerate denominator rather than a fault. all(NA >= 1) is NA, and
+  # stopifnot() on NA aborts with "missing value where TRUE/FALSE needed" -- a
+  # cryptic stop, after every figure is written, at any site small enough to have
+  # a unit that never paired a bolus.
   "the design effect is below 1, so the bootstrap is not measuring clustering" =
-    all(unit_tbl$deff >= 1) && all(year_tbl$deff >= 1)
+    all(unit_tbl$deff >= 1, na.rm = TRUE) && all(year_tbl$deff >= 1, na.rm = TRUE)
 )
+.nd <- sum(is.na(unit_tbl$deff)) + sum(is.na(year_tbl$deff))
+if (.nd)
+  cat(sprintf(paste0("\n  NOTE %d design effect(s) are undefined and ship as NA: ",
+                     "the proportion is exactly 0%% or 100%%, so the binomial ",
+                     "variance it divides by is zero. Not a fault; the ",
+                     "coordinating centre must skip these when pooling.\n"), .nd))
 
 
 # ---- 8. Disclosure -----------------------------------------------------------
@@ -473,11 +515,26 @@ for (m in METRICS) {
     }
   }
 }
-od_tbl <- do.call(rbind, OD)
+# A site with fewer than three attributed units in every metric x key produces
+# NO rows, and that is a true statement about the site rather than an error:
+# between-unit over-dispersion is not estimable from one or two units. This used
+# to be a crash -- do.call(rbind, list()) is NULL and `rownames(NULL) <- NULL`
+# errors -- which took out the whole script AFTER every figure had been written.
+od_tbl <- if (length(OD)) do.call(rbind, OD) else
+  data.frame(metric = character(), unit_key = character(), series = character(),
+             n_units = integer(), q_stat = numeric(), q_df = integer(),
+             q_p = numeric(), phi = numeric(), phi_winsorised = numeric(),
+             phi_crit_95 = numeric(), tau2 = numeric(),
+             mean_binomial_var = numeric(), share_not_sampling = numeric(),
+             stringsAsFactors = FALSE)
 rownames(od_tbl) <- NULL
+if (!nrow(od_tbl))
+  cat(paste0("\n  NOTE no metric x unit key has the >= 3 units the over-dispersion\n",
+             "       diagnostic needs, so overdispersion.csv ships with headers and\n",
+             "       no rows. Expected at a single-unit site; the funnel and\n",
+             "       caterpillar panels are unaffected.\n"))
 
 stopifnot(
-  "the over-dispersion diagnostic produced no rows" = nrow(od_tbl) > 0,
   "phi cannot be negative" = all(od_tbl$phi >= 0),
   "tau2 cannot be negative" = all(od_tbl$tau2 >= 0),
   "share_not_sampling must be a proportion" =

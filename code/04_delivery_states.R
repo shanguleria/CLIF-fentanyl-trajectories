@@ -32,21 +32,21 @@ source(here("code", "utils", "figures.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV       <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-WINDOW_H  <- config$cohort$window_hours
-EXTENT_H  <- config$cohort$granular_extent_hours
-PANELS    <- unlist(config$cohort$balanced_panel_hours)
-LANDMARK  <- config$cohort$landmark_hours
+WINDOW_H  <- COV$cohort$window_hours
+EXTENT_H  <- COV$cohort$granular_extent_hours
+PANELS    <- unlist(COV$cohort$balanced_panel_hours)
+LANDMARK  <- COV$cohort$landmark_hours
 
-COV       <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 # Dose-band definition. Read from the config, never defaulted here: the cuts are
 # federation-critical and a local default is how a site keeps cutting at the old
 # values after the consortium moves them.
 DS_SPEC   <- COV$exposure$dose_states
 DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
 DOSE_LAB  <- unlist(DS_SPEC$labels)
-stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
+stopifnot("protocol.json exposure.dose_states must declare cuts and labels" =
             length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
           "dose states must be defined on window_mcg" =
             identical(DS_SPEC$variable, "window_mcg"))
@@ -54,7 +54,7 @@ SED_UNITS <- COV$exposure$sedatives$units
 
 # Read the drug list FROM the config rather than restating it. A hardcoded list
 # here is how a declared sedative becomes a no-op: adding dexmedetomidine to
-# covariates.json would have changed nothing.
+# protocol.json would have changed nothing.
 SED_COLS <- unlist(COV$exposure$sedatives$columns)
 DRUGS <- c(fentanyl = "total_dose",
            setNames(SED_COLS, sub("_dose$", "", SED_COLS)))
@@ -63,10 +63,10 @@ UNITS <- c(fentanyl = COV$exposure$units,
                     sub("_dose$", "", SED_COLS)))
 SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
-MIN_CELL <- config$reporting$small_cell_min_den
+MIN_CELL <- COV$reporting$small_cell_min_den
 
 # Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
-# pooling_categorical.csv. Map lives in covariates.json, not here.
+# pooling_categorical.csv. Map lives in protocol.json, not here.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 
 
@@ -147,7 +147,7 @@ stopifnot(
 
 missing_cols <- setdiff(unname(DRUGS), names(long))
 if (length(missing_cols)) {
-  stop("covariates.json declares dose columns that trajectory_long does not carry: ",
+  stop("protocol.json declares dose columns that trajectory_long does not carry: ",
        paste(missing_cols, collapse = ", "),
        ". Re-run code/01_build_cohort.py rather than dropping them silently.",
        call. = FALSE)
@@ -454,7 +454,7 @@ EXIT_STATES <- c("extubated", STATE_ABSORBING)
 
 # Re-seeded here rather than relied on from the top of the script: any RNG in
 # between would silently change which patients a reader sees.
-set.seed(config$model$seed)
+set.seed(COV$model$seed)
 blocks <- unique(long$encounter_block)
 stopifnot("not enough episodes to fill the raster" = length(blocks) >= N_RASTER)
 picked <- sample(blocks, N_RASTER)
@@ -513,7 +513,7 @@ register_caption("state_raster.png", "One hundred ventilation episodes, end to e
                  "time to first extubation, death or discharge, then by number of ",
                  "fentanyl-exposed windows. Relative hours only; no identifiers."),
           N_RASTER, format(anchor_n, big.mark = ","),
-          format(config$model$seed, scientific = FALSE), WINDOW_H, last_hr))
+          format(COV$model$seed, scientific = FALSE), WINDOW_H, last_hr))
 ggsave(file.path(dirs$phase, "state_raster.png"),
        p_raster, width = 7.5, height = 5.5, dpi = 200)
 

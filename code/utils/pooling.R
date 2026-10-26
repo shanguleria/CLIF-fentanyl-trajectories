@@ -35,7 +35,7 @@ pool_row <- function(scope, variable, unit, stratum, w, hr, v, min_cell) {
 # Level counts per stratum. `strata` is a vector as long as `v`; an "overall"
 # row is always emitted alongside the named strata.
 # `strata_scope`: "all" emits overall plus every named stratum; "overall" emits
-# the overall row only. Config: covariates.json disclosure.full_levels_strata_scope
+# the overall row only. Config: protocol.json disclosure.full_levels_strata_scope
 # -- a categorical published in BOTH a full and a collapsed form ships the full
 # form at overall only, because publishing the two views over the same strata
 # makes each suppressed cell recoverable by subtraction.
@@ -76,7 +76,7 @@ pool_cat <- function(variable, v, strata, min_cell, strata_scope = "all") {
 # A median has no closed form across sites, and for a skewed or zero-inflated
 # variable the mean is not an acceptable substitute. Counts on FIXED bins do
 # pool: sum them, then read any quantile off the pooled distribution, accurate
-# to within one bin width. Config: covariates.json pooling.histograms.
+# to within one bin width. Config: protocol.json pooling.histograms.
 #
 # `spec` is one entry from that block. Returns one row per bin, lowest first,
 # carrying numeric bin_lo/bin_hi so a pooler never has to parse a label.
@@ -196,17 +196,26 @@ boot_group <- function(d, group_col, seed, outcome, episodes, n_resamples) {
   # sets differ by site by construction, so the centre pools the between-unit
   # spread or an ICC, never the named units. Do not "fix" that overwrite by
   # shipping both; the per-unit column would have no permitted consumer.
+  # A proportion at exactly 0% or 100% makes the binomial variance zero, so the
+  # design effect is 0/0 or x/0 -- NaN or Inf, both of which would ship as a
+  # number and both of which abort the `deff >= 1` guard downstream with
+  # "missing value where TRUE/FALSE needed". NA is the honest value: the
+  # quantity is undefined, not large. Inert at UCMC, where every unit pairs at
+  # least once, and live at any site with a unit that never did.
   naive <- out$pct_paired * (100 - out$pct_paired) / out$n_events
-  out$deff <- apply(reps, 2, stats::var, na.rm = TRUE) / naive
+  out$deff <- ifelse(naive > 0,
+                     apply(reps, 2, stats::var, na.rm = TRUE) / naive,
+                     NA_real_)
 
   p0 <- 100 * sum(point_k) / sum(point_n)
   attr(out, "overall_pct") <- p0
-  attr(out, "deff") <- stats::var(overall) / (p0 * (100 - p0) / sum(point_n))
+  naive0 <- p0 * (100 - p0) / sum(point_n)
+  attr(out, "deff") <- if (naive0 > 0) stats::var(overall) / naive0 else NA_real_
   out
 }
 
 
-# Collapse category levels for display through a map declared in covariates.json.
+# Collapse category levels for display through a map declared in protocol.json.
 collapse_levels <- function(v, map) {
   # Look up through a NAMED VECTOR, not list subsetting. `unlist(map[v])` drops
   # the NULLs for unmatched values, so the result is shorter than v and ifelse

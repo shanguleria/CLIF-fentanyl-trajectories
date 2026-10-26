@@ -1,4 +1,4 @@
-"""Medication dose unit conversion, driven by config/covariates.json dose_units.
+"""Medication dose unit conversion, driven by config/protocol.json dose_units.
 
 Done here rather than by clifpy, which leaves the raw value in place when it
 cannot convert and reports the failure only in the returned unit string. A
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
-_COV = json.loads((REPO / "config" / "covariates.json").read_text())
+_COV = json.loads((REPO / "config" / "protocol.json").read_text())
 TABLES = {k: v for k, v in _COV["dose_units"].items() if not k.startswith("_")}
 
 TARGET_OF: dict[str, str] = {}
@@ -94,7 +94,7 @@ def convert(df: pd.DataFrame, drug_col: str, dose_col: str, unit_col: str,
     if unknown:
         raise DoseUnitError(
             "no conversion for: " + ", ".join(sorted(set(unknown)))
-            + ". Add them to config/covariates.json dose_units rather than dropping "
+            + ". Add them to config/protocol.json dose_units rather than dropping "
               "them -- a dropped unit removes a drug for the patients charted that way."
         )
     return out, rep

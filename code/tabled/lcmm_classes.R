@@ -38,19 +38,19 @@ source(here("code", "utils", "paths.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) ----
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV      <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-COV      <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
-WINDOW_H <- config$cohort$window_hours
-LANDMARK <- config$cohort$landmark_hours
-DEG      <- config$model$polynomial_degree
-MIN_EXPOSED <- config$model$min_exposed_windows
+WINDOW_H <- COV$cohort$window_hours
+LANDMARK <- COV$cohort$landmark_hours
+DEG      <- COV$model$polynomial_degree
+MIN_EXPOSED <- COV$model$min_exposed_windows
 
 stopifnot("config model.ng_range is missing" =
-            "ng_range" %in% names(config$model),
+            "ng_range" %in% names(COV$model),
           "config model.min_exposed_windows is missing" =
-            "min_exposed_windows" %in% names(config$model))
-ng_range <- unlist(config$model$ng_range)
+            "min_exposed_windows" %in% names(COV$model))
+ng_range <- unlist(COV$model$ng_range)
 n_groups <- seq(ng_range[1], ng_range[2])
 
 # ---- 3. Paths and provenance ----
@@ -126,7 +126,7 @@ if (!is.null(gb)) {
 # random  = the per-episode deviation. THIS is what gbmt does not have.
 
 f_fixed  <- as.formula(sprintf("total_dose ~ poly(t, %d, raw = TRUE)", DEG))
-  #DEG from config$model$polynomial_degree
+  #DEG from COV$model$polynomial_degree
 f_mix    <- as.formula(sprintf("~ poly(t, %d, raw = TRUE)", DEG))
 f_random <- ~ 1                     # random intercept; see the note below
 

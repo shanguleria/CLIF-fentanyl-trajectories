@@ -30,7 +30,8 @@ source(here("code", "utils", "paths.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
 
 # ---- 3. Paths and provenance -------------------------------------------------

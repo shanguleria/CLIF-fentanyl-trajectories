@@ -40,7 +40,8 @@ source(here("code", "utils", "pooling.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
 
 # ---- 3. Paths and provenance -------------------------------------------------
@@ -100,10 +101,10 @@ df_all <- df_all[, c("id_num", "window_idx", "total_dose")]
 # likelihood unbounded and the IC comparison invalid across ng. Hold them out as
 # a named stratum and fit classes among the exposed. Threshold from config.
 
-MIN_EXPOSED <- config$model$min_exposed_windows
-DEG <- config$model$polynomial_degree
+MIN_EXPOSED <- COV$model$min_exposed_windows
+DEG <- COV$model$polynomial_degree
 stopifnot("config model.min_exposed_windows is missing" =
-            "min_exposed_windows" %in% names(config$model))
+            "min_exposed_windows" %in% names(COV$model))
 
 n_exposed_windows <- tapply(df_all$total_dose > 0, df_all$id_num, sum)
 exposed_ids  <- as.integer(names(n_exposed_windows)[n_exposed_windows >= MIN_EXPOSED])
@@ -139,9 +140,9 @@ message(sprintf("fitting on %s exposed episodes; %s never-exposed held out",
 # Read the sweep range FROM the config rather than restating it here. A
 # hardcoded range is how config and run drift apart: model.ng_range said [1, 6]
 # while this line said 2:5, so the config described a sweep that never happened.
-ng_range <- unlist(config$model$ng_range)
+ng_range <- unlist(COV$model$ng_range)
 stopifnot("config model.ng_range is missing" =
-            "ng_range" %in% names(config$model),
+            "ng_range" %in% names(COV$model),
           "model.ng_range must be [min, max] with min >= 2" =
             length(ng_range) == 2 && ng_range[1] >= 2 && ng_range[2] >= ng_range[1])
 n_groups <- seq(ng_range[1], ng_range[2])
@@ -154,7 +155,7 @@ fits <- lapply(n_groups, function(g) {
   gbmt(x.names = "total_dose", 
        unit = "id_num", 
        time = "window_idx",
-       d = DEG,     # config$model$polynomial_degree
+       d = DEG,     # COV$model$polynomial_degree
        ng = g, 
        data = df, 
        scaling = 0, # Scaling must be 0 for this project
@@ -176,9 +177,9 @@ write_json(list(
   config_digests   = manifest$config_digests,
   ng_range            = ng_range,
   min_exposed_windows = MIN_EXPOSED,
-  scaling             = config$model$scaling,
+  scaling             = COV$model$scaling,
   polynomial_degree   = DEG,
-  seed                = config$model$seed,
+  seed                = COV$model$seed,
   n_units          = length(exposed_ids),
   n_windows        = length(unique(df$window_idx)),
   models           = names(fits)),
@@ -334,17 +335,16 @@ plot_trajectories <- function(fit, dat, window_h, unit_label, title, subtitle) {
           plot.background    = element_rect(fill = "#fcfcfb", colour = NA))
 }
 
-COV <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 
 traj_plot <- plot_trajectories(
   chosen_model, df,
-  window_h   = config$cohort$window_hours,
+  window_h   = COV$cohort$window_hours,
   unit_label = COV$exposure$units,
   title      = "Fentanyl trajectory classes over the landmark window",
   subtitle   = sprintf(
     "%s episodes that received any fentanyl while intubated in [0, %dh]; %s never-exposed held out.\nSolid = fitted class curve, dashed = observed group mean.",
     format(length(chosen_model$assign), big.mark = ","),
-    config$cohort$landmark_hours,
+    COV$cohort$landmark_hours,
     format(length(never_ids), big.mark = ",")))
 
 ggsave(file.path(dirs$phase, "gbmt_trajectories.png"), traj_plot,

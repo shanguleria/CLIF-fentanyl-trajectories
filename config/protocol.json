@@ -1,9 +1,75 @@
 {
-    "definition_version": "0.6.0",
+    "definition_version": "0.7.0",
     "_date": "2026-09-05",
     "_purpose": "PROTOCOL ONLY. Every value here is identical at every site; anything that legitimately differs by site belongs in config/config.json. This file is the definition_version stamped onto every shareable output, so any change is a protocol amendment that bumps the version. It is TRACKED IN GIT, unlike config/config.json, precisely because a protocol that cannot be shared or version-stamped is not a protocol.",
     "_protocol_test": "The test for whether a value belongs here: if two sites set this differently, is the pooled result still meaningful? If no, it is protocol. (Adopted from CRRT-dose-lmtp/CLAUDE.md:212-213.)",
     "_consumption_contract": "code/01_build_cohort.py MUST iterate the keys of time_invariant, time_varying and derived, and MUST assert that every declared variable reaches a column in trajectory_long.parquet. A config that is read but not honoured is worse than no config, because the next person reads it as a policy statement. See tests/test_covariates_are_claimed.py.",
+    "_LIFTED_FROM_config.json": "The seven keys below -- cohort, outcomes, medications, model, reporting and their comments -- lived in config/config.json until 2026-10-26. That file is NOT tracked in git (.gitignore) and is deliberately excluded from PROTOCOL_FILES in code/utils/paths.py, because it carries site_name and data_directory and its digest is EXPECTED to differ between sites. So the parameters that DEFINE THE COHORT -- imv_episode_gap_hours, min_imv_hours, min_age, window_hours, landmark_hours, the medication vocabulary, the outcome categories -- were invisible to the only mechanism that proves two sites ran the same protocol. A site nudging imv_episode_gap_hours to 4 to make a run work would build a different cohort and check_provenance.py would still report agreement. config.json said so itself in its own _comment_covariates -- 'nothing estimand-defining may live here alone' -- and then held the estimand. Moved by SG 2026-10-26 as part of the NU/Rush federation; the file was renamed covariates.json -> protocol.json in the same change, because it has held cohort rules, indication, unit_variation, exemplar and disclosure for weeks and the old name named only a fraction of it.",
+    "_comment_protocol": "cohort / outcomes / model define the estimand. If two sites set these differently the pooled result is not meaningful -- do not edit them to make a run work.",
+    "cohort": {
+        "_comment_anchor": "CLIF has no intubation event -- only device_category transitions -- so the anchor is the start of the first continuous IMV episode, which is a PROXY for intubation. A patient transferred in already ventilated, or admitted with a tracheostomy, has hour 0 = first observation rather than start of ventilation. Report and state that.",
+        "_comment_imv_episode": "imv_episode_gap_hours defines when consecutive IMV records belong to different episodes. 6h is set from the data, not by convention: raw IMV inter-record gaps at UCMC are p50 1.00h, p75 3.33h, p90 4.37h, p95 5.00h, so 14.6% of NORMAL charting gaps exceed 4h and a 4h break would fragment continuously-ventilated patients. At 8h only 1.5% of gaps break an episode -- p95 is 5.00h and p98 7.07h, so 8h sits at roughly the 98.5th percentile, far enough past routine charting not to fragment episodes and close enough to catch a genuine unobserved extubation. It also covers a long off-unit trip such as CT then a lengthy operation (SG). min_imv_hours is separate and is deliberately window_hours: a block that cannot fill one analysis window has no trajectory to model.",
+        "imv_episode_gap_hours": 8,
+        "min_imv_hours": 4,
+        "min_age": 18,
+        "window_hours": 4,
+        "granular_extent_hours": 72,
+        "_comment_extended_grid": "DECLARED BUT NOT CONSUMED. No code reads the two extended_* keys; see protocol.json windows.extended._STATUS for why the 12h/168h view is deferred and what building it would take. Left here so the agreed parameters survive, NOT because a run honours them.",
+        "extended_window_hours": 12,
+        "extended_extent_hours": 168,
+        "landmark_hours": 72,
+        "balanced_panel_hours": [
+            24,
+            48,
+            72
+        ]
+    },
+    "outcomes": {
+        "_comment_mortality": "patient.death_dttm is unstable across CLIF sites -- mortality comes from discharge_category. Pruned 2026-09-23: mortality_source, mortality_categories_sensitivity, vfd_horizon_days and mortality_horizon_days were all DECLARED AND READ BY NOTHING -- verified by grep across live code, the tabled scripts and the tests. The Hospice sensitivity analysis and the VFD/30-day horizons belong to the outcome work that is not being done; re-add them, with consumers, if it ever is.",
+        "mortality_categories": [
+            "Expired",
+            "Hospice"
+        ],
+        "unresolved_discharge_categories": [
+            "Still Admitted",
+            "Missing",
+            "Other"
+        ],
+        "successful_extubation_hours": 72
+    },
+    "_comment_medications": "Confirm these against your data before running; vocabularies differ between sources. AT UCMC, fentanyl is confirmed present in both medication_admin_continuous and medication_admin_intermittent (SG, 2026-09-05). propofol / midazolam are NOT yet confirmed. Phase 0 asserts these and prints what it actually found.",
+    "medications": {
+        "opioid_infusion_categories": [
+            "fentanyl"
+        ],
+        "opioid_bolus_categories": [
+            "fentanyl"
+        ],
+        "other_sedative_categories": [
+            "propofol",
+            "midazolam",
+            "dexmedetomidine"
+        ]
+    },
+    "model": {
+        "_STATUS": "ONLY `seed` IS LIVE. It is read by 02_descriptive_cohort.R and 03_delivery_states.R (and will seed the 100-patient raster sample). Every other key here is read ONLY by the TABLED scripts under code/tabled/ -- scaling, ng_range, polynomial_degree and min_exposed_windows by the gbmt/lcmm pair, spline_df by the transition model. They are kept so those scripts still run unchanged, NOT because the current analysis honours them. `nstart` was removed on 2026-09-23: it was declared as 50, no code ever read it, and 04_gbmt_classes.R passes the literal `nstart = NULL` -- so every fit on disk used a single start.",
+        "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level.",
+        "scaling": 0,
+        "_comment_ng_range": "Inclusive [min, max] number of trajectory groups the Phase 3 sweep fits. Lower bound is 2, not 1: a one-group model has no classes to compare and no APPA, OCC or entropy to evaluate. Upper bound 5 (SG, 2026-09-08) -- dBIC was already flattening 43k -> 16k -> 7.7k by ng=5, which is enough to read an elbow; selection is on the elbow, not the global minimum.",
+        "ng_range": [
+            2,
+            5
+        ],
+        "polynomial_degree": 2,
+        "_comment_min_exposed_windows": "Phase 3 fits trajectory classes among episodes that received ANY fentanyl inside [0, T]. Episodes with zero dose in every window are held out as a NAMED STRATUM, not modelled as a class: their within-group variance is exactly zero, which makes the Gaussian mixture likelihood unbounded and the IC comparison invalid across ng. MEASURED at UCMC 2026-09-08: with them in, AIC/BIC flipped sign between ng=3 and ng=4 (+1,097,565 to -311,611) as the model isolated the 932 all-zero episodes into a zero-variance component. Threshold is 1: SG 2026-09-08, to maximise n. Raising it to 2 or 3 would drop 490 and 912 episodes respectively.",
+        "min_exposed_windows": 1,
+        "seed": 20260905,
+        "spline_df": 4,
+        "_spline_df": "Natural-spline df for the Phase 5 clock terms (window_start_hr, hours_in_state, cumulative_dose). 4 = 3 interior knots at the quartiles. Linear time forced the adjusted hazard curve to contradict the observed one; see code/06_transition_model.R section 6."
+    },
+    "reporting": {
+        "small_cell_min_den": 10
+    },
     "windows": {
         "granular": {
             "width_hours": 4,
@@ -375,13 +441,51 @@
             "summary": "max",
             "_summary_why": "max = the WORST pain scored in the window, the mirror of rass's min. NVPS runs 0-10 with higher worse, and an analgesia study cares about the peak a patient reached, not the average of a peak and a trough.",
             "_CASE_MATTERS": "Charted as 'NVPS', capitalised. See rass._CASE_MATTERS.",
-            "_why_NVPS_and_not_CPOT": "NVPS is what UCMC charts: 1,549,178 rows site-wide against 0 for CPOT (measured 2026-09-23 over 33.6M patient_assessments rows). PAINAD is also present (901,909 rows) and is NOT collected -- it scores pain in dementia and would mix two instruments. A site that charts CPOT instead will need its own entry here; this is the kind of key a federated run must check rather than assume.",
+            "_WHICH_PAIN_INSTRUMENT_IS_SITE_SPECIFIC": "NVPS is what UCMC charts: 1,549,178 rows site-wide against 0 for cpot_total (measured 2026-09-23 over 33.6M patient_assessments rows). PAINAD is also present (901,909 rows) and is NOT collected -- it scores pain in dementia and would mix two constructs. Other CLIF sites largely chart CPOT instead (SG, 2026-10-26), so nvps, cpot_total and bps are ALL declared and ALL carry site_optional: true. Exactly one of them is typically populated at any given site and the others are all-NA columns; see missing_values._SITE_OPTIONAL_CONTRACT for why an absent one is a loud note rather than a SystemExit.",
             "locf": {
                 "eligible": true,
                 "cap_hours": 4
             },
             "_cap_why": "Same as rass: one window width. Median 113 values per cohort hospitalisation at UCMC.",
-            "missing_class": "time_varying"
+            "missing_class": "time_varying",
+            "site_optional": true
+        },
+        "cpot_total": {
+            "label": "Critical-Care Pain Observation Tool, worst value in the window",
+            "source": {
+                "table": "assessments",
+                "category": "cpot_total",
+                "value": "numerical_value",
+                "time": "recorded_dttm"
+            },
+            "summary": "max",
+            "_summary_why": "max = the WORST pain scored in the window, identical in intent to nvps. CPOT runs 0-8 with higher worse.",
+            "_CASE_MATTERS": "LOWER case, unlike NVPS and RASS -- the CLIF mCIDE spells this family cpot_total / cpot_body / cpot_facial / cpot_muscle / cpot_vocalization. See indication._INSTRUMENT_NAMES_ARE_mCIDE_VALUES for what the wrong case cost.",
+            "_SUB_SCORES_NOT_COLLECTED": "Only cpot_total. The four component scores are declared in the mCIDE and are NOT read: a site charting only components and no total will show zero records here and must be handled as a protocol amendment, not by summing components in code -- summing is a scoring decision, not a data decision.",
+            "locf": {
+                "eligible": true,
+                "cap_hours": 4
+            },
+            "_cap_why": "Same as rass and nvps: one window width.",
+            "missing_class": "time_varying",
+            "site_optional": true
+        },
+        "bps": {
+            "label": "Behavioral Pain Scale, worst value in the window",
+            "source": {
+                "table": "assessments",
+                "category": "BPS",
+                "value": "numerical_value",
+                "time": "recorded_dttm"
+            },
+            "summary": "max",
+            "_summary_why": "max = the WORST pain scored in the window. BPS runs 3-12 with higher worse -- note the floor is 3, not 0, because it sums three 1-4 subscales, so a BPS of 0 is impossible and would be a charting fault.",
+            "locf": {
+                "eligible": true,
+                "cap_hours": 4
+            },
+            "missing_class": "time_varying",
+            "site_optional": true
         },
         "bun": {
             "label": "Blood urea nitrogen",
@@ -772,6 +876,7 @@
         "_attach_weight_before_converting": "Attach weight_kg to the medication frame BEFORE calling clifpy's converter, so rows charted before the first weight can still be filled. Passing the column in makes clifpy skip its own vitals lookup. clifpy demands a weight whenever the PREFERRED unit is weighted, and that branch is FIRST in its CASE, so it masks every other cause: a garbage unit with a missing weight also reports as a weight problem. Never trust that message while weight_kg is NULL."
     },
     "missing_values": {
+        "_SITE_OPTIONAL_CONTRACT": "A time_varying variable carrying site_optional: true is one whose assessment_category is charted at SOME CLIF sites and not others -- today nvps, cpot_total and bps, which are three instruments measuring one construct. For these ONLY, assessment_covariates() in code/01_build_cohort.py prints a loud zero-record line and emits an ALL-NA COLUMN instead of raising SystemExit. The column must still appear, because assert_config_is_honoured() requires every declared key to reach a column in trajectory_long -- a declared key that silently produces nothing is the failure mode that whole guard exists to catch. The tolerance is NOT general: a category matching no rows is still fatal for every variable without the flag, which is correct, because a missing RASS or lactate is a broken extract rather than a different instrument. AT LEAST ONE pain instrument must be present or the build refuses -- a site charting none has no analgesia signal at all and must not produce a silent all-NA pain panel. Their missing_class stays time_varying: where an instrument IS charted, a gap means not-measured exactly as before, and the LOCF cap applies unchanged.",
         "_three_classes": "Every time-varying variable belongs to exactly one class. The state-versus-event-versus-absence distinction is the one that matters.",
         "time_varying": {
             "rule": "No qualifying observation in the window means NA. Then LOCF from the most recent earlier window, subject to that variable's locf.cap_hours. A gap LONGER than the cap stays NA for its whole length.",
@@ -789,7 +894,9 @@
                 "inr",
                 "bilirubin_total",
                 "rass",
-                "nvps"
+                "nvps",
+                "cpot_total",
+                "bps"
             ]
         },
         "absence_means_zero": {
@@ -919,10 +1026,20 @@
         "_PAINAD_IS_AVAILABLE_AND_EXCLUDED": "SG scoped this to NVPS and CPOT on 2026-09-30. PAINAD is charted at UCMC on 45.2% of cohort episodes (6,730 of 14,880) and is read by nothing in this pipeline. Because pain_instruments is a map the code ITERATES, adding it is one config line plus a threshold and an R re-run -- no code change. Logged as an open decision in .claude/claude-todo.md rather than dropped.",
         "_NOT_A_QUALITY_MEASURE": "NO EVIDENCE ESTABLISHES THAT AN UNINDICATED INCREASE IS WRONG CARE. The literature on bolus-with-titration is pharmacokinetic rather than clinical (SG, 2026-09-30), so this describes documentation and practice, not compliance. A low indicated fraction may mean scores are not charted near the decision, not that the decision was unfounded -- which is exactly why both denominators below are reported. Same guard as unit_variation._NOT_A_QUALITY_MEASURE.",
         "_TWO_DENOMINATORS": "Reported side by side, the same distinction F3/F5 draw. Against ALL events, the fraction indicated conflates 'no score was taken' with 'a score was taken and did not justify it'. Against events WITH an assessment of that class in the window, it separates documentation from indication. Neither alone answers the question.",
+        "_INSTRUMENT_NAMES_ARE_mCIDE_VALUES": "Every key here and in sedation_instruments MUST be a permissible value of assessment_category in the CLIF patient_assessments schema. The filter matches the string LITERALLY and the mCIDE does not capitalise uniformly -- NVPS, RASS, PAINAD and BPS are upper case while the CPOT family is lower case (cpot_total, cpot_body, cpot_facial, cpot_muscle, cpot_vocalization). This block declared \"CPOT\" from 2026-09-30 to 2026-10-26, which is NOT a permissible value, so at a site charting CPOT per spec it matched zero rows, printed a reassuring \"declared in protocol.json indication, not charted here\", passed the >= 1-instrument guard BECAUSE RASS WAS PRESENT, and silently reported the pain class of the headline indication metric as empty. code/check_config.py now validates every declared category against clifpy's packaged schema in the preflight, so this class of typo cannot survive a run again.",
         "pain_instruments": {
             "NVPS": 4,
-            "CPOT": 3
+            "cpot_total": 3,
+            "BPS": 6
         },
+        "_thresholds_BY_INSTRUMENT": "Each instrument is cut at ITS OWN conventional point and the scales are never compared raw: NVPS 0-10, cut >= 4. cpot_total 0-8, cut >= 3. BPS 3-12, cut >= 6 -- the convention is stated as '> 5', which under the value >= threshold semantics in code/05_titration.R is 6. BPS was declared on 2026-10-26 with cpot_total (SG): it is the third validated behavioural pain scale for non-communicative ventilated patients, the same clinical construct as CPOT, and declaring it now avoids a SECOND protocol amendment -- and therefore a re-run at every site -- if Northwestern or Rush chart it. PAINAD remains excluded: it scores pain in dementia and mixing it into the pain class would mix two constructs (SG, 2026-09-30).",
+        "instrument_display_names": {
+            "NVPS": "NVPS",
+            "cpot_total": "CPOT",
+            "BPS": "BPS",
+            "RASS": "RASS"
+        },
+        "_DISPLAY_NAMES_ARE_FOR_PANELS": "mCIDE keys are not figure labels. cpot_total is the correct category string and the wrong axis title -- a journal panel says CPOT. Used by code/03_exemplar.R for the pain axis title and the legend entry; anything not listed here falls back to the category string, so an undeclared instrument still draws, just unprettily. This is presentation only and must never be used to match data: the filters key on the category, always.",
         "sedation_instruments": {
             "RASS": 1
         },
@@ -935,7 +1052,7 @@
         "_question": "When a fentanyl infusion is initiated or up-titrated, does the co-administration of a bolus differ by which ICU the patient is in, and has it changed over calendar time?",
         "_NOT_A_QUALITY_MEASURE": "NO EVIDENCE ESTABLISHES THAT PAIRING A BOLUS WITH AN UP-TITRATION IS BETTER CARE. 05_titration.R measures a practice pattern, not adherence to a standard, and this block splits that pattern by unit. A unit with a lower rate is not thereby worse, and the words quality, performance and benchmark are banned from the consuming script by tests/test_covariates.py. Call it VARIATION. The same category error the predominant_intensity block guards against with _NOT_A_TRAJECTORY.",
         "_why_event_level": "SG 2026-09-30. A titration event is a moment in time, and episodes move between units. TWO DENOMINATORS, MEASURED SEPARATELY AT UCMC 2026-09-30 AND NOT INTERCHANGEABLE: 11.0% of whole ICU HOSPITALIZATIONS touch more than one unit, but 6.4% of ATTRIBUTED EPISODES do so inside the 72h observation window, which is the shorter span and the one attribution actually runs over. The 6.4% is the figure that bears on this rule. Each event is credited to the unit the patient was physically in when it happened, so the multi-unit 11% contribute to every unit that actually made a decision. Episode-level modal attribution was considered and rejected as the same mistake time_invariant.hospital_id_discharge records under _DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE: collapsing to one label per episode 'silently discarded the very variation that makes it worth carrying, and at a single-hospital site the loss would have been invisible.'",
-        "_why_both_unit_keys": "location_name is site-local free text with no permissible values in clifpy's adt schema -- at UCMC it resolves 7 units and is the internal view. location_type is a REQUIRED, mCIDE-controlled column (general_icu, cardiac_icu, cardiothoracic_surgical_icu, mixed_cardiothoracic_icu, surgical_icu, burn_icu, neuro_icu, neurosurgical_icu, mixed_neuro_icu, medical_icu) and is the only one another CLIF site can reproduce or pool on. MEASURED at UCMC 2026-09-30: the two map strictly 1:1 across 7 names and 6 types, medical_icu being the one type spanning two units. Anything audience-facing uses location_type or anonymised labels; never ship a site's unit names.",
+        "_why_both_unit_keys": "location_name is site-local free text with no permissible values in clifpy's adt schema -- at UCMC it resolves 7 units and is the internal view. location_type is a REQUIRED, mCIDE-controlled column (general_icu, cardiac_icu, cardiothoracic_surgical_icu, mixed_cardiothoracic_icu, surgical_icu, burn_icu, neuro_icu, neurosurgical_icu, mixed_neuro_icu, medical_icu) and is the only one another CLIF site can reproduce or pool on. MEASURED at UCMC 2026-09-30: the two map strictly 1:1 across 7 names and 6 types, medical_icu being the one type spanning two units. DISCLOSURE, SETTLED BY SG 2026-10-26: unit names DO ship in the upload set. They are not PHI -- a ward code identifies a ward, not a patient -- and the coordinating centre needs them to sanity-check a site's own grouping. Anonymisation happens LATER and ELSEWHERE: anything audience-facing -- manuscript, abstract, poster, public dashboard -- uses location_type or anonymised 'Site 1 / Unit 1' labels, applied during pooling, never the raw names. This sentence previously read 'never ship a site's unit names', which contradicted unit_keys in this same object and contradicted what the pipeline actually does: unit_adherence.csv has carried UCMC ward codes since 2026-09-30. A prohibition that the code has always violated is worse than none, because the next reader believes it and 'fixes' a decision that was made deliberately.",
         "_UNATTRIBUTED_IS_A_ROW_NOT_A_DROP": "A ventilated patient can be off the unit -- in a procedural or radiology location -- when a rate change is charted, so an event may match no ICU interval. Those events are counted and reported as an explicit `unattributed` row. The per-unit counts plus unattributed must sum to the event total in 05_titration/coadministration.csv, asserted in the script. Silently dropping them would shrink the denominator in the direction that flatters every unit.",
         "_INTERVALS_DESCRIBE_THEY_DO_NOT_ADJUST": "The bootstrap resamples EPISODES, not events, because 05_titration.R records that event-level percentages 'carry no valid confidence interval without accounting for clustering within episode' -- 3.25 increase events per episode, and 69.7% of episodes never pair against roughly 62% expected under independence, so the clustering is real but moderate. The interval says how much a unit's observed rate would wobble if the care process re-ran. It does NOT adjust for case mix, and a unit's rate reflects who it admits as much as how it practices. The caption must say so.",
         "_FUNNEL_ENVELOPE_IS_ANALYTIC_NOT_BOOTSTRAPPED": "Two different constructions, easily conflated, and since 2026-10-05 they no longer share a correction. The CATERPILLAR intervals are bootstrap percentiles, centred on each unit's own rate, answering 'where would this unit wobble to'. The FUNNEL envelope is the closed-form UNADJUSTED binomial p0 +/- z*sqrt(p0(100-p0)/n) on a grid of n, centred on the POOLED rate, answering 'where would any unit of this size land IF it were truly at the pooled rate'. The bootstrap now contributes NOTHING to the funnel -- see _DEFF_NO_LONGER_WIDENS_THE_ENVELOPE. The two panels therefore imply different widths for the same data BY DESIGN, and each caption says which construction it uses. An envelope is a null hypothesis drawn as a shape, not uncertainty about any unit, which is why it does not move when a unit's rate moves.", "_DEFF_NO_LONGER_WIDENS_THE_ENVELOPE": "REMOVED 2026-10-05 (SG). Until then the envelope was binomial limits multiplied by sqrt(DEFF) from the episode-cluster bootstrap -- 1.51 for co-administration, 1.95 for indication. The reason it went: DEFF measures WITHIN-EPISODE clustering and is provably grouping-invariant (identical for care_setting and location_name, because the pooled proportion sums over all units), whereas Spiegelhalter's sqrt(phi) measures BETWEEN-UNIT over-dispersion. Same algebra, different quantity, under a citation that implies the other one -- and with no case-mix adjustment anywhere, inflating the limits absorbed the between-unit variation the figure exists to show. DEFF is still computed and still shipped in unit_adherence.csv for the coordinating centre to widen a POOLED interval with, which is a use it is correct for; it simply no longer draws anything. PRESERVED FROM THE OLD NOTE, because it is measured provenance and still the best evidence on what the inflation was doing: one cohort-level DEFF was applied uniformly across the grid; per-unit design effects backed out of the bootstrap CI widths ran 1.47 (mixed_cardiothoracic_icu) to 2.21 (general_icu), ALL BELOW the cohort 2.29, so the envelope was mildly conservative at every volume and flagged fewer units, not more. The cohort figure is larger because the pooled bootstrap variance also absorbs COMPOSITION variation (a resample changes which episodes contribute), where a per-unit DEFF sees only clustering inside that unit. Expected effect of removal on conclusions at UCMC: none -- the three extreme units sat at |z| 6-14, and burn_icu, the only borderline case, moved from z = 2.32 to 2.31 on its own bootstrap SE. burn_icu is therefore the unit to watch when the envelope narrows. NOTE the per-unit DEFFs above had to be re-derived from CI widths because the per-unit column computed in code/utils/pooling.R is overwritten by the pooled scalar in code/06_unit_variation.R; that is a separate open defect, not a property of this decision.", "_STATUS_model": "THE ASSOCIATION BETWEEN UNIT AND ADHERENCE IS NOT MODELLED. Deferred by SG 2026-09-30 pending a read of the statistical literature. Recorded so the decision is well-posed later: Myers LC et al., Crit Care Explor 2024;6(7):e1123, PMID 39018285 -- the nearest comparator, same exposure and population, 21 hospitals plus 96 hospitals/148 ICUs -- fit a HIERARCHICAL LOGISTIC REGRESSION with hospital as a RANDOM INTERCEPT, adjusted for patient- and hospital-level fixed effects, and plotted 'the mode of the conditional distribution of the random effects' with conditional-variance bands, ON THE LOG-ODDS SCALE CENTERED AT 0. They reported ICCs of 7% (95% CI 3-11) and 39% (28-49) for opioid infusion use. That estimand is shrunken and risk-adjusted: how far from average, NET OF CASE MIX. What this script ships is the unadjusted observed proportion on the PROBABILITY scale with a cluster-bootstrap interval: what did this unit do, and how much would it wobble. The two are sequential, not competing. Adopting the hierarchical model would add lme4 and its chain (minqa, nloptr, RcppEigen, boot, MASS) to a deliberately pinned renv.lock, which is a federation cost, not a free upgrade.",
@@ -968,7 +1085,7 @@
         "min_boluses": 6,
         "draw_seed": 20260924,
         "min_rass_observations": 12,
-        "min_nvps_observations": 12,
+        "min_pain_observations": 12,
         "draw": "uniform_random_from_eligible",
         "_seed_source": "draw_seed above, NOT config.json model.seed. Deliberately decoupled: model.seed also draws the 100-episode raster in 03_delivery_states.R, and re-drawing the exemplar should not silently change which hundred patients that figure shows.",
         "_seed_NOT_FOR_SHOPPING": "Changing draw_seed re-rolls the draw, and re-rolling until a more attractive patient appears is hand-picking with extra steps -- exactly what the declared rule exists to prevent. If the drawn episode does not show what the figure needs to show, that is a statement about the CRITERIA, so change a threshold and say why in _thresholds_DECISION. The seed moves only when the criteria move with it.",

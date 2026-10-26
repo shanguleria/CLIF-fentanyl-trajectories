@@ -1,15 +1,12 @@
 {
     "_comment_shape": "Standard CLIF site config. site_name / clif_version / data_directory / filetype / timezone are the consortium-standard keys; the last three are the names clifpy itself requires, so this file is passed to clifpy with no translation layer. Everything below them is this project's protocol.",
-
-    "site_name": "Your_Site_Name",
+    "site_name": "YOUR_SITE",
     "clif_version": "2.1.0",
     "dataset_version": "",
-    "data_directory": "/path/to/clif/tables/",
+    "data_directory": "/path/to/your/CLIF/tables",
     "filetype": "parquet",
     "timezone": "America/Chicago",
-
     "_comment_versions": "clif_version is always the CLIF SPEC version (e.g. 2.1.0). A conversion/ETL release -- the MIMIC-to-CLIF build 1.1.0, say -- is NOT a CLIF version and goes in dataset_version. Leave dataset_version empty for a site's own tables.",
-
     "tables_in_use": [
         "patient",
         "hospitalization",
@@ -20,59 +17,11 @@
         "vitals",
         "labs",
         "patient_assessments",
-        "patient_procedures",
         "crrt_therapy",
         "hospital_diagnosis"
     ],
-
-    "_comment_medications": "Confirm these against your data before running; vocabularies differ between sources. Phase 0 asserts them and prints the med_category values it actually found, so a mismatch fails loudly rather than producing an empty cohort.",
-    "medications": {
-        "opioid_infusion_categories": ["fentanyl"],
-        "opioid_bolus_categories": ["fentanyl"],
-        "other_sedative_categories": ["propofol", "midazolam", "dexmedetomidine"]
-    },
-
-    "_comment_covariates": "Covariate aggregation and missingness rules are PROTOCOL and live in config/covariates.json, which IS tracked in git. This file is not tracked (it carries local paths), so nothing estimand-defining may live here alone.",
-
-    "_comment_protocol": "cohort / outcomes / model define the estimand. If two sites set these differently the pooled result is not meaningful -- do not edit them to make a run work.",
-
-    "cohort": {
-        "_comment_anchor": "CLIF has no intubation event -- only device_category transitions -- so the anchor is the start of the first continuous IMV episode, which is a PROXY for intubation. A patient transferred in already ventilated, or admitted with a tracheostomy, has hour 0 = first observation rather than start of ventilation. Report and state that.",
-        "_comment_imv_episode": "imv_episode_gap_hours defines when consecutive IMV records belong to different episodes. 6h is set from the data, not by convention: raw IMV inter-record gaps at UCMC are p50 1.00h, p75 3.33h, p90 4.37h, p95 5.00h, so 14.6% of NORMAL charting gaps exceed 4h and a 4h break would fragment continuously-ventilated patients. At 6h only 2.65% of gaps break an episode. min_imv_hours is separate and is deliberately window_hours: a block that cannot fill one analysis window has no trajectory to model.",
-        "imv_episode_gap_hours": 8,
-        "min_imv_hours": 4,
-        "min_age": 18,
-        "window_hours": 4,
-        "granular_extent_hours": 72,
-        "_comment_extended_grid": "DECLARED BUT NOT CONSUMED. No code reads the two extended_* keys; see covariates.json windows.extended._STATUS for why the 12h/168h view is deferred and what building it would take. Left here so the agreed parameters survive, NOT because a run honours them.",
-        "extended_window_hours": 12,
-        "extended_extent_hours": 168,
-        "landmark_hours": 72,
-        "balanced_panel_hours": [24, 48, 72]
-    },
-
-    "outcomes": {
-        "_comment_mortality": "patient.death_dttm is unstable across CLIF sites -- mortality comes from discharge_category. Pruned 2026-09-23: mortality_source, mortality_categories_sensitivity, vfd_horizon_days and mortality_horizon_days were DECLARED AND READ BY NOTHING -- verified by grep across live code, the tabled scripts and the tests. They belong to the outcome work that is not being done; re-add them, with consumers, if it ever is.",
-        "mortality_categories": ["Expired", "Hospice"],
-        "unresolved_discharge_categories": ["Still Admitted", "Missing", "Other"],
-        "successful_extubation_hours": 72
-    },
-
-    "model": {
-        "_STATUS": "ONLY `seed` IS LIVE -- read by 02_descriptive_cohort.R and 03_delivery_states.R. Every other key here is read ONLY by the TABLED scripts under code/tabled/. They are kept so those scripts still run unchanged, NOT because the current analysis honours them. `nstart` was removed on 2026-09-23: declared as 50, read by nothing, and 04_gbmt_classes.R passes the literal `nstart = NULL`.",
-        "_comment_scaling": "scaling MUST be 0 -- within-unit normalisation erases absolute dose level.",
-        "scaling": 0,
-        "_comment_ng_range": "Inclusive [min, max] number of trajectory groups the Phase 3 sweep fits. Lower bound is 2, not 1: a one-group model has no classes to compare and no APPA, OCC or entropy to evaluate. Upper bound 5 (SG, 2026-09-08) -- dBIC was already flattening 43k -> 16k -> 7.7k by ng=5, which is enough to read an elbow; selection is on the elbow, not the global minimum.",
-        "ng_range": [2, 5],
-        "polynomial_degree": 2,
-        "_comment_min_exposed_windows": "Phase 3 fits trajectory classes among episodes that received ANY fentanyl inside [0, T]. Episodes with zero dose in every window are held out as a NAMED STRATUM, not modelled as a class: their within-group variance is exactly zero, which makes the Gaussian mixture likelihood unbounded and the IC comparison invalid across ng. MEASURED at UCMC 2026-09-08: with them in, AIC/BIC flipped sign between ng=3 and ng=4 (+1,097,565 to -311,611) as the model isolated the 932 all-zero episodes into a zero-variance component. Threshold is 1: SG 2026-09-08, to maximise n. Raising it to 2 or 3 would drop 490 and 912 episodes respectively.",
-        "min_exposed_windows": 1,
-        "seed": 20260905,
-        "_spline_df": "Natural-spline df for the transition model's clock terms. 4 = 3 interior knots at the quartiles. ADDED TO THIS TEMPLATE 2026-09-23: config.json carried it and the template did not, so a site that copied the template would have run 06 with spline_df = NULL. Latent while that script is tabled; a real break the moment it is not.",
-        "spline_df": 4
-    },
-
-    "reporting": {
-        "small_cell_min_den": 10
-    }
+    "_comment_protocol_moved": "THIS FILE IS SITE IDENTITY ONLY. Everything estimand-defining -- the cohort window and gap rules, the medication vocabulary, the outcome categories, the model and reporting parameters, and every covariate aggregation and missingness rule -- lives in config/protocol.json, which IS tracked in git and IS compared across sites by code/check_provenance.py. This file is not tracked (it carries local paths), so nothing estimand-defining may live here alone. Do not move a value back here to make a run work: a key here is invisible to the cross-site protocol check by design.",
+    "_comment_tables_in_use": "check_config.py fails the preflight for any table listed here that is absent from data_directory, so this list must name what the pipeline READS and nothing else. patient_procedures was removed on 2026-10-26: it was declared from the start and has never had a single consumer -- verified by grepping both the table name and clifpy's PatientProcedures class across all of code/, where the other eleven all appear and it does not -- so it blocked a site that lacks the table for no analytic reason. It is named in the TABLED tracheostomy rule (protocol.json, section 10a(c)) as a supporting identification route; add it back when that rule is implemented, not before.",
+    "_comment_dose_unit_aliases": "SITE VOCABULARY -> the canonical bolus units. med_dose_unit has NO permissible values in the CLIF mCIDE, so every site's free-text unit strings differ and this map cannot be protocol: it is the one estimand-affecting thing that is irreducibly site-specific. 'mcg of opiate' is UCMC's string and was HARDCODED in code/01_build_cohort.py until 2026-10-26, where another site could not change it without editing code and moving the code digest. Keys are matched after lower() and strip(); values must be one of the canonical units the bolus converter handles (mcg, mg, mcg/kg, mg/kg). An unmapped unit that carries a dose is REPORTED and NULLED, not silently dropped -- see the bolus report in Phase 0 -- and because bolus absence means zero, a nulled row then reads as 'no bolus given'. So check the Phase 0 bolus report at a new site before trusting the co-administration numbers: it names every unit it could not convert. This map is recorded in site_config_digest on every output, so the coordinating centre can see what a site normalised even though it cannot require equality.",
+    "dose_unit_aliases": {}
 }

@@ -19,8 +19,8 @@ if ! "$PY" code/check_config.py; then
   echo "ERROR: config is not usable. Nothing was run." >&2
   exit 1
 fi
-if ! "$PY" tests/test_covariates.py; then
-  echo "ERROR: config/covariates.json failed its integrity checks. Nothing was run." >&2
+if ! "$PY" tests/test_protocol.py; then
+  echo "ERROR: config/protocol.json failed its integrity checks. Nothing was run." >&2
   exit 1
 fi
 if ! "$PY" tests/test_fio2.py; then

@@ -19,6 +19,127 @@ CONFIG_PATH = REPO / "config" / "config.json"
 CLIFPY_REQUIRED = ("data_directory", "filetype", "timezone")
 
 
+# protocol.json names categories by string and every filter matches LITERALLY,
+# so a value that is not in the CLIF mCIDE matches zero rows forever. That is not
+# hypothetical: "CPOT" was declared here from 2026-09-30 to 2026-10-26 and is not
+# a permissible value -- the mCIDE spells it `cpot_total` -- so at a CPOT site the
+# pain half of the headline indication metric would have reported a clean, silent
+# zero behind a reassuring "not charted here" line. Checked against clifpy's own
+# packaged schema rather than a list copied into this file, because a copied list
+# is the next thing to drift.
+_SCHEMA_FOR_TABLE = {
+    "assessments": ("patient_assessments_schema.yaml", "assessment_category"),
+    "labs": ("labs_schema.yaml", "lab_category"),
+    "vitals": ("vitals_schema.yaml", "vital_category"),
+}
+
+# med_category IS mCIDE-controlled -- 75 permissible values for continuous and
+# 165 for intermittent -- and the two lists are NOT the same. dexmedetomidine is
+# valid continuous and absent from intermittent, so which list a declared drug is
+# checked against depends on how this pipeline reads it. Getting that wrong is
+# the same silent failure as the CPOT typo: a filter on a non-permissible value
+# matches nothing, forever, without complaint.
+_MEDICATION_ROLES = {
+    "opioid_infusion_categories": ("medication_admin_continuous_schema.yaml",
+                                   "continuous infusions"),
+    "other_sedative_categories": ("medication_admin_continuous_schema.yaml",
+                                  "continuous infusions"),
+    "opioid_bolus_categories": ("medication_admin_intermittent_schema.yaml",
+                                "intermittent boluses"),
+}
+
+
+def _permissible(schema_file: str, column: str) -> set[str] | None:
+    """Permissible values for one mCIDE column, or None if unavailable."""
+    try:
+        import yaml
+        import clifpy
+    except ImportError:
+        return None
+    f = Path(clifpy.__file__).parent / "schemas" / schema_file
+    if not f.is_file():
+        return None
+    for col in yaml.safe_load(f.read_text()).get("columns", []):
+        if col.get("name") == column and "permissible_values" in col:
+            return set(col["permissible_values"])
+    return None
+
+
+def declared_categories(protocol: dict) -> list[tuple[str, str, str]]:
+    """(table, category, where it was declared) for every category in protocol.json.
+
+    Iterates the config's own keys. A hardcoded list here would be the same bug
+    one level up: a newly declared instrument would simply not be checked.
+    """
+    found = []
+    for block in ("time_invariant", "time_varying"):
+        for name, spec in (protocol.get(block) or {}).items():
+            if name.startswith("_") or not isinstance(spec, dict):
+                continue
+            src = spec.get("source") or {}
+            if src.get("table") in _SCHEMA_FOR_TABLE and src.get("category"):
+                found.append((src["table"], src["category"], f"{block}.{name}"))
+    ind = protocol.get("indication") or {}
+    for key in ("pain_instruments", "sedation_instruments"):
+        for cat in (ind.get(key) or {}):
+            found.append(("assessments", cat, f"indication.{key}"))
+    return found
+
+
+def check_medications(protocol: dict, problems: list[str]) -> int:
+    """Every declared med_category, against the schema for the table it is read from."""
+    meds = protocol.get("medications") or {}
+    checked = 0
+    for role, (schema_file, how) in _MEDICATION_ROLES.items():
+        cats = meds.get(role) or []
+        if not cats:
+            continue
+        allowed = _permissible(schema_file, "med_category")
+        if allowed is None:
+            continue
+        for cat in cats:
+            checked += 1
+            if cat not in allowed:
+                problems.append(
+                    f"medications.{role} declares med_category={cat!r}, which is "
+                    f"not a permissible value for {how}. This pipeline reads that "
+                    f"role from {schema_file.split('_schema')[0]}, and the two "
+                    f"medication tables do not share one vocabulary.")
+    return checked
+
+
+def check_categories(problems: list[str]) -> None:
+    protocol_path = REPO / "config" / "protocol.json"
+    if not protocol_path.is_file():
+        problems.append(f"protocol.json not found at {protocol_path}")
+        return
+    protocol = json.loads(protocol_path.read_text())
+
+    cache: dict[str, set[str] | None] = {}
+    checked = unverifiable = 0
+    for table, cat, where in declared_categories(protocol):
+        schema_file, column = _SCHEMA_FOR_TABLE[table]
+        if schema_file not in cache:
+            cache[schema_file] = _permissible(schema_file, column)
+        allowed = cache[schema_file]
+        if allowed is None:
+            unverifiable += 1
+            continue
+        checked += 1
+        if cat not in allowed:
+            near = sorted(v for v in allowed if v.lower() == cat.lower()) or \
+                   sorted(v for v in allowed if cat.lower() in v.lower())[:4]
+            hint = f" Did you mean {near}?" if near else ""
+            problems.append(
+                f"{where} declares {column}={cat!r}, which is not a permissible "
+                f"value in the CLIF {table} mCIDE. The filter matches literally, "
+                f"so this matches zero rows at every site.{hint}")
+    checked += check_medications(protocol, problems)
+    print(f"mCIDE check    {checked} declared categor(ies) validated"
+          + (f", {unverifiable} unverifiable (clifpy schema unavailable)"
+             if unverifiable else ""))
+
+
 def main() -> int:
     if not CONFIG_PATH.is_file():
         print(f"ERROR: config not found at {CONFIG_PATH}\n"
@@ -54,6 +175,8 @@ def main() -> int:
                 + ", ".join(missing)
                 + "\n    If your data ships a versioned subdirectory, "
                   "data_directory must point INTO it.")
+
+    check_categories(problems)
 
     print(f"config          {CONFIG_PATH}")
     print(f"site_name       {cfg.get('site_name')}")

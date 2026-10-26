@@ -1,7 +1,7 @@
 # ==============================================================================
 # 03_exemplar.R  --  F1, one ventilation course in detail
 #
-# Purpose : A single patient's first 72h of ventilation at sub-hourly resolution -- fentanyl infusion rate, boluses, RASS and NVPS -- so that "continuous, then bolus, then off" reads as a person rather than as a marginal.
+# Purpose : A single patient's first 72h of ventilation at sub-hourly resolution -- fentanyl infusion rate, boluses, RASS and the site's pain score -- so that "continuous, then bolus, then off" reads as a person rather than as a marginal.
 # Author  : Shan Guleria
 # Created : 2026-09-24
 # Inputs  : output/intermediate_phi/exemplar_series.parquet + exemplar_meta.json
@@ -19,7 +19,7 @@
 #     asserting a score persisted through hours nobody documented
 # And the one thing Baker's figure is weakest on, which this must improve:
 # "Representative ICU admission" states no selection rule. Ours is declared in
-# covariates.json, applied by code, and written into the caption.
+# protocol.json, applied by code, and written into the caption.
 #
 # DEVELOPMENT. Set EXEMPLAR_SOURCE=synthetic to draw a generated patient into
 # output/dev_synthetic/ instead. The figure was designed that way on purpose --
@@ -46,28 +46,49 @@ source(here("code", "utils", "exemplar.R"))
 # ---- 2. Config ---------------------------------------------------------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-WINDOW_H <- config$cohort$window_hours
-EXTENT_H <- config$cohort$granular_extent_hours
+WINDOW_H <- COV$cohort$window_hours
+EXTENT_H <- COV$cohort$granular_extent_hours
 
-COV <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 
 # The selection rule is PROTOCOL, not a local preference: two sites picking
 # exemplars by different rules produce F1s that cannot be compared. It therefore
-# lives in covariates.json, which is tracked, and never in config.json, which is
+# lives in protocol.json, which is tracked, and never in config.json, which is
 # gitignored and site-local. Read, never defaulted.
 EX_SPEC <- COV$exemplar
-stopifnot("covariates.json must declare an `exemplar` block" = !is.null(EX_SPEC),
+stopifnot("protocol.json must declare an `exemplar` block" = !is.null(EX_SPEC),
           "the exemplar draw must be the declared one" =
             identical(EX_SPEC$draw, "uniform_random_from_eligible"))
 
-# The step-breaking threshold is the SAME number as the LOCF cap applied to
-# rass/nvps in Phase 0 -- read from the same key, never restated here, or the
-# panel would assert a persistence the analytic table does not.
+# WHICH PAIN INSTRUMENT does this site chart? NVPS at UCMC; other CLIF sites
+# largely chart CPOT. All are declared in protocol.json indication.pain_instruments
+# and carried as site_optional covariates, so the panel must take the instrument,
+# its display name and its SCALE from config. A hardcoded 0-10 axis -- NVPS's
+# range -- would stretch a cpot_total trace (0-8) over a span it cannot reach and
+# label ticks at 9 and 10 that no value can ever occupy: a wrong figure with no
+# error anywhere.
+PAIN_CATS <- names(COV$indication$pain_instruments)
+PAIN_VARS <- Filter(function(v)
+  identical(COV$time_varying[[v]]$source$table, "assessments") &&
+    COV$time_varying[[v]]$source$category %in% PAIN_CATS,
+  grep("^_", names(COV$time_varying), value = TRUE, invert = TRUE))
+stopifnot("protocol.json declares no pain instrument as a covariate" =
+            length(PAIN_VARS) >= 1)
+
+# The step-breaking threshold is the SAME number as the LOCF cap applied to the
+# score covariates in Phase 0 -- read from the same key, never restated here, or
+# the panel would assert a persistence the analytic table does not.
 CAP_H <- as.numeric(COV$time_varying$rass$locf$cap_hours)
-stopifnot("rass and nvps must share one LOCF cap" =
-            identical(CAP_H, as.numeric(COV$time_varying$nvps$locf$cap_hours)))
+for (.v in PAIN_VARS)
+  stopifnot("rass and every pain instrument must share one LOCF cap" =
+              identical(CAP_H, as.numeric(COV$time_varying[[.v]]$locf$cap_hours)))
+
+# Scales live in outlier_config analysis_unit_bounds, which is already the single
+# source of truth for what an assessment value may be. Reading the bound here
+# instead of restating it removes a duplicate that had already been written twice.
+OUTLIERS <- fromJSON(here("config", "outlier_config.json"), simplifyVector = FALSE)
 
 SOURCE <- Sys.getenv("EXEMPLAR_SOURCE", "real")
 stopifnot("EXEMPLAR_SOURCE must be 'real' or 'synthetic'" =
@@ -110,8 +131,9 @@ if (SOURCE == "synthetic") {
 # ---- 4. Read -----------------------------------------------------------------
 
 if (SOURCE == "synthetic") {
-  ex <- synthetic_exemplar(seed = config$model$seed, extent_h = EXTENT_H,
+  ex <- synthetic_exemplar(seed = COV$model$seed, extent_h = EXTENT_H,
                            window_h = WINDOW_H)
+  PAIN_VAR <- PAIN_VARS[1]
 } else {
   f_series <- file.path(dirs$out_phi, "exemplar_series.parquet")
   f_meta   <- file.path(dirs$out_phi, "exemplar_meta.json")
@@ -122,6 +144,14 @@ if (SOURCE == "synthetic") {
          call. = FALSE)
   }
   series <- as.data.frame(read_parquet(f_series))
+  # Phase 0 exports the pain trace under its VARIABLE name (nvps / cpot_total /
+  # bps). Relabel to the canonical key before the factor, or the levels below
+  # would silently turn the whole trace into NA at any non-NVPS site.
+  .found <- intersect(PAIN_VARS, unique(as.character(series$series)))
+  stopifnot("the exemplar export carries no declared pain instrument" =
+              length(.found) >= 1)
+  PAIN_VAR <- .found[1]
+  series$series[as.character(series$series) %in% PAIN_VARS] <- "pain"
   series$series <- factor(series$series, levels = EXEMPLAR_SERIES)
   ex <- list(series = series, meta = fromJSON(f_meta, simplifyVector = TRUE))
   ex$meta$synthetic <- FALSE
@@ -144,7 +174,7 @@ exemplar_diagnostics(series, meta, CAP_H)
 
 
 # ---- 5. Figure ---------------------------------------------------------------
-# ONE panel, three y scales -- fentanyl on the left, RASS and NVPS on two right
+# ONE panel, three y scales -- fentanyl on the left, RASS and the pain score on two right
 # spines -- mirroring Baker et al. Figure 1 (glucose left, insulin and D50
 # right). SG, 2026-09-24, choosing compaction over the four stacked panels this
 # script drew first. What that trades away: the left axis now reads "mcg/hr
@@ -175,25 +205,32 @@ TOP <- FMAX
 # axes readable at the same tick spacing as the left one.
 to_band   <- function(v, lo, hi) (v - lo) / (hi - lo) * TOP
 from_band <- function(y, lo, hi) lo + y / TOP * (hi - lo)
-RASS_LIM <- c(-5, 4)
-NVPS_LIM <- c(0, 10)
+PAIN_CAT <- COV$time_varying[[PAIN_VAR]]$source$category
+# Panel label, not a matcher. Falls back to the category so an instrument added
+# without a display name still draws.
+PAIN_LAB <- COV$indication$instrument_display_names[[PAIN_CAT]]
+if (is.null(PAIN_LAB)) PAIN_LAB <- PAIN_CAT
+RASS_LIM <- unlist(OUTLIERS$analysis_unit_bounds$patient_assessments$RASS)
+PAIN_LIM <- unlist(OUTLIERS$analysis_unit_bounds$patient_assessments[[PAIN_CAT]])
+stopifnot("the pain instrument has no analysis_unit_bounds entry to scale its axis" =
+            length(PAIN_LIM) == 2 && PAIN_LIM[2] > PAIN_LIM[1])
 
 SERIES_COL <- c(infusion = STATE_COLOURS[["continuous only"]],
                 bolus    = STATE_COLOURS[["bolus only"]],
                 rass     = STATE_COLOURS[["extubated"]],
-                nvps     = STATE_COLOURS[["discharged alive"]])
+                pain     = STATE_COLOURS[["discharged alive"]])
 # Shape AND line style carry identity too, so the four series are never
 # colour-alone -- and the fentanyl step stays the only solid line, so it reads as
 # the primary quantity even where the ordinal traces cross it.
-SERIES_SHP <- c(infusion = NA, bolus = 18, rass = 16, nvps = 17)
+SERIES_SHP <- c(infusion = NA, bolus = 18, rass = 16, pain = 17)
 # Boluses are drawn markedly larger than the assessment points: they are the
 # thing the figure is least able to show any other way -- an instantaneous event
 # with no line to trace it -- so they have to carry on their own.
-SERIES_SZ  <- c(infusion = 1.2, bolus = 3.0, rass = 1.2, nvps = 1.2)
-SERIES_LTY <- c(infusion = "solid", bolus = "blank", rass = "13", nvps = "42")
+SERIES_SZ  <- c(infusion = 1.2, bolus = 3.0, rass = 1.2, pain = 1.2)
+SERIES_LTY <- c(infusion = "solid", bolus = "blank", rass = "13", pain = "42")
 SERIES_LAB <- c(infusion = "Fentanyl infusion (mcg/hr)",
                 bolus    = "Fentanyl bolus (mcg)",
-                rass     = "RASS", nvps = "NVPS")
+                rass     = "RASS", pain = PAIN_LAB)
 
 # The traces STOP at extubation rather than running on at zero. A zero infusion
 # line past extubation would assert the patient was ventilated and off fentanyl,
@@ -218,9 +255,9 @@ vent_label <- if (length(vent_rule)) {
 inf  <- close_step(series[series$series == "infusion", ], END_HR)
 bol  <- series[series$series == "bolus", ]
 rass <- break_on_gap(series[series$series == "rass", ], CAP_H)
-nvps <- break_on_gap(series[series$series == "nvps", ], CAP_H)
+pain <- break_on_gap(series[series$series == "pain", ], CAP_H)
 rass$y <- to_band(rass$value, RASS_LIM[1], RASS_LIM[2])
-nvps$y <- to_band(nvps$value, NVPS_LIM[1], NVPS_LIM[2])
+pain$y <- to_band(pain$value, PAIN_LIM[1], PAIN_LIM[2])
 
 p <- ggplot(mapping = aes(t_hr)) +
   # Square risers, closed to zero at both ends: time off the drug is the trace
@@ -246,10 +283,10 @@ p <- ggplot(mapping = aes(t_hr)) +
             linewidth = 0.45, linetype = SERIES_LTY[["rass"]], na.rm = TRUE) +
   geom_point(data = rass, aes(y = y, colour = "rass"),
              shape = SERIES_SHP[["rass"]], size = SERIES_SZ[["rass"]], na.rm = TRUE) +
-  geom_step(data = nvps, aes(y = y, colour = "nvps"), direction = "hv",
-            linewidth = 0.45, linetype = SERIES_LTY[["nvps"]], na.rm = TRUE) +
-  geom_point(data = nvps, aes(y = y, colour = "nvps"),
-             shape = SERIES_SHP[["nvps"]], size = SERIES_SZ[["nvps"]], na.rm = TRUE) +
+  geom_step(data = pain, aes(y = y, colour = "pain"), direction = "hv",
+            linewidth = 0.45, linetype = SERIES_LTY[["pain"]], na.rm = TRUE) +
+  geom_point(data = pain, aes(y = y, colour = "pain"),
+             shape = SERIES_SHP[["pain"]], size = SERIES_SZ[["pain"]], na.rm = TRUE) +
   scale_colour_manual(values = SERIES_COL, labels = SERIES_LAB,
                       breaks = names(SERIES_LAB), name = NULL) +
   scale_x_continuous(limits = c(0, EXTENT_H), breaks = seq(0, EXTENT_H, by = 12),
@@ -293,19 +330,19 @@ p <- house(p) +
         axis.ticks.length    = grid::unit(4.5, "pt"))
 
 # The third scale. Borrowed from a bare plot over the identical panel range, so
-# its ticks land where NVPS actually is.
+# its ticks land where the pain score actually is.
 donor <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) + geom_blank() +
   scale_y_continuous(limits = c(0, TOP), expand = expansion(mult = c(0.01, 0.02)),
-                     breaks = to_band(seq(NVPS_LIM[1], NVPS_LIM[2], by = 1),
-                                      NVPS_LIM[1], NVPS_LIM[2]),
-                     labels = seq(NVPS_LIM[1], NVPS_LIM[2], by = 1),
+                     breaks = to_band(seq(PAIN_LIM[1], PAIN_LIM[2], by = 1),
+                                      PAIN_LIM[1], PAIN_LIM[2]),
+                     labels = seq(PAIN_LIM[1], PAIN_LIM[2], by = 1),
                      position = "right") +
   theme_minimal(base_size = 12) +
   theme(axis.title        = element_blank(),
         axis.text.y.right = element_text(colour = INK, size = AXIS_PT),
-        axis.line.y.right = element_line(colour = SERIES_COL[["nvps"]],
+        axis.line.y.right = element_line(colour = SERIES_COL[["pain"]],
                                          linewidth = 0.4),
-        axis.ticks.y.right = element_line(colour = SERIES_COL[["nvps"]],
+        axis.ticks.y.right = element_line(colour = SERIES_COL[["pain"]],
                                           linewidth = 0.4),
         axis.ticks.length = grid::unit(4.5, "pt"))
 
@@ -317,7 +354,7 @@ if (SOURCE == "synthetic") {
                                     face = "bold", size = 10))
 }
 
-g <- add_third_axis(p, donor, title = "NVPS")
+g <- add_third_axis(p, donor, title = PAIN_LAB)
 ggsave(file.path(dirs$phase, "exemplar.png"), g,
        width = 7.5, height = 4.6, dpi = 200)
 cat(sprintf("\nwritten: exemplar.png (%s)\n", SOURCE))
@@ -332,8 +369,8 @@ register_caption("exemplar.png",
     if (isTRUE(meta$synthetic))
       "GENERATED DATA, NOT A PATIENT -- a development render. " else "",
     sprintf(paste0("Fentanyl infusion rate, bolus administrations, RASS and ",
-                   "NVPS over the first %dh of invasive ventilation, on a clock ",
-                   "relative to the first IMV episode. "), EXTENT_H),
+                   "%s over the first %dh of invasive ventilation, on a clock ",
+                   "relative to the first IMV episode. "), PAIN_LAB, EXTENT_H),
     if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr))
       sprintf("The patient was extubated at hour %.0f; the traces end there. ",
               meta$extubation_hr) else "",
@@ -345,7 +382,7 @@ register_caption("exemplar.png",
                    "names both quantities because they are not the same one: ",
                    "the infusion is a RATE in mcg/hr and each bolus an AMOUNT ",
                    "in mcg, so a bolus plotted at a given height is not an ",
-                   "infusion of equal size. RASS and NVPS are ordinal and ",
+                   "infusion of equal size. RASS and ", PAIN_LAB, " are ordinal and ",
                    "share no scale with the fentanyl or with each other; each ",
                    "is drawn across the full panel height against its own ",
                    "right-hand axis, so the three traces overlay as in the ",

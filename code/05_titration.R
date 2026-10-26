@@ -40,19 +40,19 @@ source(here("code", "utils", "pooling.R"))
 # ---- 2. Config ---------------------------------------------------------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-SEED <- config$model$seed
+COV  <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+SEED <- COV$model$seed
 set.seed(SEED)
 
-WINDOW_H <- config$cohort$window_hours
-EXTENT_H <- config$cohort$granular_extent_hours
-MIN_CELL <- config$reporting$small_cell_min_den
+WINDOW_H <- COV$cohort$window_hours
+EXTENT_H <- COV$cohort$granular_extent_hours
+MIN_CELL <- COV$reporting$small_cell_min_den
 
-COV  <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 # Read from the config, never defaulted here: the threshold and the window are
 # federation-critical, and a local default is how a site keeps pairing on the
 # old numbers after the consortium moves them.
 SPEC <- COV$titration
-stopifnot("covariates.json must declare a `titration` block" = !is.null(SPEC))
+stopifnot("protocol.json must declare a `titration` block" = !is.null(SPEC))
 MIN_DELTA <- as.numeric(SPEC$min_rate_change_mcg_hr)
 WIN_MIN   <- as.numeric(SPEC$bolus_window_minutes)
 WIN_SENS  <- sort(unique(c(as.numeric(unlist(SPEC$window_sensitivity_minutes)), WIN_MIN)))
@@ -63,8 +63,8 @@ BOOT_REPS <- as.integer(SPEC$bootstrap_resamples)
 # Histogram bins. Absolute and config-declared, never local quantiles -- a
 # site-specific binning cannot be summed with anyone else's.
 HSPEC <- COV$pooling$histograms$variables
-stopifnot("covariates.json must declare a `titration` block" = !is.null(SPEC),
-          "covariates.json must declare pooling.histograms.variables" = !is.null(HSPEC),
+stopifnot("protocol.json must declare a `titration` block" = !is.null(SPEC),
+          "protocol.json must declare pooling.histograms.variables" = !is.null(HSPEC),
           "the primary window must be one of the sensitivity widths" = WIN_MIN %in% WIN_SENS,
           "the threshold must be positive" = MIN_DELTA > 0,
           "bootstrap_resamples must be a positive whole number" = BOOT_REPS > 0)
@@ -76,7 +76,7 @@ EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
 
 # The indication question: was the dose change prompted by anything documented?
 IND <- COV$indication
-stopifnot("covariates.json must declare an `indication` block" = !is.null(IND))
+stopifnot("protocol.json must declare an `indication` block" = !is.null(IND))
 PAIN_THRESH <- unlist(IND$pain_instruments)        # NVPS 4, CPOT 3
 SED_THRESH  <- unlist(IND$sedation_instruments)    # RASS 1
 IND_WIN_H   <- as.numeric(IND$indication_window_hours)
@@ -395,7 +395,7 @@ print(adh_dist, row.names = FALSE)
 
 # ---- 8b. Pooling histograms --------------------------------------------------
 # A median has no closed form across sites; counts on FIXED absolute bins do.
-# Config: covariates.json pooling.histograms. This script emits the two
+# Config: protocol.json pooling.histograms. This script emits the two
 # variables that block assigns to it, and asserts it emitted all of them -- a
 # declared variable nobody writes is the config-integrity failure CLAUDE.md
 # names first.

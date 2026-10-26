@@ -7,7 +7,7 @@ Outputs (PHI, written to output/intermediate_phi/):
     care_intervals.parquet      one row per attributed care-location stay, relative clock
     assessment_events.parquet   raw pain/sedation scores, on the relative clock
 
-Protocol: config/covariates.json.
+Protocol: config/protocol.json.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from utils.paths import (  # noqa: E402
 )
 
 CONFIG = json.loads((REPO / "config" / "config.json").read_text())
-COV = json.loads((REPO / "config" / "covariates.json").read_text())
+COV = json.loads((REPO / "config" / "protocol.json").read_text())
 OUTLIERS = load_outliers()
 
 GRID = COV["windows"]["granular"]
@@ -52,7 +52,7 @@ WINDOW_H = GRID["width_hours"]
 EXTENT_H = GRID["extent_hours"]
 N_WINDOWS = GRID["n_windows"]
 STITCH_H = COV["encounter_blocks"]["stitch_time_interval_hours"]
-MIN_IMV_H = CONFIG["cohort"]["min_imv_hours"]
+MIN_IMV_H = COV["cohort"]["min_imv_hours"]
 
 EXPOSURE = COV["exposure"]
 INF_HOLD_H = EXPOSURE["infusion"]["hold_hours"]
@@ -65,7 +65,7 @@ OXY = COV["time_varying"]["oxygenation"]
 FIO2_LOOKBACK_H = OXY["fio2_lookback_hours"]
 SPO2_CEILING = OXY["spo2_ceiling"]
 RA_FIO2 = OXY["fio2_scale"]["fraction_band"][0]
-EPISODE_GAP_H = CONFIG["cohort"]["imv_episode_gap_hours"]
+EPISODE_GAP_H = COV["cohort"]["imv_episode_gap_hours"]
 
 LAB_VARS = {
     k: v["source"]["category"]
@@ -197,7 +197,7 @@ def _kw(**extra) -> dict:
 
 
 def _mac_categories() -> list[str]:
-    meds = CONFIG["medications"]
+    meds = COV["medications"]
     return sorted(set(meds["opioid_infusion_categories"]) | set(meds["other_sedative_categories"])
                   | set(NEE_COEF) | set(SOFA_PRESSORS))
 
@@ -242,7 +242,7 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
         "mac": MedicationAdminContinuous.from_file(
             **_kw(filters={**hid, "med_category": _mac_categories()})).df,
         "mai": MedicationAdminIntermittent.from_file(
-            **_kw(filters={**hid, "med_category": CONFIG["medications"]["opioid_bolus_categories"]})).df,
+            **_kw(filters={**hid, "med_category": COV["medications"]["opioid_bolus_categories"]})).df,
     }
     key = cache_key(CONFIG, [_canonicalise_devices])
     print(f"  {describe_cache(key)}")
@@ -332,7 +332,7 @@ def prepare_long_tables(t: dict, mapping: pd.DataFrame) -> dict:
 
 def assert_categories_present(t: dict) -> None:
     """Fail loudly if a configured med_category is absent; print what is there."""
-    meds = CONFIG["medications"]
+    meds = COV["medications"]
     for table, key in (("mac", "opioid_infusion_categories"),
                        ("mai", "opioid_bolus_categories")):
         present = set(t[table]["med_category"].dropna().unique())
@@ -427,14 +427,14 @@ def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     for the other: 11.0% of ICU HOSPITALIZATIONS touch more than one unit, while
     6.4% of ATTRIBUTED EPISODES do so inside the 72h observation window, the
     window being the shorter span. The second is the one that bears on
-    attribution. covariates.json's `_DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE` records what
+    attribution. protocol.json's `_DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE` records what
     collapsing to an admitting label costs: CRRT-dose-lmtp "silently discarded
     the very variation that makes it worth carrying, and at a single-hospital
     site the loss would have been invisible."
     """
     spec = COV.get("unit_variation")
     if spec is None:
-        raise SystemExit("config/covariates.json declares no `unit_variation` block")
+        raise SystemExit("config/protocol.json declares no `unit_variation` block")
     cats = [str(c).lower() for c in spec["attributed_location_categories"]]
 
     if "location_category" not in hi.columns:
@@ -618,9 +618,9 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
     flow(f"Ventilated at least {MIN_IMV_H}h (one analysis window)", len(c),
          f"first continuous IMV episode shorter than {MIN_IMV_H}h")
 
-    c = c[c["age"] >= CONFIG["cohort"]["min_age"]]
-    flow(f"Adult blocks (age >= {CONFIG['cohort']['min_age']})", len(c),
-         f"age < {CONFIG['cohort']['min_age']} or age missing")
+    c = c[c["age"] >= COV["cohort"]["min_age"]]
+    flow(f"Adult blocks (age >= {COV['cohort']['min_age']})", len(c),
+         f"age < {COV['cohort']['min_age']} or age missing")
 
     c["followup_end_dttm"] = c[["block_discharge_dttm"]].min(axis=1)
     c = c[c["followup_end_dttm"] > c["anchor_dttm"]]
@@ -634,10 +634,27 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
             "cohort is empty. Check the STROBE counts above for the step that "
             "dropped everything -- an empty cohort is a bug, not a finding."
         )
-    per_patient = c.groupby("patient_id").size()
+    return c
+
+
+def note_dependence(cohort: pd.DataFrame) -> None:
+    """Repeat-encounter dependence, measured on the FINAL analytic cohort.
+
+    One of the dependence diagnostics protocol.json requires, so it is the
+    number a reader checks against the cohort size and it has to reconcile.
+    It therefore cannot live in build_cohort(), which returns BEFORE the weight
+    exclusion in main(): measured there it covered 14,921 blocks and reported
+    934 patients with more than one, against a shipped cohort of 14,897. The
+    reconciling figure is 932.
+
+    Emits the patient count too. Nothing else in the shareable tree carries it,
+    so describing the cohort in prose previously required reading the PHI
+    parquet for a number the diagnostics file should have held all along.
+    """
+    per_patient = cohort.groupby("patient_id").size()
+    note("patients in the analytic cohort", int(len(per_patient)))
     note("patients contributing more than one block", int((per_patient > 1).sum()))
     note("blocks per patient (max)", int(per_patient.max()))
-    return c
 
 
 def window_grid(cohort: pd.DataFrame) -> pd.DataFrame:
@@ -735,7 +752,7 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     # case, so a stop was invisible whenever anything else was charted in the
     # same hour. Measured before the fix: 9,312 cells (21.3% of multi-record
     # cells) disagreed, the error was ALWAYS upward, median 50 mcg/hr, and 35.0%
-    # of episodes had at least one affected window. covariates.json ->
+    # of episodes had at least one affected window. protocol.json ->
     # exposure.infusion.algorithm had declared the correct rule all along.
     last = (m.sort_values(["encounter_block", "hr", "admin_dttm", "rate"], kind="stable")
               .groupby(["encounter_block", "hr"], as_index=False)["rate"].last())
@@ -812,12 +829,12 @@ def sedative_exposure(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     """propofol_dose and midazolam_dose per window. Config: exposure.sedatives."""
     spec = COV["exposure"]["sedatives"]
     out = windows[["encounter_block", "window_idx"]].copy()
-    for cat in CONFIG["medications"]["other_sedative_categories"]:
+    for cat in COV["medications"]["other_sedative_categories"]:
         col = f"{cat}_dose"
         if col not in spec["columns"]:
             raise SystemExit(
                 f"{cat} is in config.json other_sedative_categories but "
-                f"{col} is not declared in covariates.json exposure.sedatives.columns"
+                f"{col} is not declared in protocol.json exposure.sedatives.columns"
             )
         print(f"  {cat} -> {col} ({spec['units'][col]})")
         grid = infusion_grid(t, mapping, cohort, [cat], _to_target_rate)
@@ -842,14 +859,28 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
     unit conversion and the outlier bound live here -- a second copy is how two
     places quietly start disagreeing about what a mg is.
     """
-    cats = CONFIG["medications"]["opioid_bolus_categories"]
+    cats = COV["medications"]["opioid_bolus_categories"]
     b = t["mai"][t["mai"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
     b = b.merge(cohort[["encounter_block", "anchor_dttm", "weight_kg"]],
                 on="encounter_block", how="inner")
 
+    # Site vocabulary comes from config.json dose_unit_aliases, not from here.
+    # "mcg of opiate" is UCMC's string and lived in this line until 2026-10-26,
+    # so another site could only normalise its own by editing code -- which moves
+    # the code digest and makes it look like it ran a different analysis.
+    aliases = {str(k).lower().strip(): v
+               for k, v in (CONFIG.get("dose_unit_aliases") or {}).items()}
     unit = (b["med_dose_unit"].astype("string").str.lower().str.strip()
-            .replace({"mcg of opiate": "mcg", "": pd.NA}))
+            .replace({**aliases, "": pd.NA}))
+    bad_targets = sorted(set(aliases.values()) - {"mcg", "mg", "mcg/kg", "mg/kg"})
+    if bad_targets:
+        raise SystemExit(
+            f"config.json dose_unit_aliases maps to {bad_targets}, which the bolus "
+            f"converter does not handle. Targets must be one of mcg, mg, mcg/kg, "
+            f"mg/kg -- an alias to anything else converts to nothing and the rows "
+            f"are nulled, which reads downstream as 'no bolus given'."
+        )
     dose = pd.to_numeric(b["med_dose"], errors="coerce")
     w = pd.to_numeric(b["weight_kg"], errors="coerce")
     mcg = pd.Series(np.nan, index=b.index, dtype="float64")
@@ -869,14 +900,34 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
             print(f"    {u}: {n:,}")
     b["mcg"] = mcg
 
-    lo, hi = OUTLIERS["med_bolus_mcg"]["fentanyl"]
-    over = b["mcg"].notna() & ((b["mcg"] < lo) | (b["mcg"] > hi))
-    if over.any():
-        by_unit = unit[over].fillna("<no unit>").value_counts()
-        print(f"  bolus: {int(over.sum()):,} converted doses outside [{lo:g}, {hi:g}] mcg, "
-              f"nulled")
-        for u, n in by_unit.items():
-            print(f"    {u}: {n:,}")
+    # PER DRUG. This applied fentanyl's [0, 1000] mcg bound to every member of
+    # opioid_bolus_categories until 2026-10-26. Inert while that list is
+    # fentanyl alone, and silently wrong the moment it is not: a site adding
+    # hydromorphone -- potency roughly 1 mcg fentanyl per 0.15 mcg hydromorphone
+    # -- would have had its doses judged against fentanyl's ceiling and summed
+    # into bolus_mcg as though they were fentanyl. A bound is per (drug, unit) in
+    # med_dose_raw and must be per drug here too.
+    bounds = OUTLIERS["med_bolus_mcg"]
+    missing = sorted(c for c in cats if c not in bounds)
+    if missing:
+        raise SystemExit(
+            f"medications.opioid_bolus_categories declares {missing} with no "
+            f"med_bolus_mcg bound in config/outlier_config.json. Add a bound per "
+            f"drug rather than inheriting another drug's: these are summed into "
+            f"one bolus_mcg column, so an unbounded or mis-bounded member is "
+            f"added to the exposure as if it were fentanyl."
+        )
+    over = pd.Series(False, index=b.index)
+    for cat in cats:
+        lo, hi = bounds[cat]
+        is_cat = b["med_category"] == cat
+        bad = is_cat & b["mcg"].notna() & ((b["mcg"] < lo) | (b["mcg"] > hi))
+        if bad.any():
+            print(f"  bolus [{cat}]: {int(bad.sum()):,} converted doses outside "
+                  f"[{lo:g}, {hi:g}] mcg, nulled")
+            for u, n in unit[bad].fillna("<no unit>").value_counts().items():
+                print(f"    {u}: {n:,}")
+        over = over | bad
     b.loc[over, "mcg"] = np.nan
 
     b["window_idx"] = ((b["admin_dttm"] - b["anchor_dttm"]).dt.total_seconds()
@@ -971,7 +1022,7 @@ def _to_windows(df: pd.DataFrame, cohort: pd.DataFrame, time_col: str) -> pd.Dat
     """Map records to windows. Bounded by the window grid AND by follow-up.
 
     A record charted at or after block_discharge_dttm belongs to no window: a
-    post-event window is structurally empty, not missing (covariates.json
+    post-event window is structurally empty, not missing (protocol.json
     windows._anchor_note). Without the follow-up bound, charting lag put 428
     IMV records and 44 CRRT records into windows the patient had already been
     discharged from, so `imv_status == 1` could be true where alive_admitted
@@ -1000,12 +1051,16 @@ def lab_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
 
 
 def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
-    """Per-window sedation and pain scores. Config: time_varying.rass / .nvps.
+    """Per-window sedation and pain scores. Config: time_varying.<assessments>.
 
     Deliberately the same shape as lab_covariates(): variables, source categories
-    and summary rules all come from covariates.json, so adding a score is a config
+    and summary rules all come from protocol.json, so adding a score is a config
     edit. gcs_total is NOT here -- it is a SOFA input with its own cap, carried by
     _sofa_inputs().
+
+    One instrument per construct is charted per site -- NVPS here, cpot_total or
+    BPS elsewhere -- so the pain variables carry site_optional and an absent one
+    becomes an all-NA column instead of a SystemExit. At least one must land.
     """
     if not ASSESS_VARS:
         return pd.DataFrame()
@@ -1014,6 +1069,8 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     vocabulary = {k for k in COV["summary_rules"] if not k.startswith("_")}
 
     out = None
+    present: list[str] = []
+    absent: list[str] = []
     for var, cat in ASSESS_VARS.items():
         spec = COV["time_varying"][var]
         how = spec["summary"]
@@ -1024,12 +1081,22 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
         if how not in vocabulary:
             raise SystemExit(
                 f"time_varying.{var}.summary = {how!r} is not in "
-                f"covariates.json summary_rules ({sorted(vocabulary)}). "
+                f"protocol.json summary_rules ({sorted(vocabulary)}). "
                 f"Add the rule to the vocabulary first."
             )
         val = spec["source"]["value"]
         sub = asm[asm["assessment_category"] == cat]
         if sub.empty:
+            # A site-optional instrument is one of several measuring the same
+            # construct -- nvps / cpot_total / bps for pain -- and which one a
+            # site charts is a fact about the site, not a defect. Raising here
+            # would stop a CPOT site in Phase 0 on NVPS. Everything else still
+            # raises: a missing RASS or lactate is a broken extract.
+            if spec.get("site_optional"):
+                absent.append(var)
+                print(f"    {var:.<24} {cat}: 0 records at this site -- declared "
+                      f"site_optional in protocol.json, carried as an all-NA column")
+                continue
             raise SystemExit(
                 f"assessment_category {cat!r} (declared as time_varying.{var}) "
                 f"matched no rows in the cohort. Check the category spelling and "
@@ -1038,8 +1105,31 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
         agg = (sub.groupby(["encounter_block", "window_idx"], as_index=False)
                   [val].agg(how).rename(columns={val: var}))
         print(f"    {var:.<24} {cat} ({how}) -> {len(agg):,} block-windows")
+        present.append(var)
         out = agg if out is None else out.merge(
             agg, on=["encounter_block", "window_idx"], how="outer")
+
+    # An absent instrument still has to REACH A COLUMN. assert_config_is_honoured()
+    # requires it, and more to the point a declared key that produces no column at
+    # all is exactly the silent no-op that guard exists to catch.
+    if out is not None:
+        for var in absent:
+            out[var] = np.nan
+
+    # At least one pain instrument, or the build refuses. A site charting none has
+    # no analgesia signal at all, and an all-NA pain panel that nobody is told
+    # about is how that gets discovered after the analysis is written.
+    pain_cats = set(COV.get("indication", {}).get("pain_instruments", {}))
+    pain_vars = {v for v, c in ASSESS_VARS.items() if c in pain_cats}
+    if pain_vars and not (pain_vars & set(present)):
+        raise SystemExit(
+            f"not one pain instrument matched a row: tried "
+            f"{sorted(ASSESS_VARS[v] for v in pain_vars)}. Check the category "
+            f"spellings and their CASE against the CLIF patient_assessments "
+            f"mCIDE -- the filter matches literally. If this site genuinely "
+            f"charts no behavioural pain score, that is a protocol amendment, "
+            f"not a run-time fix."
+        )
     return out if out is not None else pd.DataFrame()
 
 
@@ -1231,7 +1321,7 @@ def _attach_current_weight(med: pd.DataFrame, t: dict) -> pd.DataFrame:
     branch is first in its CASE, so a missing weight masks every other cause of a
     conversion failure. Attaching the column here also makes clifpy skip its own
     vitals lookup. NEE follows CURRENT weight, unlike the dose denominator, which
-    is fixed at the anchor -- see covariates.json weight._DO_NOT_UNIFY.
+    is fixed at the anchor -- see protocol.json weight._DO_NOT_UNIFY.
     """
     w = (t["vitals"].loc[t["vitals"]["vital_category"] == "weight_kg",
                  ["encounter_block", "recorded_dttm", "vital_value"]]
@@ -1684,7 +1774,7 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
     missing = [c for c in declared if c not in long.columns]
     if missing:
         raise SystemExit(
-            f"declared in config/covariates.json but absent from trajectory_long: {missing}. "
+            f"declared in config/protocol.json but absent from trajectory_long: {missing}. "
             f"Adding a key to that config must never be a silent no-op."
         )
 
@@ -1698,9 +1788,9 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     not the window grid: the grid stops at T, so outcomes ascertained from it are
     all censored by construction.
     """
-    T = CONFIG["cohort"]["landmark_hours"]
-    succ_h = CONFIG["outcomes"]["successful_extubation_hours"]
-    death_cats = set(CONFIG["outcomes"]["mortality_categories"])
+    T = COV["cohort"]["landmark_hours"]
+    succ_h = COV["outcomes"]["successful_extubation_hours"]
+    death_cats = set(COV["outcomes"]["mortality_categories"])
 
     at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
     eligible = set(at_T.loc[at_T["imv_status"] == 1, "encounter_block"])
@@ -1744,7 +1834,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     tte["mortality_event"] = np.where(tte["died"], 1, 2)
     tte["mortality_time"] = (tte["hours_to_discharge"] - T).clip(lower=0)
 
-    unresolved = set(CONFIG["outcomes"]["unresolved_discharge_categories"])
+    unresolved = set(COV["outcomes"]["unresolved_discharge_categories"])
     n_unres = int(tte["discharge_category"].isin(unresolved).sum())
     if n_unres:
         note("blocks with an unresolved discharge_category", n_unres)
@@ -1765,7 +1855,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     F1 draws a single patient in detail. Baker et al. Sci Rep 2020;10:10718
     Figure 1, which F1 is modelled on, is captioned only "Representative ICU
     admission" and states NO selection rule -- the one thing F1 has to improve
-    on. So the criteria are declared in covariates.json, applied here, and the
+    on. So the criteria are declared in protocol.json, applied here, and the
     episode is DRAWN AT RANDOM from those that qualify. Nothing about the choice
     depends on anyone looking at a patient, which is also what lets the figure be
     designed without patient data ever being displayed.
@@ -1776,7 +1866,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     """
     spec = COV.get("exemplar")
     if spec is None:
-        raise SystemExit("config/covariates.json declares no `exemplar` block; "
+        raise SystemExit("config/protocol.json declares no `exemplar` block; "
                          "F1 has no selection rule to apply.")
     if spec["draw"] != "uniform_random_from_eligible":
         raise SystemExit(f"unsupported exemplar draw: {spec['draw']!r}")
@@ -1837,26 +1927,37 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     asm["t_hr"] = ((asm["recorded_dttm"] - asm["anchor_dttm"]).dt.total_seconds()
                    / 3600.0)
     asm = asm[(asm["t_hr"] >= 0) & (asm["t_hr"] <= EXTENT_H)]
-    dens = (asm[asm["assessment_category"].isin(["RASS", "NVPS"])]
+    # RASS is universal; the pain instrument is site-specific, so take whichever
+    # of the declared ones this site actually charts. Hardcoding "NVPS" here gave
+    # a CPOT site a column of zeros, which no episode could clear, emptying the
+    # eligible pool with nothing naming the cause.
+    pain_cats = sorted(COV.get("indication", {}).get("pain_instruments", {}))
+    charted = [c for c in pain_cats
+               if (asm["assessment_category"] == c).any()]
+    dens = (asm[asm["assessment_category"].isin(["RASS"] + pain_cats)]
             .groupby(["encounter_block", "assessment_category"]).size()
             .unstack(fill_value=0))
-    for c in ("RASS", "NVPS"):
+    for c in ["RASS"] + pain_cats:
         if c not in dens.columns:
             dens[c] = 0
+    # Sum rather than pick one: a site charting two scores should get credit for
+    # both, and at a single-instrument site the sum IS that instrument.
+    dens["PAIN"] = dens[charted].sum(axis=1) if charted else 0
+    pain_label = "/".join(charted) if charted else "pain score"
 
     f = (pd.DataFrame(index=pd.Index(sorted(long["encounter_block"].unique()),
                                      name="encounter_block"))
-         .join(extub_w).join(fent).join(n_bolus).join(dens[["RASS", "NVPS"]])
+         .join(extub_w).join(fent).join(n_bolus).join(dens[["RASS", "PAIN"]])
          .join(died_block.rename("died")))
     f = f.fillna({"cont_hours": 0, "gap_hours": 0, "n_bolus": 0,
-                  "RASS": 0, "NVPS": 0, "died": False})
+                  "RASS": 0, "PAIN": 0, "died": False})
 
     # ---- the funnel. Printed so a threshold that empties the pool is visible --
     # immediately, and loosening it is a protocol change rather than a surprise.
     # The declared deadline is APPLIED, not assumed. It happens to equal the
     # window extent today, so the check is inert on this config -- but a site
     # that sets it to 48 must get 48, and a threshold that is read by nothing is
-    # the failure mode tests/test_covariates.py exists to catch.
+    # the failure mode tests/test_protocol.py exists to catch.
     extub_hr_col = f["extub_window"].astype("Float64") * WINDOW_H
     tests = [
         (f"extubated by {spec['require_extubated_by_hours']}h, no reintubation",
@@ -1870,8 +1971,8 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         (f">= {spec['min_boluses']} boluses", f["n_bolus"] >= spec["min_boluses"]),
         (f">= {spec['min_rass_observations']} RASS",
          f["RASS"] >= spec["min_rass_observations"]),
-        (f">= {spec['min_nvps_observations']} NVPS",
-         f["NVPS"] >= spec["min_nvps_observations"]),
+        (f">= {spec['min_pain_observations']} {pain_label}",
+         f["PAIN"] >= spec["min_pain_observations"]),
     ]
     keep = pd.Series(True, index=f.index)
     counts = []
@@ -1906,7 +2007,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
 
     if not n_eligible:
         print("  NO episode meets every criterion. F1 cannot be drawn; loosen the "
-              "thresholds in covariates.json `exemplar` and re-run.")
+              "thresholds in protocol.json `exemplar` and re-run.")
         return
 
     rng = np.random.default_rng(spec["draw_seed"])
@@ -1940,7 +2041,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         "t_hr": a["t_hr"].astype(float),
         "series": a["assessment_category"].str.lower(),
         "value": pd.to_numeric(a["numerical_value"], errors="coerce")})
-    ord_ = ord_[ord_["series"].isin(["rass", "nvps"]) & ord_["value"].notna()]
+    _score_series = ["rass"] + [v for v, c in ASSESS_VARS.items()
+                                if c in COV.get("indication", {}).get("pain_instruments", {})]
+    ord_ = ord_[ord_["series"].isin(_score_series) & ord_["value"].notna()]
 
     series = pd.concat([inf, bo, ord_], ignore_index=True)
     series = series[(series["t_hr"] >= 0) & (series["t_hr"] <= EXTENT_H)]
@@ -1992,9 +2095,9 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
     """
     spec = COV.get("titration")
     if spec is None:
-        raise SystemExit("config/covariates.json declares no `titration` block")
+        raise SystemExit("config/protocol.json declares no `titration` block")
 
-    cats = CONFIG["medications"]["opioid_infusion_categories"]
+    cats = COV["medications"]["opioid_infusion_categories"]
     ev = _infusion_events(t, mapping, cohort, cats, _to_mcg_hr)
 
     rate = pd.DataFrame({
@@ -2021,7 +2124,7 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
     # the next one and one delta crossed the threshold.
     #
     # Ties resolve toward the HIGHER rate, the convention
-    # covariates.json.predominant_intensity.tie_break already sets for this
+    # protocol.json.predominant_intensity.tie_break already sets for this
     # project: a tie is never settled in the direction of less exposure. The
     # charted data genuinely does not say which of two simultaneous records came
     # last, so this is a declared rule rather than a recovery of the truth --
@@ -2079,7 +2182,7 @@ def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
     """
     spec = COV.get("indication")
     if spec is None:
-        raise SystemExit("config/covariates.json declares no `indication` block")
+        raise SystemExit("config/protocol.json declares no `indication` block")
     instruments = {**spec["pain_instruments"], **spec["sedation_instruments"]}
 
     asm = t["assessments"].merge(cohort[["encounter_block", "anchor_dttm"]],
@@ -2094,7 +2197,7 @@ def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
         sub = sub[sub["numerical_value"].notna()]
         if sub.empty:
             print(f"    {name:.<24} 0 records at this site -- declared in "
-                  f"covariates.json indication, not charted here")
+                  f"protocol.json indication, not charted here")
             continue
         print(f"    {name:.<24} {len(sub):,} record(s), "
               f"{sub['encounter_block'].nunique():,} episode(s)")
@@ -2173,6 +2276,7 @@ def main() -> None:
     cohort = cohort[cohort["weight_kg"].notna()]
     flow("ANALYTIC COHORT -- trajectory_long", len(cohort),
          "no weight charted anywhere in the block")
+    note_dependence(cohort)
     bmi = bmi_admission(t, cohort)
 
     print("\nWindows")
@@ -2180,7 +2284,7 @@ def main() -> None:
 
     print("\nExposure")
     grid = infusion_grid(t, mapping, cohort,
-                         CONFIG["medications"]["opioid_infusion_categories"],
+                         COV["medications"]["opioid_infusion_categories"],
                          _to_mcg_hr)
     bolus_events = _bolus_events(t, mapping, cohort)
     bolus = bolus_doses(bolus_events)
@@ -2216,7 +2320,7 @@ def main() -> None:
     # landmark subset; this carries it for the WHOLE analytic cohort, which the
     # Phase 1 state description needs in order to tell died from discharged.
     long["died"] = long["discharge_category"].isin(
-        set(CONFIG["outcomes"]["mortality_categories"]))
+        set(COV["outcomes"]["mortality_categories"]))
 
     print("\n  SOFA")
     sofa_in = _sofa_inputs(t, cohort)

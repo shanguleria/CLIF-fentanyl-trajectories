@@ -3,7 +3,7 @@
 Scale is decided per column; bounds are applied per value. A column is rescaled
 only if its distribution says it is on the percent scale; an out-of-range value
 in an otherwise-fractional column is nulled, not rescaled. Ambiguous columns
-raise. Rationale: config/covariates.json oxygenation.fio2_scale.
+raise. Rationale: config/protocol.json oxygenation.fio2_scale.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_CFG = json.loads((Path(__file__).resolve().parents[2] / "config" / "covariates.json").read_text())
+_CFG = json.loads((Path(__file__).resolve().parents[2] / "config" / "protocol.json").read_text())
 _F = _CFG["time_varying"]["oxygenation"]["fio2_scale"]
 
 FRACTION_BAND = tuple(_F["fraction_band"])

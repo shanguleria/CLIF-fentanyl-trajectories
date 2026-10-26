@@ -127,7 +127,7 @@ def test_small_cells_are_suppressed_not_published():
 
 
 def _check_suppression(d, name):
-    cfg = json.loads((REPO / "config" / "config_template.json").read_text())
+    cfg = json.loads((REPO / "config" / "protocol.json").read_text())
     lim = cfg["reporting"]["small_cell_min_den"]
     tiny = d[(d.n > 0) & (d.n < lim)]
     assert (tiny["n_suppressed_small_cell"] == 1).all(), (
@@ -190,7 +190,7 @@ def test_every_declared_histogram_is_emitted_exactly_once():
     """A histogram declared in the config and written by nobody is the
     config-integrity failure CLAUDE.md names first; one written by two scripts
     would be double-counted the moment a centre concatenates the bundles."""
-    cfg = json.loads((REPO / "config" / "covariates.json").read_text())
+    cfg = json.loads((REPO / "config" / "protocol.json").read_text())
     declared = set(cfg["pooling"]["histograms"]["variables"])
     emitted: list[str] = []
     for f in HISTS:
@@ -258,7 +258,7 @@ def test_no_suppressed_cell_is_recoverable_by_subtraction():
     d = _skip_if_absent(CAT)
     if d is None:
         return
-    cmap = json.loads((REPO / "config" / "covariates.json").read_text())
+    cmap = json.loads((REPO / "config" / "protocol.json").read_text())
     collapse = cmap["time_invariant"]["race"]["reporting_collapse"]
     named = {k: v for k, v in collapse.items() if not k.startswith("_")}
 
@@ -347,10 +347,10 @@ def test_the_collapsed_race_matches_the_full_categories_level_by_level():
     full = d[d.variable == "Race"]
     coll = d[d.variable == "Race (collapsed)"]
     assert len(coll), "the collapsed race rows are missing"
-    cmap = json.loads((REPO / "config" / "covariates.json").read_text())
+    cmap = json.loads((REPO / "config" / "protocol.json").read_text())
     cmap = cmap["time_invariant"]["race"]["reporting_collapse"]
     named = {k: v for k, v in cmap.items() if not k.startswith("_")}
-    # The two views no longer span the same strata: covariates.json
+    # The two views no longer span the same strata: protocol.json
     # disclosure.full_levels_strata_scope ships the FULL levels at `overall`
     # only, so the collapse can be checked against its sources exactly where
     # both are published. Deriving the overlap rather than assuming it is what

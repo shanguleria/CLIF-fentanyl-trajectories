@@ -187,6 +187,19 @@ def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
         "mcg/kg/min": lambda hi: hi * 60.0 * w_max,
         "mcg/min": lambda hi: hi * 60.0,
     }
+    # `if u in per_arm` would SILENTLY DROP an arm this function does not know,
+    # understating the ceiling -- and the assertion downstream then fires on data
+    # the bounds legitimately accepted. A new charted unit must be added here as
+    # well as to _to_mcg_hr, so say so rather than quietly computing the wrong
+    # maximum.
+    unknown = sorted(set(raw) - set(per_arm) - {u for u in raw if u.startswith("_")})
+    if unknown:
+        raise SystemExit(
+            f"med_dose_raw.fentanyl bounds units {unknown} that "
+            f"fentanyl_sanity_ceiling() cannot convert, so the derived ceiling "
+            f"would be computed without them and would be too low. Add each unit "
+            f"to per_arm here and to _to_mcg_hr in code/01_build_cohort.py."
+        )
     return max(per_arm[u](hi) for u, (_, hi) in raw.items() if u in per_arm)
 
 

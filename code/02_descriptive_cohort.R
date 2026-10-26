@@ -33,21 +33,21 @@ source(here("code", "utils", "states.R"))   # predominant_band(), for Table 1
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV       <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-WINDOW_H  <- config$cohort$window_hours
-EXTENT_H  <- config$cohort$granular_extent_hours
-PANELS    <- unlist(config$cohort$balanced_panel_hours)
-LANDMARK  <- config$cohort$landmark_hours
+WINDOW_H  <- COV$cohort$window_hours
+EXTENT_H  <- COV$cohort$granular_extent_hours
+PANELS    <- unlist(COV$cohort$balanced_panel_hours)
+LANDMARK  <- COV$cohort$landmark_hours
 
-COV       <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 # Dose-band definition. Read from the config, never defaulted here: the cuts are
 # federation-critical and a local default is how a site keeps cutting at the old
 # values after the consortium moves them.
 DS_SPEC   <- COV$exposure$dose_states
 DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
 DOSE_LAB  <- unlist(DS_SPEC$labels)
-stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
+stopifnot("protocol.json exposure.dose_states must declare cuts and labels" =
             length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
           "dose states must be defined on window_mcg" =
             identical(DS_SPEC$variable, "window_mcg"))
@@ -55,7 +55,7 @@ SED_UNITS <- COV$exposure$sedatives$units
 
 # Read the drug list FROM the config rather than restating it. A hardcoded list
 # here is how a declared sedative becomes a no-op: adding dexmedetomidine to
-# covariates.json would have changed nothing.
+# protocol.json would have changed nothing.
 SED_COLS <- unlist(COV$exposure$sedatives$columns)
 DRUGS <- c(fentanyl = "total_dose",
            setNames(SED_COLS, sub("_dose$", "", SED_COLS)))
@@ -64,26 +64,26 @@ UNITS <- c(fentanyl = COV$exposure$units,
                     sub("_dose$", "", SED_COLS)))
 SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
-MIN_CELL <- config$reporting$small_cell_min_den
+MIN_CELL <- COV$reporting$small_cell_min_den
 
 # Race is collapsed for DISPLAY; the full CLIF granularity reaches
 # pooling_categorical.csv at the `overall` stratum. Map lives in
-# covariates.json, not here.
+# protocol.json, not here.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 
 # Where a categorical ships in BOTH a full and a collapsed form, the full form
 # is published at `overall` only -- publishing both views over the same strata
 # made each suppressed cell recoverable by subtraction. See
-# covariates.json disclosure._MEASURED_2026_10_02.
+# protocol.json disclosure._MEASURED_2026_10_02.
 FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
-stopifnot("covariates.json must declare disclosure.full_levels_strata_scope" =
+stopifnot("protocol.json must declare disclosure.full_levels_strata_scope" =
             !is.null(FULL_SCOPE))
 
 # Histogram bins, so a coordinating centre can pool a median that has no closed
 # form. Absolute and config-declared, never local quantiles -- a site-specific
 # binning cannot be summed with anyone else's.
 HSPEC <- COV$pooling$histograms$variables
-stopifnot("covariates.json must declare pooling.histograms.variables" =
+stopifnot("protocol.json must declare pooling.histograms.variables" =
             !is.null(HSPEC))
 HIST_MINE <- names(HSPEC)[vapply(HSPEC, function(s)
   identical(as.character(s$owner), "02"), logical(1))]
@@ -188,7 +188,7 @@ stopifnot(
 
 missing_cols <- setdiff(unname(DRUGS), names(long))
 if (length(missing_cols)) {
-  stop("covariates.json declares dose columns that trajectory_long does not carry: ",
+  stop("protocol.json declares dose columns that trajectory_long does not carry: ",
        paste(missing_cols, collapse = ", "),
        ". Re-run code/01_build_cohort.py rather than dropping them silently.",
        call. = FALSE)
@@ -375,7 +375,7 @@ base <- long[long$window_idx == 0, ]
 # The same rule on delivery ROUTE was measured first and rejected -- it left
 # `continuous + bolus` with n = 124.
 PI_SPEC <- COV$predominant_intensity
-stopifnot("covariates.json must declare predominant_intensity" = !is.null(PI_SPEC),
+stopifnot("protocol.json must declare predominant_intensity" = !is.null(PI_SPEC),
           "the stratification must use the declared dose bands" =
             identical(PI_SPEC$bands_from, "exposure.dose_states"),
           "the stratification variable must be the one the bands are cut on" =
@@ -522,7 +522,7 @@ print(baseline, row.names = FALSE)
 # A median has no closed form across sites, and for a variable that is skewed
 # or sits on a point mass at zero the mean is not an acceptable substitute
 # either. Counts on FIXED absolute bins do pool. Config:
-# covariates.json pooling.histograms.
+# protocol.json pooling.histograms.
 pool_histograms <- do.call(rbind, lapply(HIST_MINE, function(v) {
   spec <- HSPEC[[v]]
   col <- sub("^trajectory_long\\.", "", as.character(spec$source))

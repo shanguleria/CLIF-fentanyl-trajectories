@@ -51,19 +51,19 @@ source(here("code", "utils", "states.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV      <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-WINDOW_H <- config$cohort$window_hours
-EXTENT_H <- config$cohort$granular_extent_hours
-MIN_CELL <- config$reporting$small_cell_min_den
-COV      <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
+WINDOW_H <- COV$cohort$window_hours
+EXTENT_H <- COV$cohort$granular_extent_hours
+MIN_CELL <- COV$reporting$small_cell_min_den
 FENT_U   <- COV$exposure$units
 # Dose bands, read from the config and never defaulted here -- the cuts are
-# federation-critical (covariates.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE).
+# federation-critical (protocol.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE).
 DS_SPEC   <- COV$exposure$dose_states
 DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
 DOSE_LAB  <- unlist(DS_SPEC$labels)
-stopifnot("covariates.json exposure.dose_states must declare cuts and labels" =
+stopifnot("protocol.json exposure.dose_states must declare cuts and labels" =
             length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
           "dose states must be defined on window_mcg" =
             identical(DS_SPEC$variable, "window_mcg"))
@@ -213,7 +213,7 @@ names(counts)[3] <- "n"
 # and the natural comparator ("relative to fentanyl being stopped").
 
 # Covariate set fixed by SG 2026-09-09. Summary rules are Phase 0's and are
-# declared in covariates.json -- NEE max-of-summed-step-function, oxygenation min
+# declared in protocol.json -- NEE max-of-summed-step-function, oxygenation min
 # (worst, with the Severinghaus S/F fallback), CRRT any-in-window, BUN max,
 # bicarbonate min, lactate max.
 #
@@ -222,7 +222,7 @@ names(counts)[3] <- "n"
 # (1 for all four fentanyl states, 0 for extubated) and carries no information a
 # covariate could use. The information is retained by the state itself.
 #
-# SOFA is also absent. covariates.json records four verified defects in clifpy's
+# SOFA is also absent. protocol.json records four verified defects in clifpy's
 # SOFA, all silent and all biasing severity downward; the explicit markers below
 # carry the severity signal instead.
 TIME_INVARIANT <- c("age", "sex", "bmi_admission", "cci")
@@ -296,7 +296,7 @@ COVS  <- c(COVS, FLAGS)
 # df = 4 is 3 interior knots at the quartiles: enough to turn once or twice
 # across 72h, far short of the 18-window saturation that would just redraw the
 # observed curve. Held in the config so every site splines identically.
-NS_DF <- config$model$spline_df
+NS_DF <- COV$model$spline_df
 stopifnot("model.spline_df must be an integer >= 3" =
             is.numeric(NS_DF) && NS_DF >= 3 && NS_DF == as.integer(NS_DF))
 spl <- function(v) sprintf("ns(%s, df = %d)", v, NS_DF)

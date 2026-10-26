@@ -163,11 +163,11 @@ add_history <- function(d, id = "encounter_block", time = "window_idx",
 # the AMOUNT actually delivered (mcg), summed over the hourly cells the patient
 # was present for. They differ only in the 632 windows (0.34%) that straddle
 # discharge or death, where rate * window_hours would credit a patient with drug
-# they were not there to receive. See covariates.json exposure._two_scales.
+# they were not there to receive. See protocol.json exposure._two_scales.
 
 DOSE_LABELS <- c("zero", "low", "medium", "high")
 
-# Cuts are NOT defaulted. They are federation-critical (covariates.json
+# Cuts are NOT defaulted. They are federation-critical (protocol.json
 # exposure.dose_states._cuts_MUST_BE_ABSOLUTE) and a default here is exactly the
 # hardcoded-duplicate-that-drifts failure: a site editing the config would keep
 # silently cutting at the old values.

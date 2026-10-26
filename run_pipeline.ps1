@@ -13,8 +13,8 @@ if (Test-Path ".venv/Scripts/python.exe") { $py = ".venv/Scripts/python.exe" }
 Write-Host "== Preflight =="
 & $py code/check_config.py
 if ($LASTEXITCODE -ne 0) { Write-Error "config is not usable. Nothing was run." }
-& $py tests/test_covariates.py
-if ($LASTEXITCODE -ne 0) { Write-Error "config/covariates.json failed its integrity checks. Nothing was run." }
+& $py tests/test_protocol.py
+if ($LASTEXITCODE -ne 0) { Write-Error "config/protocol.json failed its integrity checks. Nothing was run." }
 & $py tests/test_fio2.py
 if ($LASTEXITCODE -ne 0) { Write-Error "fio2 unit handling failed its tests. Nothing was run." }
 & $py tests/test_outliers.py

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from utils.outliers import (  # noqa: E402
 )
 
 CFG = load_config()
-COV = json.loads((REPO / "config" / "covariates.json").read_text())
+COV = json.loads((REPO / "config" / "protocol.json").read_text())
 
 
 # ---------------------------------------------------------------- loud failures
@@ -116,21 +117,41 @@ def test_angiotensin_is_bounded_here_since_clifpy_lacks_it():
 def test_fentanyl_sanity_ceiling_covers_every_charted_arm():
     """Derived so it cannot drift when a bound changes, and taken over ALL arms.
 
-    The analysis unit became mcg/hr on 2026-09-07. Three charted units feed it,
+    The analysis unit became mcg/hr on 2026-09-07. FIVE charted units feed it,
     and a bound only constrains the arm it is written in -- so the ceiling is the
     largest value any arm can still produce after conversion. Taking the mcg/hr
     bound alone (500) understated it and the assertion fired on one window the
     bounds had legitimately accepted: a mcg/kg/hr rate under its own bound of 10,
     multiplied by a large weight.
+
+    This asserted `== raw["mcg/kg/hr"][1] * w_max == 11000.0` until 2026-10-26,
+    naming the arm it expected to win. The per-minute arms were bounded that day
+    at their per-hour twins divided by 60, and because 10/60 is not an exact
+    decimal the mcg/kg/min arm now wins by 0.22 mcg/hr. The INTENT -- the max
+    over every arm, never one arm alone -- is what matters, so the expected value
+    is computed here from the conversion factors instead of hardcoded.
     """
     raw = CFG["med_dose_raw"]["fentanyl"]
     w_max = CFG["analysis_unit_bounds"]["vitals"]["weight_kg"][1]
-    assert fentanyl_sanity_ceiling(CFG) == raw["mcg/kg/hr"][1] * w_max == 11000.0
+    factors = {"mcg/hr": 1.0, "mg/hr": 1000.0, "mcg/kg/hr": w_max,
+               "mcg/min": 60.0, "mcg/kg/min": 60.0 * w_max}
+    arms = {u: hi for u, (_, hi) in raw.items() if not u.startswith("_")}
+    assert set(arms) <= set(factors), (
+        f"bounded arms {sorted(set(arms) - set(factors))} have no conversion "
+        f"factor in this test -- add it, or the ceiling is checked against less "
+        f"than the config declares")
+
+    ceiling = fentanyl_sanity_ceiling(CFG)
+    expected = max(hi * factors[u] for u, hi in arms.items())
+    assert ceiling == expected, (
+        f"the ceiling is {ceiling} but the largest arm converts to {expected}")
+    assert ceiling == pytest.approx(11000.0, abs=1.0), (
+        f"the ceiling moved materially, to {ceiling} -- a change beyond decimal "
+        f"rounding means a bound was edited, which is a protocol decision")
     # every arm must sit at or below it, or the assertion can fire on clean data
-    for arm, factor in (("mcg/hr", 1.0), ("mg/hr", 1000.0),
-                        ("mcg/kg/hr", w_max)):
-        if arm in raw:
-            assert raw[arm][1] * factor <= fentanyl_sanity_ceiling(CFG), (
+    for arm, factor in factors.items():
+        if arm in arms:
+            assert arms[arm] * factor <= ceiling, (
                 f"the {arm} arm can exceed the derived ceiling"
             )
 

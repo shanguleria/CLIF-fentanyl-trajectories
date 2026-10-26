@@ -18,12 +18,16 @@
 # One long frame, whatever the source. `series` is a FACTOR with declared levels
 # so the panel order cannot be re-sorted alphabetically underneath us -- the same
 # failure that reordered every stacked area before 2026-09-24 (lessons.md #15).
-EXEMPLAR_SERIES <- c("infusion", "bolus", "rass", "nvps")
+# "pain" is CANONICAL, not an instrument. A site charts NVPS (UCMC), cpot_total
+# or BPS, and 03_exemplar.R relabels whichever one it finds to this key before
+# the factor is applied -- so the panel geometry is written once and the
+# instrument's name and scale arrive from config.
+EXEMPLAR_SERIES <- c("infusion", "bolus", "rass", "pain")
 
 EXEMPLAR_LABELS <- c(infusion = "Fentanyl infusion\n(mcg/hr)",
                      bolus    = "Fentanyl bolus\n(mcg)",
                      rass     = "RASS",
-                     nvps     = "NVPS")
+                     pain     = "Pain score")
 
 # A step asserts the last value persisted. Across a gap longer than the LOCF cap
 # that assertion is false, so the step must BREAK rather than carry a score over
@@ -98,12 +102,12 @@ synthetic_exemplar <- function(seed = 1L, extent_h = 72, window_h = 4) {
     series = "rass",
     value  = c(-3, -4, -4, -5, -5, -4, -4, -3, -2, -2, -1, 0))
 
-  nvps <- data.frame(
+  pain <- data.frame(
     t_hr   = c(2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 44, 48, 52, 55),
-    series = "nvps",
+    series = "pain",
     value  = c(2, 1, 0, 0, 3, 5, 4, 2, 6, 7, 3, 2, 4, 3))
 
-  series <- rbind(infusion, bolus, rass, nvps)
+  series <- rbind(infusion, bolus, rass, pain)
   series$series <- factor(series$series, levels = EXEMPLAR_SERIES)
 
   list(series = series,

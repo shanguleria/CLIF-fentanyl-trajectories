@@ -1,5 +1,5 @@
 """
-Integrity checks for config/covariates.json.
+Integrity checks for config/protocol.json.
 
 These run BEFORE Phase 0 exists. They cannot yet check that a declared covariate
 reaches a column -- that assertion belongs in 01_build_cohort.py and is listed in
@@ -9,7 +9,7 @@ is a silent no-op, and that the two files declaring the window width agree.
 
 Every failure mode below has been observed in a real CLIF repo.
 
-Run standalone:  .venv/bin/python tests/test_covariates.py
+Run standalone:  .venv/bin/python tests/test_protocol.py
 Or under pytest: .venv/bin/python -m pytest tests/ -q
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-COV = json.loads((REPO / "config" / "covariates.json").read_text())
+COV = json.loads((REPO / "config" / "protocol.json").read_text())
 TEMPLATE = json.loads((REPO / "config" / "config_template.json").read_text())
 
 TIME_VARYING = {k: v for k, v in COV["time_varying"].items() if not k.startswith("_")}
@@ -189,9 +189,13 @@ def test_window_arithmetic_is_self_consistent():
 
 def test_window_width_agrees_with_the_site_config_template():
     """The same threshold written down twice, copies now disagreeing, is the
-    second classic config-integrity failure. covariates.json and the site config
-    both declare the grid; they must not drift."""
-    cohort = TEMPLATE["cohort"]
+    second classic config-integrity failure. protocol.json declares the grid
+    TWICE -- once as windows.granular/extended and once as cohort.* -- and the
+    copies must not drift. They used to sit in two files; the 2026-10-26
+    consolidation moved cohort.* into protocol.json, so the duplication is now
+    intra-file. That makes it easier to spot and no less real, and this test is
+    still the only thing stopping the two from disagreeing."""
+    cohort = COV["cohort"]
     pairs = [
         ("granular.width_hours", COV["windows"]["granular"]["width_hours"], "window_hours", cohort["window_hours"]),
         ("granular.extent_hours", COV["windows"]["granular"]["extent_hours"], "granular_extent_hours", cohort["granular_extent_hours"]),
@@ -200,7 +204,7 @@ def test_window_width_agrees_with_the_site_config_template():
     ]
     for cov_key, cov_val, cfg_key, cfg_val in pairs:
         assert cov_val == cfg_val, (
-            f"drift: covariates.json windows.{cov_key}={cov_val} but "
+            f"drift: protocol.json windows.{cov_key}={cov_val} but "
             f"config cohort.{cfg_key}={cfg_val}"
         )
 
@@ -231,13 +235,13 @@ def test_every_declared_sedative_is_wired_end_to_end():
     """A sedative is declared in four places and must be live in all four.
 
     When a config governs N items, check all N. Adding dexmedetomidine touched
-    config.json (the category to load), covariates.json exposure.sedatives
-    (column and unit), covariates.json dose_units (how to convert it) and
+    config.json (the category to load), protocol.json exposure.sedatives
+    (column and unit), protocol.json dose_units (how to convert it) and
     outlier_config.json (its bounds). Any one of those missing is a silent
     partial application: the run still exits 0 and the column is empty, wrong,
     or unbounded.
     """
-    cfg = json.loads((REPO / "config" / "config.json").read_text()) \
+    cfg = json.loads((REPO / "config" / "protocol.json").read_text()) \
         if (REPO / "config" / "config.json").exists() else TEMPLATE
     cats = cfg["medications"]["other_sedative_categories"]
     spec = COV["exposure"]["sedatives"]
@@ -312,14 +316,13 @@ def test_the_extended_grid_is_labelled_while_nothing_consumes_it():
             "nothing reads the extended grid keys, so windows.extended must carry "
             "a _STATUS saying it is declared and not produced"
         )
-        for f in (REPO / "config" / "config.json",
-                  REPO / "config" / "config_template.json"):
-            if not f.exists():
-                continue
-            cohort = json.loads(f.read_text())["cohort"]
-            assert cohort.get("_comment_extended_grid"), (
-                f"{f.name} declares extended_* with no note that nothing reads them"
-            )
+        # cohort.* moved out of the site config into protocol.json on
+        # 2026-10-26, so there is now exactly ONE copy to check rather than a
+        # live file and a template that could disagree -- which they did, on
+        # imv_episode_gap_hours.
+        assert COV["cohort"].get("_comment_extended_grid"), (
+            "protocol.json declares extended_* with no note that nothing reads them"
+        )
 
 
 def test_every_declared_variable_is_documented():
@@ -338,7 +341,7 @@ def test_every_declared_variable_is_documented():
 
 def test_small_cell_thresholds_do_not_contradict_the_site_config():
     pattern_min = COV["missing_values"]["reporting"]["pattern_min_cell"]
-    site_min = TEMPLATE["reporting"]["small_cell_min_den"]
+    site_min = COV["reporting"]["small_cell_min_den"]
     assert pattern_min >= site_min, (
         f"pattern_min_cell={pattern_min} is below the site config's "
         f"small_cell_min_den={site_min}, so pattern reporting would be the laxer of the two"
@@ -362,7 +365,7 @@ def test_the_dose_band_cuts_are_read_from_the_config_not_hardcoded():
     for name, text in consumers.items():
         assert "DS_SPEC" in text and "dose_states" in text, (
             f"{name} calls derive_dose_states but never reads "
-            f"exposure.dose_states from covariates.json")
+            f"exposure.dose_states from protocol.json")
         for c in cuts:
             assert f"c({c}" not in text and f", {c})" not in text, (
                 f"{name} appears to hardcode the band edge {c}; read it from "
@@ -378,7 +381,7 @@ def test_derive_dose_states_refuses_a_default_cut():
     assert "cuts," in sig or sig.rstrip().endswith("cuts"), sig
     assert "cuts =" not in sig, (
         "derive_dose_states must take `cuts` with NO default -- see "
-        "covariates.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE")
+        "protocol.json exposure.dose_states._cuts_MUST_BE_ABSOLUTE")
 
 
 def test_the_dose_band_variable_is_produced_by_phase_0():
@@ -414,7 +417,7 @@ def test_the_exemplar_selection_rule_is_declared_and_consumed():
     reach the code that applies it.
     """
     spec = COV.get("exemplar")
-    assert spec is not None, "covariates.json must declare an `exemplar` block"
+    assert spec is not None, "protocol.json must declare an `exemplar` block"
 
     build = (REPO / "code" / "01_build_cohort.py").read_text()
     figure = (REPO / "code" / "03_exemplar.R").read_text()
@@ -433,7 +436,7 @@ def test_the_exemplar_selection_rule_is_declared_and_consumed():
         "weighted score needs weights nobody can defend, and hand-picking "
         "reintroduces the bias the rule exists to remove")
     for k in ("require_extubated_by_hours", "min_continuous_hours",
-              "min_boluses", "min_rass_observations", "min_nvps_observations"):
+              "min_boluses", "min_rass_observations", "min_pain_observations"):
         assert k in spec, f"exemplar rule is missing {k}"
         assert isinstance(spec[k], int) and spec[k] >= 0, (
             f"exemplar.{k} must be a non-negative integer, got {spec[k]!r}")
@@ -451,7 +454,7 @@ def test_the_exemplar_figure_breaks_the_step_at_the_locf_cap():
     figure = (REPO / "code" / "03_exemplar.R").read_text()
     assert "COV$time_varying$rass$locf$cap_hours" in figure, (
         "03_exemplar.R must read the step-breaking threshold from the same "
-        "covariates.json key Phase 0 caps LOCF with, never restate it")
+        "protocol.json key Phase 0 caps LOCF with, never restate it")
     assert COV["time_varying"]["rass"]["locf"]["cap_hours"] == \
            COV["time_varying"]["nvps"]["locf"]["cap_hours"], (
         "rass and nvps must share one cap, or the two panels break at different "
@@ -464,7 +467,7 @@ def test_the_titration_rule_is_declared_and_consumed():
     key must reach the code that applies it -- the same check that caught
     `require_extubated_by_hours` declared and never read."""
     spec = COV.get("titration")
-    assert spec is not None, "covariates.json must declare a `titration` block"
+    assert spec is not None, "protocol.json must declare a `titration` block"
 
     build = (REPO / "code" / "01_build_cohort.py").read_text()
     figure = (REPO / "code" / "05_titration.R").read_text()
@@ -506,7 +509,7 @@ def test_the_table1_stratification_is_declared_and_ordered():
     must hold or the strata mean something other than what the text will claim.
     """
     spec = COV.get("predominant_intensity")
-    assert spec is not None, "covariates.json must declare predominant_intensity"
+    assert spec is not None, "protocol.json must declare predominant_intensity"
 
     # 1. it reuses the SAME bands the state figures use, so the two cannot drift
     assert spec["bands_from"] == "exposure.dose_states"
@@ -561,7 +564,7 @@ def test_the_unit_variation_rule_is_declared_and_consumed():
     declared key must reach the code that applies it -- the same check that
     caught `require_extubated_by_hours` declared and never read."""
     spec = COV.get("unit_variation")
-    assert spec is not None, "covariates.json must declare a `unit_variation` block"
+    assert spec is not None, "protocol.json must declare a `unit_variation` block"
 
     build = (REPO / "code" / "01_build_cohort.py").read_text()
     figure = (REPO / "code" / "06_unit_variation.R").read_text()
@@ -572,7 +575,7 @@ def test_the_unit_variation_rule_is_declared_and_consumed():
         f"Either consume them or delete them.")
 
     assert spec["bootstrap_resamples"] > 0
-    assert spec["min_events_per_unit"] >= TEMPLATE["reporting"]["small_cell_min_den"], (
+    assert spec["min_events_per_unit"] >= COV["reporting"]["small_cell_min_den"], (
         "min_events_per_unit must clear reporting.small_cell_min_den, which is "
         "the disclosure floor, not a suggestion")
     assert "care_setting" in spec["unit_keys"], (
@@ -701,7 +704,7 @@ def test_the_caterpillar_caption_refuses_to_be_read_as_a_ranking():
 # silently unreachable -- the analysis would run and report a clean zero.
 INSTRUMENT_RANGE = {
     "NVPS": (0, 10),      # Non-Verbal Pain Scale
-    "CPOT": (0, 8),       # Critical-Care Pain Observation Tool
+    "cpot_total": (0, 8), # Critical-Care Pain Observation Tool (mCIDE spelling)
     "RASS": (-5, 4),      # Richmond Agitation-Sedation Scale
     "PAINAD": (0, 10),    # Pain Assessment in Advanced Dementia
     "BPS": (3, 12),       # Behavioural Pain Scale
@@ -709,15 +712,20 @@ INSTRUMENT_RANGE = {
 
 
 def test_the_indication_rule_is_declared_and_consumed():
-    """Phase 0 decides what to read and export; the R script applies the
-    thresholds. Every declared key must reach one of them."""
-    spec = COV.get("indication")
-    assert spec is not None, "covariates.json must declare an `indication` block"
+    """Phase 0 decides what to read and export; the R scripts apply the
+    thresholds and label the panels. Every declared key must reach one of them.
 
-    build = (REPO / "code" / "01_build_cohort.py").read_text()
-    figure = (REPO / "code" / "05_titration.R").read_text()
+    03_exemplar.R joined the consumer list on 2026-10-26 with
+    instrument_display_names, which is a figure label rather than a threshold --
+    the first indication key consumed outside the titration path.
+    """
+    spec = COV.get("indication")
+    assert spec is not None, "protocol.json must declare an `indication` block"
+
+    consumers = [(REPO / "code" / f).read_text() for f in
+                 ("01_build_cohort.py", "05_titration.R", "03_exemplar.R")]
     live = {k for k in spec if not k.startswith("_")}
-    unread = {k for k in live if k not in build and k not in figure}
+    unread = {k for k in live if not any(k in c for c in consumers)}
     assert not unread, (
         f"indication keys declared but read by nothing: {sorted(unread)}. "
         f"Either consume them or delete them.")
@@ -747,28 +755,66 @@ def test_the_primary_indication_window_is_in_the_sensitivity_sweep():
         "a window wider than the observation grid cannot be evaluated")
 
 
-def test_an_optional_instrument_is_never_declared_as_a_covariate():
-    """assessment_covariates() raises SystemExit when a declared category
-    matches no rows -- correct for a required covariate, fatal for an optional
-    site-specific instrument. CPOT is not charted at UCMC, so declaring it in
-    time_varying would kill the build here."""
+def test_a_site_specific_instrument_is_declared_site_optional():
+    """A pain instrument may be a covariate, but only if it is site_optional.
+
+    assessment_covariates() raises SystemExit when a declared category matches
+    no rows. That is right for RASS or lactate -- a broken extract -- and wrong
+    for one of several instruments measuring the same construct, where which one
+    is charted is a fact about the site. Until 2026-10-26 the rule here was
+    "never declare an optional instrument as a covariate", which kept the build
+    alive at UCMC by leaving CPOT out of time_varying entirely. That inverted
+    once site_optional existed: the instruments SHOULD be covariates, and the
+    flag is what makes an absent one a loud all-NA column rather than a dead run.
+    """
     spec = COV["indication"]
-    both = {**spec["pain_instruments"], **spec["sedation_instruments"]}
-    declared_as_covariate = {
-        v["source"]["category"]
-        for k, v in COV["time_varying"].items()
-        if not k.startswith("_") and (v.get("source") or {}).get("table") == "assessments"
-    }
-    optional = set(both) - declared_as_covariate
-    assert optional, (
-        "every indication instrument is also a required time_varying covariate, "
-        "so the tolerant path is never exercised -- check this is intended")
-    # RASS and NVPS are legitimately both; the point is that the set is not
-    # forced to overlap, and that anything site-specific stays out.
-    assert "CPOT" not in declared_as_covariate, (
-        "CPOT is declared as a time_varying covariate. assessment_covariates() "
-        "raises on a category matching no rows, and CPOT is not charted at "
-        "every site -- this would fail the build wherever it is absent.")
+    pain = set(spec["pain_instruments"])
+    assess = {k: v for k, v in COV["time_varying"].items()
+              if not k.startswith("_")
+              and (v.get("source") or {}).get("table") == "assessments"}
+
+    for name, v in assess.items():
+        if v["source"]["category"] in pain:
+            assert v.get("site_optional") is True, (
+                f"time_varying.{name} sources a PAIN instrument "
+                f"({v['source']['category']}), which not every CLIF site charts, "
+                f"but is not marked site_optional -- the build would die wherever "
+                f"it is absent")
+
+    # The converse: the flag is not a licence to soften a required covariate.
+    for name, v in assess.items():
+        if v.get("site_optional"):
+            assert v["source"]["category"] in pain, (
+                f"time_varying.{name} is site_optional but is not one of the "
+                f"declared pain instruments. The tolerance exists for "
+                f"interchangeable instruments only; loosening anything else hides "
+                f"a broken extract.")
+
+    # And at least one, or there is no analgesia signal to be optional about.
+    assert pain & {v["source"]["category"] for v in assess.values()}, (
+        "no declared pain instrument is carried as a covariate at all")
+
+
+def test_assessment_bounds_match_the_published_instrument_ranges():
+    """outlier_config bounds and the published scale must agree.
+
+    The exemplar figure takes its pain axis from the outlier bound, so a wrong
+    bound is a mislabelled axis as well as a wrong filter. These ranges were
+    hardcoded a second time in code/03_exemplar.R until 2026-10-26.
+    """
+    bounds = json.loads((REPO / "config" / "outlier_config.json").read_text())
+    pa = bounds["analysis_unit_bounds"]["patient_assessments"]
+    for name, (lo, hi) in INSTRUMENT_RANGE.items():
+        if name not in pa:
+            continue
+        assert tuple(pa[name]) == (float(lo), float(hi)), (
+            f"outlier_config bounds {name} at {pa[name]} but the published scale "
+            f"is [{lo}, {hi}]")
+    for name in COV["indication"]["pain_instruments"]:
+        assert name in pa, (
+            f"{name} is a declared pain instrument with no analysis_unit_bounds "
+            f"entry -- outliers.py passes an unbounded category straight through, "
+            f"and the exemplar axis has no range to read")
 
 
 def test_the_renamed_unit_figures_are_retired_not_orphaned():

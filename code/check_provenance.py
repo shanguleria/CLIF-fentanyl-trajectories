@@ -6,7 +6,7 @@ every directory in there carries a provenance.json.
 
     python code/check_provenance.py uploads/ucmc uploads/rush uploads/nu
 
-Protocol divergence (covariates.json, outlier_config.json, definition_version)
+Protocol divergence (protocol.json, outlier_config.json, definition_version)
 makes a pooled result meaningless and exits non-zero. Code divergence is
 reported but does NOT fail: a site may have had to extend _to_mcg_hr with a
 locally charted dose unit to run at all. The per-file digests name what changed

@@ -283,7 +283,7 @@ def test_the_three_reasons_partition_the_absent_windows():
 def test_extubation_is_a_gap_longer_than_the_success_window():
     """The rule is 'not followed by reintubation within 72h', so an IMV record
     whose next record is >72h later marks an extubation."""
-    succ_h = B.CONFIG["outcomes"]["successful_extubation_hours"]
+    succ_h = B.COV["outcomes"]["successful_extubation_hours"]
     hr = pd.Series([0.0, 4.0, 8.0, 200.0])
     nxt = hr.shift(-1)
     is_ext = nxt.isna() | ((nxt - hr) > succ_h)
@@ -293,7 +293,7 @@ def test_extubation_is_a_gap_longer_than_the_success_window():
 
 
 def test_a_brief_gap_is_reintubation_not_extubation():
-    succ_h = B.CONFIG["outcomes"]["successful_extubation_hours"]
+    succ_h = B.COV["outcomes"]["successful_extubation_hours"]
     hr = pd.Series([80.0, 80.0 + succ_h - 1])
     nxt = hr.shift(-1)
     is_ext = nxt.isna() | ((nxt - hr) > succ_h)
@@ -305,7 +305,7 @@ def test_a_brief_gap_is_reintubation_not_extubation():
 def test_outcome_cannot_be_read_from_the_window_grid():
     """The grid ends at the landmark, so nothing in it is post-landmark. This is
     the bug that made every block censored on the first real run."""
-    T = B.CONFIG["cohort"]["landmark_hours"]
+    T = B.COV["cohort"]["landmark_hours"]
     last_window_start = (B.N_WINDOWS - 1) * B.WINDOW_H
     assert last_window_start < T, (
         f"the grid's last window starts at {last_window_start}h and the landmark is "
@@ -647,7 +647,7 @@ def test_assessment_covariates_applies_the_declared_summary_per_variable():
 
 
 def test_assessment_covariates_raises_on_a_rule_outside_the_vocabulary():
-    """covariates.json summary_rules says an unlisted rule must raise, not
+    """protocol.json summary_rules says an unlisted rule must raise, not
     default. This is the one place that promise is load-bearing: pandas .agg
     accepts "median" happily, so an undeclared rule would produce numbers while
     violating the protocol, and nothing downstream would report it."""
@@ -694,7 +694,7 @@ def test_assess_needed_covers_every_declared_assessment_plus_the_sofa_input():
 
 
 def test_the_extubated_gap_rule_zeroes_dose_and_keeps_the_pre_gate_value():
-    """The extubated-gap rule was DECLARED in covariates.json and never applied
+    """The extubated-gap rule was DECLARED in protocol.json and never applied
     until 2026-09-07. The gate must fire, must fire only on alive-admitted
     not-ventilated windows, and must leave total_dose_ungated recoverable --
     that column is what makes the decision reversible without another run."""
@@ -736,7 +736,7 @@ def test_the_gate_does_not_reach_windows_with_no_ventilation_record():
 # curve, the intensity bands, zero_fraction and the delivery states. Until
 # 2026-09-24 it had NO test of its own -- 57 tests in this file, none of which
 # called it -- and it had been taking the MAXIMUM rate per hour while
-# covariates.json declared the LAST. These pin every rule it is supposed to obey.
+# protocol.json declared the LAST. These pin every rule it is supposed to obey.
 
 _GBASE = pd.Timestamp("2026-01-01 00:00")
 
@@ -763,12 +763,12 @@ def _grid_inputs(records, followup_h=B.EXTENT_H):
 def _rates(records, **kw):
     t, mapping, cohort = _grid_inputs(records, **kw)
     g = B.infusion_grid(t, mapping, cohort,
-                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+                        B.COV["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
     return g.sort_values("hr")["rate"].tolist()
 
 
 def test_the_hourly_cell_takes_the_last_rate_not_the_highest():
-    """covariates.json exposure.infusion.algorithm: 'Take the LAST charted rate
+    """protocol.json exposure.infusion.algorithm: 'Take the LAST charted rate
     per (block, hour), stable-sorted on (time, value).'
 
     Sorting on value instead of time returns the MAXIMUM, which is what this
@@ -798,13 +798,13 @@ def test_a_row_charted_not_administered_is_not_drug_given():
     t, mapping, cohort = _grid_inputs([(0, 5, 100.0, "held")])
     assert t["mac"].loc[0, "mar_action_group"] == "not_administered"
     g = B.infusion_grid(t, mapping, cohort,
-                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+                        B.COV["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
     assert g.sort_values("hr")["rate"].iloc[0] == 0.0, (
         "a rate charted as not administered must not count as drug given")
 
 
 def test_the_grid_carries_forward_only_as_far_as_the_declared_hold():
-    """hold_hours comes from covariates.json exposure.infusion.hold_hours; a
+    """hold_hours comes from protocol.json exposure.infusion.hold_hours; a
     hardcoded carry is how the config silently stops governing the pipeline."""
     hold = B.INF_HOLD_H
     r = _rates([(0, 0, 100.0, "start"), (hold + 6, 0, 100.0, "verify")])
@@ -847,7 +847,7 @@ def test_the_carry_forward_never_crosses_an_encounter_block():
                             {"hospitalization_id": "h1", "encounter_block": 2}])
     cohort = pd.concat([cohort, cohort.assign(encounter_block=2)], ignore_index=True)
     g = B.infusion_grid(t, mapping, cohort,
-                        B.CONFIG["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
+                        B.COV["medications"]["opioid_infusion_categories"], B._to_mcg_hr)
     other = g[g["encounter_block"] == 2]["rate"]
     assert (other == 0.0).all(), "one block's infusion must never bleed into another"
 
@@ -917,7 +917,7 @@ def test_an_open_ended_stay_runs_to_the_end_of_the_grid():
 
 def test_a_multi_unit_episode_keeps_every_unit():
     """11% of ICU hospitalizations touch more than one unit. Reducing them to one
-    label is the loss covariates.json records under
+    label is the loss protocol.json records under
     _DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE."""
     hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 20.0),
                                ("b0", "N03E", "surgical_icu", 20.0, 48.0)])

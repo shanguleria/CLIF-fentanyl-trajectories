@@ -107,7 +107,7 @@ SERIES_COLOURS <- c(
 # The intensity-band definition. The four bands ARE ordered, so they get a
 # sequential ramp rather than categorical hues, and the three terminal states
 # are inherited from above so the two state figures agree about what leaving
-# the cohort looks like. Labels come from covariates.json via the caller --
+# the cohort looks like. Labels come from protocol.json via the caller --
 # never restated here, or a consortium change to the band names would silently
 # grey every band.
 dose_palette <- function(labels) {

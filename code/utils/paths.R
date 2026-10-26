@@ -87,7 +87,7 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
 # exactly or the two languages stamp different digests for the same tree;
 # tests/test_paths.py asserts they agree.
 CODE_GLOBS <- c("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
-PROTOCOL_FILES <- c("covariates.json", "outlier_config.json")
+PROTOCOL_FILES <- c("protocol.json", "outlier_config.json")
 SITE_CONFIG <- "config.json"
 
 # sha256 of a STRING. tools::sha256sum only takes file paths, and `digest` is not

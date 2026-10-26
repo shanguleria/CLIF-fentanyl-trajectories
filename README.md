@@ -13,8 +13,10 @@ The pipeline is **descriptive**: cohort-level dosing curves with balanced-panel
 overlays, delivery-state prevalence and transitions, and a landmarked view of the
 first 72 hours.
 
-**Definitions live in `config/`.** `covariates.json` is the covariate and
-exposure protocol, `outlier_config.json` the bounds; both are tracked, both
+**Definitions live in `config/`.** `protocol.json` is the protocol — the
+cohort rules, the exposure, the covariates, the medication vocabulary, the
+outcome definitions and the reporting parameters — and `outlier_config.json` the
+bounds; both are tracked, both
 carry their rationale in `_why` keys, and both are the source of truth for any
 question about what a number means. The project's guiding principles, the
 literature and the design notes are kept outside the repository.
@@ -64,13 +66,13 @@ outlier bound — a test fails if any of the four is missing.
 | Table | Fields | Categorical values used |
 |---|---|---|
 | `respiratory_support` | `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `tracheostomy` | `device_category` = `IMV` defines ventilated windows; `Trach Collar` and the `tracheostomy` (0/1) flag identify tracheostomy |
-| `patient_procedures` | `hospitalization_id`, `procedure_code`, `procedure_code_format`, `procedure_billed_dttm` | `ICD10PCS` / `CPT` cross-check on tracheostomy timing |
+| `patient_procedures` | — | **Not read, and not required.** Named in the *tabled* tracheostomy rule as a supporting identification route. It was listed in `tables_in_use` until 2026-10-26 with no consumer anywhere in `code/`, which failed the preflight at a site that lacks the table for no analytic reason. Add it back when that rule is implemented |
 
 ### Covariates
 
 Every covariate's window-aggregation rule and missingness class is declared in
-**[`config/covariates.json`](config/covariates.json)** and mirrored in design
-notes §11. That file is the source of truth; `tests/test_covariates.py` enforces
+**[`config/protocol.json`](config/protocol.json)** and mirrored in design
+notes §11. That file is the source of truth; `tests/test_protocol.py` enforces
 its internal consistency.
 
 | Table | Fields | Used for |
@@ -81,7 +83,7 @@ its internal consistency.
 | `respiratory_support` | **all columns** | FiO₂ waterfall + `device_category` for `imv_status`. Load every column — the waterfall needs `device_name`, `mode_category`, `lpm_set`, `peep_set` to build its blocks |
 | `crrt_therapy` | `hospitalization_id`, `recorded_dttm`, `crrt_mode_category` | `crrt_status`. **Point-in-time table, no start/stop** — interval reconstruction, not a lookup |
 | `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format`, `poa_present` | Charlson Comorbidity Index |
-| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); `RASS` → `rass` (**min**, deepest sedation in the window); `NVPS` → `nvps` (**max**, worst pain). Both are ordinal, so neither is averaged — see design notes §11. **Category names are matched literally and are case-sensitive**: UCMC charts `RASS` and `NVPS` capitalised but `gcs_total` lowercase. **Also the indication instruments** declared in `covariates.json` → `indication`: `NVPS` (≥4) and `CPOT` (≥3) for pain, `RASS` (≥+1) for agitation, used to ask whether a dose change had a documented trigger. These are read through a **tolerant** path — a declared instrument that is not charted prints a zero-record line and the build continues, unlike a `time_varying` covariate, which raises. CPOT is not charted at UCMC |
+| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category`, `numerical_value` | `gcs_total` (SOFA CNS); `RASS` → `rass` (**min**, deepest sedation in the window); and **whichever pain instrument the site charts** → `nvps` / `cpot_total` / `bps` (**max**, worst pain). All are ordinal, so none is averaged. **Also the indication instruments** in `protocol.json` → `indication`: `NVPS` (≥4), `cpot_total` (≥3), `BPS` (≥6) for pain and `RASS` (≥+1) for agitation, used to ask whether a dose change had a documented trigger — see [Pain instruments across sites](#pain-instruments-across-sites) |
 | `patient` | `patient_id`, `sex_category`, `race_category` | sex; **race — Table 1 reporting only, not a model covariate** |
 | `adt` | `hospitalization_id`, `hospital_id`, `hospital_type`, `in_dttm`, `out_dttm`, `location_category`, `location_name`, `location_type` | `hospital_id_admission` / `_discharge` and encounter stitching; **`hospital_id` is required by `stitch_encounters`**. The `location_*` trio was added 2026-09-30 and feeds `icu_intervals.parquet`, which credits each titration event to the unit the patient was in when it was charted. **It is a STRATIFIER, never a cohort filter**: "in the ICU" is still proxied by `imv_status` wherever an at-risk denominator needs it, and no episode is excluded for its location |
 
@@ -92,7 +94,7 @@ still intubated has one ventilation episode. Without stitching that trajectory i
 truncated at the transfer. See design notes §11.
 
 **Two clifpy cautions**, both verified against 0.3.8 in this repo's `.venv` and
-documented in `covariates.json`:
+documented in `protocol.json`:
 
 - `compute_sofa_polars` must be called with `fill_na_scores_with_zero=False`, and
   its cardiovascular component ignores vasopressin, phenylephrine, angiotensin
@@ -101,6 +103,57 @@ documented in `covariates.json`:
 - `convert_dose_units_by_med_category` does **not** null a dose it cannot
   convert — it returns the raw value and reports the failure in the unit string.
   Guard the unit string and raise. See design notes §11.
+
+### Pain instruments across sites
+
+**UCMC charts NVPS; most other CLIF sites chart CPOT.** The pipeline does not
+assume either. Three behavioural pain instruments are declared, each cut at its
+own conventional threshold, and a site populates whichever it uses:
+
+| `assessment_category` | scale | threshold | covariate |
+|---|---|---|---|
+| `NVPS` | 0–10 | ≥ 4 | `nvps` |
+| `cpot_total` | 0–8 | ≥ 3 | `cpot_total` |
+| `BPS` | 3–12 | ≥ 6 (the convention is "> 5") | `bps` |
+
+Three things make this work, and all three were broken before 2026-10-26:
+
+1. **The names are CLIF mCIDE values, matched literally.** The mCIDE does not
+   capitalise uniformly: `NVPS`, `RASS`, `PAINAD` and `BPS` are upper case while
+   the CPOT family is lower case (`cpot_total`, plus four `cpot_*` sub-scores).
+   `protocol.json` declared `"CPOT"` — not a permissible value — for four weeks,
+   which at a CPOT site would have matched zero rows, printed a reassuring *"not
+   charted here"*, passed the ≥1-instrument guard **because RASS was present**,
+   and reported the pain half of the indication metric as a silent zero.
+   `check_config.py` now validates every declared category against clifpy's
+   packaged schema in the preflight, so this cannot survive a run.
+2. **The covariates are `site_optional`.** `assessment_covariates()` raises on a
+   declared category matching no rows — right for RASS or lactate, which means a
+   broken extract, and fatal for one of three interchangeable instruments. The
+   pain covariates carry `site_optional: true`: an absent one prints a loud
+   zero-record line and becomes an **all-NA column**, which must still exist
+   because `assert_config_is_honoured()` requires every declared key to reach a
+   column. **At least one must be present or the build refuses** — a site with no
+   analgesia signal at all must not produce a silent all-NA pain panel.
+3. **The figure takes its scale from config.** `03_exemplar.R` reads the
+   instrument's range from `outlier_config.json` → `analysis_unit_bounds`, so a
+   CPOT trace is drawn on a 0–8 axis. It was hardcoded to NVPS's 0–10, which
+   would have labelled ticks at 9 and 10 that no CPOT value can reach — a wrong
+   figure with no error. The axis title comes from
+   `indication.instrument_display_names` ("CPOT", not `cpot_total`).
+
+`PAINAD` is charted at UCMC on 45.2% of episodes and is **deliberately excluded**:
+it scores pain in dementia, and mixing it into the pain class mixes two
+constructs. Raw scores are never pooled or averaged across instruments — the
+scales are not comparable. Dichotomising each at its own threshold is exactly
+what makes them combinable: after the cut, every instrument contributes the same
+yes/no.
+
+**Adding a fourth instrument** is a config change in three places and no code:
+`indication.pain_instruments` (threshold), `indication.instrument_display_names`
+(panel label), a `time_varying` entry with `site_optional: true` plus membership
+in `missing_values.time_varying.members`, and an `analysis_unit_bounds` entry.
+`tests/test_protocol.py` fails if you miss any of them.
 
 ## Cohort identification
 
@@ -127,20 +180,30 @@ One config file, one site, one data source — the standard CLIF layout. To run
 against a different source (a MIMIC-to-CLIF conversion, say), edit `site_name`,
 `data_directory` and `dataset_version` in this file; there is no second code path.
 
-**`config/covariates.json` is a different kind of file and is committed.** It
-holds the covariate protocol — every variable's source, window-aggregation rule,
-LOCF cap and missingness class — and carries its own `definition_version`, which
-is stamped onto shareable outputs. The test for what belongs there: *if two sites
-set this differently, is the pooled result still meaningful?* If no, it is
-protocol. Nothing estimand-defining may live only in the gitignored
-`config.json`.
+**`config/protocol.json` is a different kind of file and is committed.** It
+holds the whole protocol: every variable's source, window-aggregation rule, LOCF
+cap and missingness class, **and** the cohort rules, outcome definitions,
+medication vocabulary, model and reporting parameters. It carries its own
+`definition_version`, which is stamped onto shareable outputs. The test for what
+belongs there: *if two sites set this differently, is the pooled result still
+meaningful?* If no, it is protocol.
+
+Those last five blocks — `cohort`, `outcomes`, `medications`, `model`,
+`reporting` — lived in `config.json` until 2026-10-26. Because that file is
+gitignored and is deliberately excluded from `PROTOCOL_FILES`, the parameters
+that *define the cohort* were invisible to the only mechanism that proves two
+sites ran the same protocol: a site could change `imv_episode_gap_hours`, build a
+different cohort, and `check_provenance.py` would still report agreement. The
+file said so itself and then held the estimand. Now `config.json` is site
+identity only, and **nothing estimand-defining can live there** because there is
+nothing estimand-defining left in it.
 
 The suite is the preflight in `run_pipeline.sh` / `.ps1`, which runs these in
 order and stops on the first failure. `pytest tests/` runs them all at once.
 
 ```bash
 .venv/bin/python code/check_config.py        # the site config is usable at all
-.venv/bin/python tests/test_covariates.py    # the covariate protocol is internally consistent
+.venv/bin/python tests/test_protocol.py    # the covariate protocol is internally consistent
 .venv/bin/python tests/test_fio2.py          # FiO2 unit handling (percent vs fraction)
 .venv/bin/python tests/test_outliers.py      # outlier bounds, both layers
 .venv/bin/python tests/test_waterfall_cache.py  # the cache key covers every input
@@ -162,6 +225,8 @@ The first block is the consortium-standard CLIF header. `data_directory`,
 `filetype` and `timezone` are the names **clifpy itself requires**, so this file
 is handed to the library with no translation layer.
 
+**`config/config.json` — site identity. Edit all of this.**
+
 | Key | Meaning |
 |---|---|
 | `site_name` | site identifier stamped on every shareable output |
@@ -170,26 +235,33 @@ is handed to the library with no translation layer.
 | `data_directory` | absolute path to the directory holding `clif_<table>.parquet` |
 | `filetype` | `parquet` or `csv`; passed straight to clifpy |
 | `timezone` | your site's local zone. Every window is a wall-clock interval, so this shifts results if wrong |
-| `tables_in_use` | CLIF tables loaded by Phase 0, and the set `check_config.py` verifies |
-| `medications.*` | `med_category` values in **your** vocabulary — probe your data first |
+| `tables_in_use` | CLIF tables loaded by Phase 0, and the set `check_config.py` verifies by filename |
+| `dose_unit_aliases` | **your** free-text `med_dose_unit` strings → the canonical bolus units. `med_dose_unit` has no mCIDE, so this is the one estimand-affecting thing that is irreducibly site-specific. UCMC maps `"mcg of opiate"` → `mcg`. An unmapped unit carrying a dose is reported and nulled, and a nulled bolus reads downstream as *no bolus given* — **so read the Phase 0 bolus report before trusting the co-administration numbers at a new site** |
+
+**`config/protocol.json` — the estimand. Do not edit any of this to make a run
+work.** If two sites set these differently the pooled result is not meaningful,
+and `check_provenance.py` exits non-zero on divergence.
+
+| Key | Meaning |
+|---|---|
+| `medications.*` | `med_category` values. These **are** mCIDE-controlled (75 permissible values for continuous, 165 for intermittent, and the two lists differ), so they are the same at every site — what varies is whether your site populates them. Phase 0 asserts they are present and prints what it found; `check_config.py` validates each against the schema for the table that role is read from |
 | `cohort.window_hours` | aggregation window (default 4) |
 | `cohort.landmark_hours` | landmark `T` (default 72) |
+| `cohort.imv_episode_gap_hours` | gap that separates two IMV episodes (default 8) |
+| `cohort.min_imv_hours`, `cohort.min_age` | duration and age floors |
 | `cohort.balanced_panel_hours` | thresholds for the Phase 1 overlays |
-| `cohort.extended_*` | **declared, not consumed.** The 12h/7d descriptive view is deferred; see `covariates.json` `windows.extended._STATUS` |
-| `outcomes.mortality_source` | `discharge_category` (`death_dttm` is unstable) |
-| `outcomes.mortality_categories` | values counted as death; sensitivity set drops `Hospice` |
+| `cohort.extended_*` | **declared, not consumed.** The 12h/7d descriptive view is deferred; see `windows.extended._STATUS` |
+| `outcomes.mortality_categories` | `discharge_category` values counted as death (`death_dttm` is unstable); sensitivity set drops `Hospice` |
 | `outcomes.unresolved_discharge_categories` | censored, **not** counted alive |
+| `outcomes.successful_extubation_hours` | gap after which an extubation counts as successful |
+| `reporting.small_cell_min_den` | the disclosure floor; `unit_variation.min_events_per_unit` must clear it |
+| `indication.*` | pain and sedation instruments, thresholds and the pairing window — see [Pain instruments across sites](#pain-instruments-across-sites) |
 | `model.scaling` | `gbmt` normalization — **0**, see design notes §3 |
-| `model.nstart` | EM random restarts — ≥50, see design notes §7 |
+| `model.seed`, `model.ng_range`, `model.polynomial_degree` | trajectory-model settings; used only by the **tabled** scripts in `code/tabled/` |
 
 **`clif_version` is always the CLIF *specification* version.** A conversion
 release such as the MIMIC CLIF conversion 1.1.0 belongs in `dataset_version` —
 there is no CLIF spec version 1.1.0.
-
-**`cohort`, `outcomes` and `model` define the estimand.** They are the same at
-every site by design: if two sites set them differently the pooled result is not
-meaningful. Do not edit them to make a run work. `site_name`, `data_directory`,
-`filetype`, `timezone` and `medications` are the parts that legitimately differ.
 
 ### Where outputs land
 
@@ -235,7 +307,7 @@ vacuously.
 complete and current. Every R script calls `require_manifest()` first, which
 refuses to read tables produced by a different code version or a drifted config.
 Note that it digests whole config files, so editing even a comment in
-`config/covariates.json` invalidates the build.
+`config/protocol.json` invalidates the build.
 
 Shareable outputs carry a provenance block from `provenance()` — see
 [Definitions and provenance](#definitions-and-provenance) for the fields and
@@ -289,7 +361,7 @@ yet, and aborted the run before anything could create them.
 |---|---|---|---|
 | 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
 | 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
-| 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and NVPS. The episode is **drawn at random from those meeting the pre-specified rule** in `covariates.json` → `exemplar`, never chosen by inspection |
+| 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and the site's pain score. The episode is **drawn at random from those meeting the pre-specified rule** in `protocol.json` → `exemplar`, never chosen by inspection |
 | 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
 | 4 | R | `code/05_titration.R` | **Titration practice, both halves.** *Response*: how often a rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid, with rate decreases as a negative control. *Indication*: how often an increase or a bolus had a qualifying pain score or agitation within ±1 h, swept to 4 h — a level at each instrument's own threshold, never a change |
 | 5 | R | `code/06_unit_variation.R` | **Variation in both step-4 metrics** — co-administration and documented indication, each split by the ICU unit the patient was in when the event was charted and by calendar year. Caterpillar and funnel views per unit key. Caterpillar intervals are a cluster bootstrap resampling episodes rather than events; funnel limits are unadjusted binomial, with over-dispersion measured into `overdispersion.csv` and applied nowhere. Describes variation; models no association |
@@ -320,10 +392,13 @@ CLIF-fentanyl-trajectories/
 ├── renv.lock                     # R, pinned
 ├── run_pipeline.sh / .ps1
 ├── config/
-│   ├── covariates.json           # committed -- covariate PROTOCOL (definition_version)
+│   ├── protocol.json             # committed -- THE PROTOCOL (definition_version):
+│   │                             #   cohort, outcomes, medications, model, reporting,
+│   │                             #   covariates, exposure, indication, unit_variation
 │   ├── outlier_config.json       # committed -- the only place bounds are written
 │   ├── config_template.json      # committed
-│   └── config.json               # gitignored, site-local
+│   └── config.json               # gitignored -- SITE IDENTITY ONLY: paths, timezone,
+│                                 #   tables_in_use, dose_unit_aliases
 ├── code/
 │   ├── check_config.py           # preflight: is config.json usable?
 │   ├── check_provenance.py       # coordinating centre: did all sites run the same code?
@@ -334,10 +409,10 @@ CLIF-fentanyl-trajectories/
 │   ├── 05_titration.R            # bolus co-administration at uptitration
 │   ├── 06_unit_variation.R       # variation by ICU unit and calendar year
 │   ├── tabled/                   # parked -- not in the runners
-│   │   ├── gbmt_classes.R        # -> output/final_no_phi/gbmt/
-│   │   ├── lcmm_classes.R        # -> lcmm/
-│   │   ├── transition_model.R    # -> transitions/
-│   │   ├── landmark_cohort.R     # -> landmark/   (tabled 2026-09-30)
+│   │   ├── gbmt_classes.R        # -> output/parked/gbmt/
+│   │   ├── lcmm_classes.R        # -> parked/lcmm/
+│   │   ├── transition_model.R    # -> parked/transitions/
+│   │   ├── landmark_cohort.R     # -> parked/landmark/   (tabled 2026-09-30)
 │   │   └── outcomes.R            #    unnumbered: the number line is the live pipeline's
 │   └── utils/
 │       ├── doses.py              # dose unit conversion (not clifpy's)
@@ -351,7 +426,7 @@ CLIF-fentanyl-trajectories/
 │       ├── pooling.R             # federated-pooling exports
 │       └── dependencies.R        # package list for renv's scanner
 ├── tests/
-│   ├── test_covariates.py        # integrity checks on config/covariates.json
+│   ├── test_protocol.py        # integrity checks on config/protocol.json
 │   ├── test_fio2.py              # FiO2 must be a fraction; enforced, not assumed
 │   ├── test_outliers.py          # bounds are applied, and gaps are reported
 │   ├── test_build_cohort.py      # Phase 0 logic on synthetic frames
@@ -362,8 +437,10 @@ CLIF-fentanyl-trajectories/
 ├── output/
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
-│   └── final_no_phi/             # PHI-free: STROBE flow (.csv/.txt/.png), provenance
-│       └── diagnostics/          #   missingness, patterns, counts
+│   ├── final_no_phi/             # THE UPLOAD SET. PHI-free; one dir per script,
+│   │   └── diagnostics/          #   each with a provenance.json
+│   ├── parked/                   # results of code/tabled/ -- NOT uploaded (2026-10-26)
+│   └── dev_synthetic/            # EXEMPLAR_SOURCE=synthetic renders; never real data
 └── logs/                         # gitignored
                                   # NOTE: nothing under output/ is tracked;
                                   # every site generates its own
@@ -403,8 +480,8 @@ Every directory under `output/final_no_phi/` carries a `provenance.json` from
 | `definition_versions` | one entry per protocol file — they are bumped independently |
 | `code_version` | `git describe --always --dirty`; **advisory only** |
 | `code_digest` | SHA-256 over the code the runner executes — the authoritative "same code?" answer |
-| `protocol_digests` | `covariates.json` + `outlier_config.json`; **must be identical across sites** |
-| `site_config_digest` | `config.json`; **expected to differ** (it holds `site_name` and `data_directory`) |
+| `protocol_digests` | `protocol.json` + `outlier_config.json`; **must be identical across sites** |
+| `site_config_digest` | `config.json`; **expected to differ** — it holds `site_name`, `data_directory` and `dose_unit_aliases`. Recorded so the centre can *see* a site's unit normalisation, never compared for equality |
 | `file_digests` | one digest per covered file, so a divergence can be named |
 | `generated` | local timestamp |
 
@@ -453,19 +530,35 @@ contents are aggregate by construction and PHI-checked at assembly.
 1. Clone the repo **at the release tag the study is using** — `git clone` rather
    than a ZIP download, so `code_version` resolves. `cp
    config/config_template.json config/config.json`.
-2. Set `site_name`, `clif_version`, `data_directory`, `filetype` and `timezone`.
-   Leave everything else alone: `cohort`, `outcomes` and `model` in
-   `config.json`, and all of `covariates.json` and `outlier_config.json`, define
-   the measurement. If two sites set them differently the pooled result is not
-   meaningful.
-3. Install pinned dependencies (see Prerequisites). `clifpy` must be the pinned
+2. Set `site_name`, `clif_version`, `dataset_version`, `data_directory`,
+   `filetype` and `timezone`. **`config.json` is site identity only** — if you
+   find yourself wanting to change a number that affects the cohort, it is in
+   `protocol.json` and it is not yours to change. `protocol.json` and
+   `outlier_config.json` define the measurement; if two sites set them
+   differently the pooled result is not meaningful, and `check_provenance.py`
+   will say so.
+3. **Confirm which pain instrument you chart** — `NVPS`, `cpot_total` or `BPS`
+   — and check the exact spelling against the `assessment_category` mCIDE. This
+   is the first thing to differ between sites and the one most likely to be
+   wrong: see [Pain instruments across sites](#pain-instruments-across-sites).
+   You should not need to edit anything; all three are declared. Phase 0 prints
+   a zero-record line for each one you do not chart, and refuses if you chart
+   none.
+4. Install pinned dependencies (see Prerequisites). `clifpy` must be the pinned
    version exactly — its minor releases have changed CLIF datetime tz handling.
-4. Run `python3 code/check_config.py` until it prints `READY.`
-5. Probe your `med_category` values and update `config.medications`.
-6. Run the pipeline. Expect it to halt at least once on something real about
+5. Run `python3 code/check_config.py` until it prints `READY.` It validates every
+   declared category against clifpy's packaged mCIDE schemas, so a misspelled
+   instrument or medication fails here in a second rather than silently matching
+   zero rows for the whole study.
+6. **Check your `med_dose_unit` strings** and add any site-specific spelling to
+   `dose_unit_aliases`. Then run the pipeline and read the Phase 0 bolus report:
+   a dose in an unmapped unit is nulled, and a nulled bolus is indistinguishable
+   downstream from no bolus at all.
+7. Run the pipeline. Expect it to halt at least once on something real about
    your data — an unhandled fentanyl dose unit, a device value outside the
    schema. Those are findings, not obstacles; fix them at the named line rather
    than dropping the rows, and note what you changed.
-7. Review `output/final_no_phi/` and send only that. Its `provenance.json` files
-   are what the coordinating centre uses to confirm every site ran the same
+8. Review `output/final_no_phi/` and send only that — **not** `output/parked/`,
+   `output/intermediate_phi/` or `output/dev_synthetic/`. Its `provenance.json`
+   files are what the coordinating centre uses to confirm every site ran the same
    analysis (`code/check_provenance.py`).

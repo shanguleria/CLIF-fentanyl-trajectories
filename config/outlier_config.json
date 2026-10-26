@@ -1,5 +1,5 @@
 {
-  "definition_version": "0.3.0",
+  "definition_version": "0.4.0",
   "_date": "2026-09-05",
 
   "_purpose": "Single source of truth for outlier bounds. Every bound the pipeline applies comes from this file; no bound is ever hardcoded in a script. Applied by code/utils/outliers.py. Change a bound here and it applies everywhere.",
@@ -44,20 +44,23 @@
       "lpm_set": [0.0, 60.0],
       "peep_set": [0.0, 50.0]
     },
-    "_fio2_note": "This bound is applied AFTER code/utils/fio2.py has decided the column's scale and normalised it to a fraction. Applying it first would null every value at a percent-scale site. See covariates.json time_varying.oxygenation.fio2_scale.",
+    "_fio2_note": "This bound is applied AFTER code/utils/fio2.py has decided the column's scale and normalised it to a fraction. Applying it first would null every value at a percent-scale site. See protocol.json time_varying.oxygenation.fio2_scale.",
 
     "patient_assessments": {
       "gcs_total": [3.0, 15.0],
       "RASS": [-5.0, 4.0],
-      "NVPS": [0.0, 10.0]
+      "NVPS": [0.0, 10.0],
+      "cpot_total": [0.0, 8.0],
+      "BPS": [3.0, 12.0]
     },
-    "_RASS_NVPS_note": "RASS AND NVPS ARE NOW COLLECTED (2026-09-23; covariates.json time_varying.rass / .nvps). The RASS bound predates its collection and was written for exactly this moment; the NVPS bound was added with the collection. BOTH ARE INERT ON TODAY'S UCMC DATA and are kept as latent guards: measured 2026-09-23 over 2.2M cohort rows, RASS spans -5 to 3 and NVPS spans 0 to 10, so neither clips a single value here. Keeping them matters because a category with NO entry does not raise -- outliers.py apply_long() records it in rep.unbounded and passes it through -- so an uncollected-then-collected variable is precisely how an unbounded column arrives silently."
+    "_RASS_NVPS_note": "RASS AND NVPS ARE NOW COLLECTED (2026-09-23; protocol.json time_varying.rass / .nvps). The RASS bound predates its collection and was written for exactly this moment; the NVPS bound was added with the collection. BOTH ARE INERT ON TODAY'S UCMC DATA and are kept as latent guards: measured 2026-09-23 over 2.2M cohort rows, RASS spans -5 to 3 and NVPS spans 0 to 10, so neither clips a single value here. Keeping them matters because a category with NO entry does not raise -- outliers.py apply_long() records it in rep.unbounded and passes it through -- so an uncollected-then-collected variable is precisely how an unbounded column arrives silently."
   },
 
   "med_dose_raw": {
     "_note": "Per (drug, CHARTED unit). Applied BEFORE unit conversion. A drug/unit pair absent here is reported, not silently skipped.",
 
-    "fentanyl":       {"mcg/kg/hr": [0.0, 10.0], "mcg/hr": [0.0, 500.0], "mg/hr": [0.0, 1.0]},
+    "_fentanyl_per_minute_arms": "Added 2026-10-26. _to_mcg_hr in code/01_build_cohort.py converts FIVE charted units and this table bounded only three, so mcg/min and mcg/kg/min passed through UNBOUNDED -- outliers.py apply_long() records a (drug, unit) pair with no entry in rep.unbounded and lets the value stand, so a mis-charted dose survived up to the derived sanity ceiling of 11,000 mcg/hr. Inert at UCMC, which charts neither, and live the moment a site does. The two new values are NOT a fresh clinical judgement: each is its per-hour twin divided by 60, the same limit in a different unit, so no new clinical limit is being asserted. MEASURED EFFECT ON THE DERIVED CEILING: fentanyl_sanity_ceiling() goes from 11000.0 to 11000.22 mcg/hr. It moves because 10/60 and 500/60 are not exact decimals -- at 5 places the per-minute arms imply 11000.22 and 499.9998 rather than exactly 11000 and 500, and the ceiling takes the max. 0.22 mcg/hr on a bound that exists to catch order-of-magnitude charting faults is immaterial, and the alternative -- more decimal places -- only moves the error rather than removing it. Recorded rather than rounded away because the ceiling is asserted against real data at 01_build_cohort.py and a number that silently changed would be the wrong kind of surprise.",
+    "fentanyl":       {"mcg/kg/hr": [0.0, 10.0], "mcg/hr": [0.0, 500.0], "mg/hr": [0.0, 1.0], "mcg/kg/min": [0.0, 0.16667], "mcg/min": [0.0, 8.33333]},
     "propofol":       {"mcg/kg/min": [0.0, 200.0], "mg/hr": [0.0, 400.0], "mg/kg/hr": [0.0, 10.0]},
     "midazolam":      {"mcg/kg/min": [0.0, 10.0], "mg/hr": [0.0, 20.0], "mg/kg/hr": [0.0, 1.0]},
     "dexmedetomidine": {"mcg/kg/hr": [0.0, 4.0], "mcg/kg/min": [0.0, 0.067]},

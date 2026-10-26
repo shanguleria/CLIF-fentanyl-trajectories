@@ -46,16 +46,16 @@ source(here("code", "utils", "figures.R"))
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
 
 config <- fromJSON(here("config", "config.json"), simplifyVector = FALSE)
-set.seed(config$model$seed)
+COV       <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+set.seed(COV$model$seed)
 
-WINDOW_H <- config$cohort$window_hours
-EXTENT_H <- config$cohort$granular_extent_hours
-LANDMARK <- config$cohort$landmark_hours
-GAP_H    <- config$cohort$imv_episode_gap_hours
-MIN_CELL <- config$reporting$small_cell_min_den
-SUCC_H   <- config$outcomes$successful_extubation_hours
+WINDOW_H <- COV$cohort$window_hours
+EXTENT_H <- COV$cohort$granular_extent_hours
+LANDMARK <- COV$cohort$landmark_hours
+GAP_H    <- COV$cohort$imv_episode_gap_hours
+MIN_CELL <- COV$reporting$small_cell_min_den
+SUCC_H   <- COV$outcomes$successful_extubation_hours
 
-COV       <- fromJSON(here("config", "covariates.json"), simplifyVector = FALSE)
 SED_COLS  <- unlist(COV$exposure$sedatives$columns)
 SED_UNITS <- COV$exposure$sedatives$units
 DRUGS <- c(fentanyl = "total_dose",
