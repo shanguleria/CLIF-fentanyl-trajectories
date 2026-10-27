@@ -373,6 +373,41 @@ for (m in METRICS) {
 }
 
 unit_tbl <- do.call(rbind, UNIT)
+
+# ---- the location_name -> care_setting crosswalk -----------------------------
+# A location_name row and a care_setting row are separate row SETS with nothing
+# linking them, and the mapping lives only in care_intervals.parquet, which is
+# PHI-side and never leaves the site. So the coordinating centre cannot tell that
+# N03B is a medical ICU unless the site says so, which is what this column does.
+# It is what lets the combined, anonymised location_name panel be coloured by
+# CARE SETTING rather than by site -- a reader then sees whether medical ICUs
+# cluster high ACROSS hospitals, which is a far stronger claim than "units vary".
+# Added 2026-10-26 (SG) specifically for that figure.
+#
+# No new disclosure: the unit names already ship (SG, 2026-10-26) and
+# care_setting is mCIDE-controlled.
+.xw <- unique(icu[, c("location_name", "care_setting")])
+.multi <- names(which(table(.xw$location_name) > 1L))
+if (length(.multi))
+  # A ward reclassified mid-period maps to two settings. Reported rather than
+  # silently resolved to the first or the modal one: a unit whose setting
+  # changed is a fact about the site, and a figure that colours it one colour is
+  # making a choice someone should have made deliberately.
+  cat(sprintf(paste0("\n  NOTE %d location_name(s) map to more than one ",
+                     "care_setting and ship as 'multiple': %s\n"),
+              length(.multi), paste(.multi, collapse = ", ")))
+XWALK <- stats::setNames(
+  vapply(split(.xw$care_setting, .xw$location_name),
+         function(v) if (length(unique(v)) > 1L) "multiple" else unique(v)[1],
+         character(1)),
+  sort(unique(.xw$location_name)))
+# care_setting rows are their own setting; location_name rows look it up.
+unit_tbl$care_setting <- ifelse(
+  unit_tbl$unit_key == "care_setting", unit_tbl$unit,
+  unname(XWALK[unit_tbl$unit]))
+stopifnot(
+  "a location_name row has no care_setting -- the crosswalk missed a unit" =
+    !any(is.na(unit_tbl$care_setting)))
 year_tbl <- do.call(rbind, YEAR)
 funnel_tbl <- do.call(rbind, FUNNEL)
 rownames(unit_tbl) <- NULL; rownames(year_tbl) <- NULL; rownames(funnel_tbl) <- NULL
@@ -952,9 +987,9 @@ for (m in METRICS) {
 unit_tbl$overall_pct_attributed <- unit_tbl$overall_pct
 year_tbl$overall_pct_all_events <- year_tbl$overall_pct
 
-cols <- c("metric", "unit_key", "unit", "series", "n_events", "n_episodes",
-          "n_paired", "pct_paired", "ci_lo", "ci_hi", "overall_pct_attributed",
-          "deff", "n_suppressed_small_cell")
+cols <- c("metric", "unit_key", "unit", "care_setting", "series",
+          "n_events", "n_episodes", "n_paired", "pct_paired", "ci_lo", "ci_hi",
+          "overall_pct_attributed", "deff", "n_suppressed_small_cell")
 write.csv(unit_tbl[order(unit_tbl$metric, unit_tbl$unit_key,
                          unit_tbl$unit, unit_tbl$series), cols],
           file.path(dirs$phase, "unit_adherence.csv"), row.names = FALSE)

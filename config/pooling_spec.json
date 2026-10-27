@@ -468,17 +468,21 @@
                 "metric",
                 "unit_key",
                 "unit",
+                "care_setting",
                 "series"
             ],
             "numerators": [
                 "n_paired"
             ],
             "denominator": "n_events",
-            "unit_keys_internal_only": [
+            "cluster": "episode",
+            "_why": "SECTION 8.7: NEVER SUMMED BY LABEL, but shipped and used. No pooled row is keyed by a unit name, because the names have no cross-site correspondence. The rows are instead the INPUT to the between-site dispersion statistic and to the replication caterpillar and funnel, where every unit from every site is a point under an anonymised label -- the finer location_name grouping gives 9 units at UCMC against care_setting's 7, and is where the spread shows most. Per-site rows pass through unchanged, with real names.",
+            "unit_keys_not_summed_across_sites": [
+                "care_setting",
                 "location_name"
             ],
-            "cluster": "episode",
-            "_why": "SECTION 8.7: NEVER POOLED BY LABEL. care_setting level sets differ by site by construction and location_name is site-local free text, so a row keyed by unit name cannot be summed across sites. It is instead the INPUT to the between-site dispersion statistic and to F1/F2, where each unit is a point under an anonymised label. The per-site rows pass through unchanged; nothing is summed across a unit name."
+            "_unit_keys_not_summed_why": "BOTH keys, not just location_name. A unit NAME has no counterpart at another site -- UCMC's N03B is not Rush's anything, and care_setting level sets differ by site by construction -- so no pooled row is ever keyed by a unit. The per-site rows pass through with their REAL names, because the centre needs them to sanity-check a site's own grouping and because a ward code is not PHI (SG, 2026-10-26). Anonymisation happens at figure time for an audience, not here. This key replaced one named unit_keys_internal_only, which was both inaccurate -- these rows ship in the upload set -- and DEAD, read by nothing. Listing them is documentation; the engine enforces it through method = heterogeneity_source, which has no summing path at all.",
+            "_care_setting_column_why": "Added 2026-10-26. A location_name row and a care_setting row are separate row sets with nothing linking them, and the mapping lives only in care_intervals.parquet, which is PHI-side -- so the centre cannot derive it and the site has to emit it. This column is what lets the combined, anonymised location_name panel be coloured by CARE SETTING instead of by site, which shows whether medical ICUs cluster high ACROSS hospitals rather than merely that units vary. A care_setting row carries its own setting; a location_name row carries the one it maps to, or 'multiple' where a ward was reclassified mid-period. Part of the key, not a summable column: nothing is ever summed across a unit name."
         },
         "06_unit_variation/year_adherence.csv": {
             "method": "per_site_only",
