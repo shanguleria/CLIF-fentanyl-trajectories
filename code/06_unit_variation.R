@@ -555,6 +555,19 @@ cat("\n")
 PANEL_W_MM <- 160; PANEL_H_MM <- 81
 CHAR_W_MM  <- 1.55; LINE_H_MM <- 3.0
 
+# Leading words EVERY unit label shares (a site that stores the hospital's full name
+# in location_name, e.g. "Rush University Medical Center K08 - ICU") say nothing
+# about which dot is which and cost ~75mm of a 160mm panel. Cut back to a word
+# boundary; a lone unit is left whole.
+strip_common_prefix <- function(lab) {
+  if (length(lab) < 2) return(lab)
+  w <- strsplit(lab, " ", fixed = TRUE)
+  n <- 0
+  while (n < min(lengths(w)) - 1 && length(unique(vapply(w, `[`, "", n + 1))) == 1) n <- n + 1
+  if (n == 0) return(lab)
+  vapply(w, function(x) paste(x[-seq_len(n)], collapse = " "), "")
+}
+
 funnel_labels <- function(x, y, lab, xr, yr) {
   pad <- diff(xr) * 0.14
   xr <- c(xr[1] - pad, xr[2] + pad)
@@ -579,19 +592,19 @@ funnel_labels <- function(x, y, lab, xr, yr) {
   # than moving a label 2mm. Moving is honest as long as the reader can still
   # tell which point a label belongs to, which is what the leader line below is
   # for; refusing stays the behaviour when de-collision cannot converge.
+  # ALL labels are compared, not just those on one side of their points: a label
+  # flipped left and one drawn right can still overlap when both are long (unit
+  # names that carry the hospital's full name run ~75mm of a 160mm panel), and a
+  # per-side pass never looked at that pair.
   sep <- h * 1.15
-  for (side in c(FALSE, TRUE)) {
-    i <- which(flip == side)
-    if (length(i) < 2) next
-    i <- i[order(out$ty[i])]
-    for (a in seq_along(i)[-1]) {
-      cur <- i[a]
-      for (b in seq_len(a - 1)) {
-        prev <- i[b]
-        x_overlap <- !(out$x1[cur] < out$x0[prev] || out$x1[prev] < out$x0[cur])
-        if (x_overlap && (out$ty[cur] - out$ty[prev]) < sep)
-          out$ty[cur] <- out$ty[prev] + sep
-      }
+  i <- order(out$ty)
+  for (a in seq_along(i)[-1]) {
+    cur <- i[a]
+    for (b in seq_len(a - 1)) {
+      prev <- i[b]
+      x_overlap <- !(out$x1[cur] < out$x0[prev] || out$x1[prev] < out$x0[cur])
+      if (x_overlap && (out$ty[cur] - out$ty[prev]) < sep)
+        out$ty[cur] <- out$ty[prev] + sep
     }
   }
   out$y0 <- out$ty - h / 2
@@ -872,7 +885,8 @@ for (m in METRICS) {
                     overall_m, ev_per_ep, key_label(k)),
             od_note))
 
-    lab <- funnel_labels(dcomb$n_events, dcomb$pct_paired, as.character(dcomb$unit),
+    lab <- funnel_labels(dcomb$n_events, dcomb$pct_paired,
+                         strip_common_prefix(as.character(dcomb$unit)),
                          xr = range(grid_n),
                          yr = range(c(lim$lo, lim$hi, dcomb$pct_paired)))
     pl <- house(
