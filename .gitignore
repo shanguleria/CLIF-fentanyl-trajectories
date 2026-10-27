@@ -71,3 +71,6 @@ config/config.json
 
 # ---- local session state (progress log, todo, lessons) ----
 .claude/
+
+# ---- per-site paste snippets for config.json (accepted_unhandled_dose_units) ----
+config/accepted_units_*.json
