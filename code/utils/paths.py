@@ -133,7 +133,6 @@ def provenance(config: dict) -> dict:
     return {
         "site_name": config["site_name"],
         "clif_version": config["clif_version"],          # CLIF SPEC version
-        "dataset_version": config.get("dataset_version", ""),  # conversion/ETL release
         "definition_versions": definition_versions(repo),
         "code_version": sha,
         "code_digest": digest,

@@ -181,7 +181,6 @@ def main() -> int:
     print(f"config          {CONFIG_PATH}")
     print(f"site_name       {cfg.get('site_name')}")
     print(f"clif_version    {cfg.get('clif_version')}  (CLIF spec)")
-    print(f"dataset_version {cfg.get('dataset_version') or '(none)'}")
     print(f"filetype        {filetype}")
     print(f"timezone        {cfg.get('timezone')}")
     print(f"data_directory  {data_dir}")

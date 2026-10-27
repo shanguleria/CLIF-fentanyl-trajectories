@@ -65,13 +65,12 @@ requirements are in [Required CLIF tables and fields](#required-clif-tables-and-
 cp config/config_template.json config/config.json
 ```
 
-Edit six things, and nothing else:
+Edit five things, and nothing else:
 
 | key | what to set |
 |---|---|
 | `site_name` | your site identifier; stamped on every output |
 | `clif_version` | the CLIF **spec** version your tables implement (`2.1.0`) |
-| `dataset_version` | an ETL release if your tables came from one (MIMIC-to-CLIF `1.1.0`); empty for your own data |
 | `data_directory` | absolute path to the directory holding the tables |
 | `filetype` | `parquet` or `csv` |
 | `timezone` | your site's local zone — every analysis window is a wall-clock interval |
@@ -452,7 +451,7 @@ python3 code/check_config.py      # confirms it is usable before you run anythin
 
 One config file, one site, one data source — the standard CLIF layout. To run
 against a different source (a MIMIC-to-CLIF conversion, say), edit `site_name`,
-`data_directory` and `dataset_version` in this file; there is no second code path.
+`data_directory` in this file; there is no second code path.
 
 **`config/protocol.json` is a different kind of file and is committed.** It
 holds the whole protocol: every variable's source, window-aggregation rule, LOCF
@@ -505,7 +504,6 @@ is handed to the library with no translation layer.
 |---|---|
 | `site_name` | site identifier stamped on every shareable output |
 | `clif_version` | the CLIF **spec** version your tables implement |
-| `dataset_version` | conversion/ETL release, if the tables came from one; empty for a site's own data |
 | `data_directory` | absolute path to the directory holding `clif_<table>.parquet` |
 | `filetype` | `parquet` or `csv`; passed straight to clifpy |
 | `timezone` | your site's local zone. Every window is a wall-clock interval, so this shifts results if wrong |
@@ -533,9 +531,14 @@ and `check_provenance.py` exits non-zero on divergence.
 | `model.scaling` | `gbmt` normalization — **0**, see design notes §3 |
 | `model.seed`, `model.ng_range`, `model.polynomial_degree` | trajectory-model settings; used only by the **tabled** scripts in `code/tabled/` |
 
-**`clif_version` is always the CLIF *specification* version.** A conversion
-release such as the MIMIC CLIF conversion 1.1.0 belongs in `dataset_version` —
-there is no CLIF spec version 1.1.0.
+**`clif_version` is always the CLIF *specification* version** — `2.1.0` here.
+A conversion release is **not** a CLIF version: the MIMIC-to-CLIF build 1.1.0
+implements the CLIF 2.x spec, and there is no CLIF spec version 1.1.0. If you are
+running against a conversion, put its release in `site_name`
+(`MIMIC-IV-Ext-CLIF-1.1.0`), which is free text and is stamped on every output.
+A separate `dataset_version` key was removed on 2026-10-26: it applied only to
+MIMIC, was empty at every real site, and an always-empty key in a file every site
+must edit is noise.
 
 ### Where outputs land
 
@@ -686,7 +689,6 @@ Every directory under `output/final_no_phi/` carries a `provenance.json` from
 |---|---|
 | `site_name` | from `config.json` |
 | `clif_version` | the CLIF **spec** version |
-| `dataset_version` | a conversion/ETL release, e.g. a MIMIC build |
 | `definition_versions` | one entry per protocol file — they are bumped independently |
 | `code_version` | `git describe --always --dirty`; **advisory only** |
 | `code_digest` | SHA-256 over the code the runner executes — the authoritative "same code?" answer |

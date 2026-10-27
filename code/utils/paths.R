@@ -169,7 +169,6 @@ provenance <- function(config) {
   list(
     site_name       = config$site_name,
     clif_version    = config$clif_version,     # CLIF SPEC version
-    dataset_version = if (is.null(config$dataset_version)) "" else config$dataset_version,
     definition_versions = definition_versions(root),
     code_version    = if (length(git_sha)) git_sha[1] else "unknown",
     code_digest     = cd$overall,

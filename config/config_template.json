@@ -1,13 +1,10 @@
 {
     "_comment": "Your site's identity and where its CLIF tables are. Copy to config/config.json and edit. Nothing here changes what is measured -- that all lives in config/protocol.json. See the README, 'Run it at your site', step 4.",
-
     "site_name": "YOUR_SITE",
     "clif_version": "2.1.0",
-    "dataset_version": "",
     "data_directory": "/path/to/your/CLIF/tables",
     "filetype": "parquet",
     "timezone": "America/Chicago",
-
     "tables_in_use": [
         "patient",
         "hospitalization",
@@ -21,6 +18,5 @@
         "crrt_therapy",
         "hospital_diagnosis"
     ],
-
     "dose_unit_aliases": {}
 }
