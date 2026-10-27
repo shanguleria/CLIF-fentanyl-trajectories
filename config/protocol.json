@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.7.0",
+    "definition_version": "0.7.1",
     "_date": "2026-09-05",
     "_purpose": "PROTOCOL ONLY. Every value here is identical at every site; anything that legitimately differs by site belongs in config/config.json. This file is the definition_version stamped onto every shareable output, so any change is a protocol amendment that bumps the version. It is TRACKED IN GIT, unlike config/config.json, precisely because a protocol that cannot be shared or version-stamped is not a protocol.",
     "_protocol_test": "The test for whether a value belongs here: if two sites set this differently, is the pooled result still meaningful? If no, it is protocol. (Adopted from CRRT-dose-lmtp/CLAUDE.md:212-213.)",
@@ -837,6 +837,10 @@
             "mcg/min": {
                 "factor": 0.06,
                 "weight": "none"
+            },
+            "mcg/kg/hr": {
+                "factor": 0.001,
+                "weight": "multiply"
             }
         }
     },
