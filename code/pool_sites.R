@@ -70,6 +70,15 @@ dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
 # ---- 1. Read the bundles -----------------------------------------------------
 
 read_bundle <- function(path) {
+  # A site that zips its output/ directory sends the PARENT of final_no_phi, not
+  # its contents -- which is a reasonable reading of "send output/final_no_phi/"
+  # and is what Rush did. Descend one level rather than refusing: the alternative
+  # is a confusing error on a bundle that is completely fine.
+  if (!file.exists(file.path(path, "manifest.json")) &&
+      file.exists(file.path(path, "final_no_phi", "manifest.json"))) {
+    cat(sprintf("  NOTE %s: descending into final_no_phi/\n", basename(path)))
+    path <- file.path(path, "final_no_phi")
+  }
   prov_f <- file.path(path, "manifest.json")
   if (!file.exists(prov_f))
     stop(path, " has no manifest.json -- is it really an output/final_no_phi/ copy?",
@@ -149,11 +158,28 @@ cat(sprintf("  files OK     %d CSV(s), all claimed by the pooling spec\n",
 # per-site rows; anonymisation happens at figure time, not here, because the
 # centre needs the real names to sanity-check a site's own numbers.
 stack_sites <- function(rel, keys) {
-  do.call(rbind, lapply(bundles, function(b) {
+  fr <- Filter(Negate(is.null), lapply(bundles, function(b) {
     d <- b$tabs[[rel]]
     if (is.null(d)) return(NULL)
     cbind(site = b$site, d, stringsAsFactors = FALSE)
   }))
+  if (!length(fr)) return(NULL)
+  # UNION the columns rather than requiring them to match. Nearly every file has
+  # an identical header at every site, but baseline_characteristics.csv embeds
+  # each site's own N in its column NAMES -- "Overall (N = 14,897)" against
+  # "Overall (N = 10,627)" -- so a plain rbind dies with "names do not match
+  # previous names". It is a per-site display table, so the honest result is each
+  # site's rows under its own columns with NA elsewhere, which is lossless and
+  # still reads side by side.
+  #
+  # Found at k = 2, on the first real second bundle. The idempotence test could
+  # not have caught it: with one site there is nothing to disagree with.
+  all_cols <- unique(unlist(lapply(fr, names)))
+  fr <- lapply(fr, function(d) {
+    for (nm in setdiff(all_cols, names(d))) d[[nm]] <- NA
+    d[, all_cols, drop = FALSE]
+  })
+  do.call(rbind, fr)
 }
 
 key_of <- function(d, keys) {
