@@ -688,5 +688,18 @@
     ],
     "_not_poolable_columns_why": "Explicitly NA in the POOLED row, because they are quantities a sum cannot produce. A median has no closed form across sites -- the histogram carries that. A per-site confidence interval and design effect describe THAT site's clustering. pct_indicated_of_assessed has a different denominator (n_assessed) and is recomputed separately rather than summed. Leaving these blank is the honest answer; carrying one site's value into a pooled row would be a lie about what it describes. mean and sd were removed on review: they ARE poolable wherever sum and sum_sq ship, which is exactly what pooling_continuous.csv exists for. In files that carry only a mean they are unpoolable, and the engine's guard reports that per file rather than this list asserting it globally.",
     "_per_file_not_poolable": "A file entry may carry its own `not_poolable` list, unioned with the global one. Poolability is a property of what a file SHIPS, not of a column name.",
-    "_summary_contract": "pool_sites.R renders output/pooled/pooled_summary.md from the _title, _grain, _numerator, _denominator and _caveat keys on each entry that declares `percents`. An entry with percents and no _numerator is a gap: the number would ship with no statement of what it counts, which is the thing the summary exists to prevent. The engine asserts it."
+    "_summary_contract": "pool_sites.R renders output/pooled/pooled_summary.md from the _title, _grain, _numerator, _denominator and _caveat keys on each entry that declares `percents`. An entry with percents and no _numerator is a gap: the number would ship with no statement of what it counts, which is the thing the summary exists to prevent. The engine asserts it.",
+    "care_setting_display_groups": {
+        "medical_icu": "Medical",
+        "general_icu": "Medical",
+        "surgical_icu": "Surgical",
+        "mixed_cardiothoracic_icu": "Cardiac/thoracic",
+        "cardiac_icu": "Cardiac/thoracic",
+        "neuro_icu": "Neuro",
+        "mixed_neuro_icu": "Neuro",
+        "burn_icu": "Burn",
+        "ed": "Emergency",
+        "multiple": "Mixed/reclassified"
+    },
+    "_care_setting_display_groups_why": "PRESENTATION ONLY, for the pooled figures. Centre-side: no site reads this and it does not affect any analysis. MEASURED 2026-10-27 across UCMC and Rush: only 2 of 10 care_setting values -- ed and medical_icu -- appear at BOTH sites. The other eight are unique to one, so colouring 14 units by 10 raw settings makes the colour a site label with extra steps, which defeats the reason for using care_setting at all (seeing whether, say, medical ICUs cluster high ACROSS hospitals). Grouping to 6 comparable classes restores that reading. THE MAPPING IS A CLINICAL JUDGEMENT AND IS PROVISIONAL: whether general_icu is Medical and whether mixed_cardiothoracic_icu groups with cardiac or with surgical are SG's calls, not the code's. An unmapped value falls through to its own label rather than being silently bucketed. NOTE the grouping does not rescue comparability by itself -- at these two sites even the shared categories separate BY SITE (ED 11.5% vs 65.4%; medical ICUs 20.8-23.1% vs 26.9-45.8%), which is itself the finding: site dominates care setting."
 }
