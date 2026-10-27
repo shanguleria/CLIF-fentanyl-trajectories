@@ -28,7 +28,7 @@ something real about your data — see [Troubleshooting](#troubleshooting).
 Clone **at the release tag**, not the default branch:
 
 ```bash
-git clone --branch v0.7.0 https://github.com/shanguleria/CLIF-fentanyl-trajectories.git
+git clone --branch v0.7.1 https://github.com/shanguleria/CLIF-fentanyl-trajectories.git
 cd CLIF-fentanyl-trajectories
 
 python3 -m venv .venv && source .venv/bin/activate
