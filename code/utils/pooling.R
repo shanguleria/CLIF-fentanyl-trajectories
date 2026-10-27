@@ -11,6 +11,164 @@
 # Cells below reporting.small_cell_min_den are suppressed -- a mean over n = 1 is
 # that patient's value.
 
+# ---- Between-group dispersion, in TWO families that must not be conflated -----
+#
+# Both describe "do these groups differ by more than sampling error", and they
+# share most of their algebra, which is exactly why they are prefixed apart. This
+# project has already shipped one defect of precisely this shape -- a
+# within-episode design effect applied under a citation for between-unit
+# over-dispersion -- and the fix cost a figure rebuild. Read the family names.
+#
+# FUNNEL FAMILY (no prefix: q_stat, phi, tau2, share_not_sampling)
+#   Variances are the NULL binomial p0(100-p0)/n, on the PERCENTAGE scale, which
+#   is the scale the funnel envelope is drawn on. It describes the limits as
+#   DRAWN. Spiegelhalter, Qual Saf Health Care 2005;14:347-51.
+#   Consequence worth knowing: with null variances the DL weights are
+#   proportional to n, so a weighted mean is p0 BY CONSTRUCTION -- which is why
+#   no random-effects estimate belongs in this family. It would be the
+#   fixed-effect estimate wearing another name.
+#
+# META-ANALYTIC FAMILY (ma_ prefix)
+#   Variances are each group's OWN p_i(100-p_i)/n_i, which is the standard
+#   meta-analytic input and the only one under which I-squared, tau-squared and a
+#   random-effects estimate mean what the literature means by them. Use these
+#   when reporting heterogeneity, never the funnel family.
+#
+# GROUPING-AGNOSTIC BY DESIGN. Takes vectors, not a frame, so the same function
+# serves units-within-a-site (06_unit_variation.R) and sites-within-the-
+# consortium (pool_sites.R). k is the number of groups either way.
+
+winsorise <- function(z, trim) {
+  if (trim <= 0) return(z)
+  q <- stats::quantile(z, c(trim, 1 - trim), names = FALSE)
+  pmin(pmax(z, q[1]), q[2])
+}
+
+# I-squared and its test-based interval, via H. Higgins & Thompson,
+# Stat Med 2002;21:1539-58. I2 = (H^2 - 1)/H^2 = (Q - df)/Q, so the point
+# estimate is computed the direct way and only the INTERVAL needs H.
+.i2_interval <- function(q_stat, df) {
+  if (!is.finite(q_stat) || df < 1) return(c(NA_real_, NA_real_))
+  h <- sqrt(max(q_stat, df) / df)              # H is bounded below at 1
+  se_ln_h <- if (q_stat > df) {
+    (log(q_stat) - log(df)) / (2 * (sqrt(2 * q_stat) - sqrt(2 * df - 1)))
+  } else if (df > 1) {
+    sqrt((1 / (2 * (df - 1))) * (1 - 1 / (3 * (df - 1)^2)))
+  } else {
+    NA_real_                                    # k = 2: no closed form here
+  }
+  if (!is.finite(se_ln_h)) return(c(NA_real_, NA_real_))
+  z <- stats::qnorm(0.975)
+  h_lo <- max(1, exp(log(h) - z * se_ln_h))
+  h_hi <- exp(log(h) + z * se_ln_h)
+  c((h_lo^2 - 1) / h_lo^2, (h_hi^2 - 1) / h_hi^2)
+}
+
+overdispersion <- function(pct, n, p0, trim, min_k = 5L) {
+  k <- length(pct)
+  na <- NA_real_
+  empty <- data.frame(
+    k = k, q_stat = na, q_df = NA_integer_, q_p = na, phi = na,
+    phi_winsorised = na, phi_crit_95 = na, tau2 = na, mean_binomial_var = na,
+    share_not_sampling = na, ma_k = NA_integer_, ma_q = na,
+    ma_i2 = na, ma_i2_lo = na,
+    ma_i2_hi = na, ma_h2 = na, ma_tau2 = na, ma_re_pct = na, ma_re_lo = na,
+    ma_re_hi = na, ma_dl_lo = na, ma_dl_hi = na,
+    reportable = FALSE, stringsAsFactors = FALSE)
+  if (k < 2L) return(empty)                    # df = 0; nothing is estimable
+
+  df <- k - 1L
+
+  # ---- funnel family: null variances, percentage scale --------------------
+  v <- p0 * (100 - p0) / n
+  z <- (pct - p0) / sqrt(v)
+  q_stat <- sum(z^2)
+  w <- 1 / v
+  tau2 <- max(0, (q_stat - df) / (sum(w) - sum(w^2) / sum(w)))
+
+  # ---- meta-analytic family: each group's OWN variance --------------------
+  # Zero-variance groups (a rate at exactly 0 or 100) would carry infinite
+  # weight. They are dropped from this family and the drop is visible in ma_k.
+  v_i <- pct * (100 - pct) / n
+  ok <- is.finite(v_i) & v_i > 0
+  if (sum(ok) < 2L) {
+    out <- empty
+    out$q_stat <- q_stat; out$q_df <- df
+    out$q_p <- stats::pchisq(q_stat, df, lower.tail = FALSE)
+    out$phi <- q_stat / k
+    out$phi_winsorised <- sum(winsorise(z, trim)^2) / k
+    out$phi_crit_95 <- stats::qchisq(0.95, df) / k
+    out$tau2 <- tau2; out$mean_binomial_var <- mean(v)
+    out$share_not_sampling <- tau2 / (tau2 + mean(v))
+    return(out)
+  }
+  y <- pct[ok]; vi <- v_i[ok]; k_ma <- length(y); df_ma <- k_ma - 1L
+  wf <- 1 / vi
+  theta_fe <- sum(wf * y) / sum(wf)
+  ma_q <- sum(wf * (y - theta_fe)^2)
+  ma_tau2 <- max(0, (ma_q - df_ma) / (sum(wf) - sum(wf^2) / sum(wf)))
+
+  wr <- 1 / (vi + ma_tau2)                     # random-effects weights
+  theta_re <- sum(wr * y) / sum(wr)
+  # DerSimonian-Laird interval: normal, variance 1/sum(w*)
+  se_dl <- sqrt(1 / sum(wr))
+  zc <- stats::qnorm(0.975)
+  # Hartung-Knapp-Sidik-Jonkman: t reference and a variance correction. This is
+  # the method recommended for SMALL k, which is the whole reason it is here --
+  # at k = 3 the t multiplier is 4.3 against the normal's 1.96, and that
+  # difference is the honesty.
+  se_hk <- sqrt(sum(wr * (y - theta_re)^2) / (df_ma * sum(wr)))
+  tc <- stats::qt(0.975, df_ma)
+
+  i2 <- max(0, (ma_q - df_ma) / ma_q)
+  i2_ci <- .i2_interval(ma_q, df_ma)
+
+  data.frame(
+    k = k,
+    q_stat = q_stat,
+    q_df = df,
+    q_p = stats::pchisq(q_stat, df, lower.tail = FALSE),
+    phi = q_stat / k,
+    phi_winsorised = sum(winsorise(z, trim)^2) / k,
+    # On phi's own scale. phi carries divisor k while Q is chi-square on k-1 df,
+    # so the threshold must carry the same divisor or the comparison is off by
+    # k/(k-1) -- 20% at six units.
+    phi_crit_95 = stats::qchisq(0.95, df) / k,
+    tau2 = tau2,
+    mean_binomial_var = mean(v),
+    # The share of between-group spread that is NOT sampling error. This is what
+    # the funnel's volume axis exists to ask -- "are the small units just
+    # noisy?" -- answered as a number rather than left to the eye. RELATED TO
+    # BUT NOT EQUAL TO ma_i2: this uses mean(v), where I-squared uses Higgins'
+    # typical within-study variance. Measured gap on the 2026-10-26 UCMC file:
+    # 0.2 to 1.7 percentage points. Do not report this as I-squared.
+    share_not_sampling = tau2 / (tau2 + mean(v)),
+    # Groups with zero variance (a rate at exactly 0 or 100) carry infinite
+    # weight and are dropped from this family only. ma_k < k says so, and the
+    # I-squared identity must be checked against ma_k - 1, not k - 1.
+    ma_k = k_ma,
+    ma_q = ma_q,
+    ma_i2 = i2,
+    ma_i2_lo = i2_ci[1],
+    ma_i2_hi = i2_ci[2],
+    ma_h2 = ma_q / df_ma,
+    ma_tau2 = ma_tau2,
+    ma_re_pct = theta_re,
+    ma_re_lo = theta_re - tc * se_hk,
+    ma_re_hi = theta_re + tc * se_hk,
+    ma_dl_lo = theta_re - zc * se_dl,
+    ma_dl_hi = theta_re + zc * se_dl,
+    # COMPUTED ALWAYS, REPORTABLE ABOVE A THRESHOLD. tau-squared needs roughly
+    # 5-10 groups to be stable and random-effects intervals are
+    # anti-conservative below that even with Hartung-Knapp. The numbers are
+    # never hidden -- only their USE is governed -- so they can be watched
+    # stabilising as sites arrive, and the day k reaches the threshold nothing
+    # is built: this flag flips.
+    reportable = k >= min_k,
+    stringsAsFactors = FALSE)
+}
+
+
 # One pooling row. `v` is the raw vector; everything else is labelling.
 pool_row <- function(scope, variable, unit, stratum, w, hr, v, min_cell) {
   v <- v[!is.na(v)]

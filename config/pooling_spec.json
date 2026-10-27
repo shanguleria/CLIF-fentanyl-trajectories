@@ -1,0 +1,557 @@
+{
+    "definition_version": "0.1.0",
+    "_date": "2026-10-26",
+    "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
+    "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
+    "_consumption_contract": "pool_sites.R MUST iterate the keys of `files` and MUST assert that every CSV present in a bundle is claimed by exactly one entry. A hardcoded list of filenames in the script would mean a newly shipped export is silently never pooled -- the first config-integrity failure mode in CLAUDE.md, one level up.",
+    "heterogeneity_min_k": 5,
+    "_heterogeneity_min_k_why": "tau-squared needs roughly 5-10 groups to be stable, and random-effects intervals are anti-conservative below that even with Hartung-Knapp. Below this k the statistics are COMPUTED AND SHIPPED but flagged reportable = FALSE: the numbers are never hidden, only their use is governed, so they can be watched stabilising as sites arrive and the day k reaches the threshold nothing needs building.",
+    "site_label_rule": "alphabetical_on_site_name",
+    "_site_label_rule_why": "Anonymised labels for audience-facing output: Site 1, Site 2, ... assigned by sorting site_name. Declared so the mapping is REPRODUCIBLE without being published, and stated in every caption. Real institution names appear only on a title page.",
+    "files": {
+        "01_cohort/strobe.csv": {
+            "method": "sum_counts",
+            "grain": "episode",
+            "keys": [
+                "step"
+            ],
+            "numerators": [
+                "n_after",
+                "n_excluded",
+                "n_before"
+            ],
+            "_why": "Section 8.4: sum counts per step. Identical steps are guaranteed by the shared code, and protocol agreement is asserted before pooling, so the steps cannot differ."
+        },
+        "01_cohort/diagnostics/diagnostics.csv": {
+            "method": "sum_counts",
+            "grain": "mixed",
+            "keys": [
+                "step"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "_why": "Counts, summable. Grain VARIES BY ROW -- some rows are episodes, some windows, some ADT intervals -- so a pooled row is only meaningful against its own label. Summed and labelled, never divided by anything."
+        },
+        "01_cohort/diagnostics/missingness.csv": {
+            "method": "side_by_side",
+            "grain": "episode_window",
+            "keys": [
+                "variable"
+            ],
+            "_why": "Section 8.4: NOT pooled. It is the site-comparability diagnostic -- the thing you read to decide whether pooling is honest at all -- so pooling it would destroy its purpose."
+        },
+        "01_cohort/diagnostics/missingness_patterns.csv": {
+            "method": "side_by_side",
+            "grain": "episode_window",
+            "keys": [
+                "variables",
+                "pattern"
+            ],
+            "_why": "Same as missingness.csv. Also unpoolable in practice: the pattern key is a pipe-joined variable list, so a site with a different site_optional instrument has different keys."
+        },
+        "01_cohort/exemplar_selection.csv": {
+            "method": "per_site_only",
+            "grain": "episode",
+            "keys": [
+                "criterion"
+            ],
+            "_why": "Section 8.4: the exemplar is drawn at ONE site. Four exemplars are four anecdotes, so the selection funnel describes that site alone."
+        },
+        "02_descriptive/pooling_continuous.csv": {
+            "method": "sufficient_stats",
+            "grain": "episode_window",
+            "keys": [
+                "scope",
+                "variable",
+                "unit",
+                "stratum",
+                "window_idx"
+            ],
+            "stats": [
+                "n",
+                "sum",
+                "sum_sq"
+            ],
+            "carry_range": [
+                "median",
+                "q1",
+                "q3"
+            ],
+            "_why": "Section 8.4: exact pooled mean and SD from n, sum and sum_sq. This is why sum_sq ships at all -- it assumes nothing about equal variances. Medians travel alongside and are NOT pooled; the histogram carries the pooled distribution."
+        },
+        "02_descriptive/pooling_categorical.csv": {
+            "method": "sum_counts",
+            "grain": "episode",
+            "keys": [
+                "variable",
+                "level",
+                "stratum"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "denominator",
+            "_why": "Section 8.3 episode-level: one row per episode, so the interval pools honestly. Sum both and recompute the percentage; never average the percentages.",
+            "percents": {
+                "pct": "n"
+            }
+        },
+        "02_descriptive/pooling_histograms.csv": {
+            "method": "sum_bins",
+            "grain": "distribution",
+            "keys": [
+                "variable",
+                "bin"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "n_total",
+            "bin_edges": [
+                "bin_lo",
+                "bin_hi"
+            ],
+            "_why": "Section 8.4: a median has no closed form across sites, so eight skewed or zero-inflated variables ship an absolute-bin histogram instead. n_total is OBSERVED VALUES, not windows -- pair it with missingness.csv, never with a window count.",
+            "percents": {
+                "pct": "n"
+            }
+        },
+        "02_descriptive/baseline_characteristics.csv": {
+            "method": "per_site_only",
+            "grain": "episode",
+            "_why": "Display strings with embedded Ns and a p-value column. The POOLABLE form of the same content is pooling_categorical.csv and pooling_continuous.csv. Section 8.4 also drops Table 1 p-values from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n. The pooled mean SOFA and NEE per band carry that claim instead."
+        },
+        "02_descriptive/retention.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "window_idx"
+            ],
+            "numerators": [
+                "n_ventilated",
+                "n_alive_admitted"
+            ],
+            "_why": "Section 8.3: the denominator is the anchor cohort FIXED at every window, so it comes from strobe.csv rather than from this file. Clustered within episodes.",
+            "percents": {
+                "pct_of_anchor_cohort": "n_ventilated"
+            },
+            "denominator_within": [
+                "__first_window__"
+            ]
+        },
+        "02_descriptive/dose_summary.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "drug",
+                "denominator",
+                "window_idx"
+            ],
+            "numerators": [
+                "n_receiving"
+            ],
+            "denominator": "n",
+            "_why": "Section 8.3: numerator is windows with dose > 0, denominator is VENTILATED windows in that window -- not alive-admitted. n_receiving was added 2026-10-04 precisely so this pools by summing. The mean/sd columns are NOT pooled here; pooling_continuous carries the sufficient statistics for them.",
+            "percents": {
+                "pct_receiving_any": "n_receiving"
+            },
+            "not_poolable": [
+                "mean",
+                "sd"
+            ],
+            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from."
+        },
+        "02_descriptive/balanced_panels.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "drug",
+                "denominator",
+                "panel_hours",
+                "window_idx"
+            ],
+            "numerators": [
+                "n_receiving"
+            ],
+            "denominator": "n",
+            "_why": "Section 8.3: denominator is episodes ventilated in the window ENDING at h. Same treatment as dose_summary -- proportion pools, central tendency does not.",
+            "percents": {
+                "pct_receiving_any": "n_receiving"
+            },
+            "not_poolable": [
+                "mean",
+                "sd"
+            ],
+            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from."
+        },
+        "02_descriptive/imv_encounter_duration.csv": {
+            "method": "side_by_side",
+            "grain": "episode",
+            "keys": [
+                "measure"
+            ],
+            "_why": "Quantiles only, with no sufficient statistics, so nothing here pools. The poolable view of the same variable is the first-IMV-episode histogram in pooling_histograms.csv."
+        },
+        "04_states/state_prevalence.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "window_idx",
+                "state"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from strobe.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
+            "percents": {
+                "pct": "n"
+            },
+            "denominator_within": [
+                "window_idx"
+            ]
+        },
+        "04_states/state_transition_counts.csv": {
+            "method": "count_matrix",
+            "grain": "transition",
+            "keys": [
+                "from",
+                "to"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "n_at_risk",
+            "_why": "Section 8.3 transition level: n_at_risk is transitions ORIGINATING in that state, not episodes. Excludes absorbing origins and the final window. The long count form exists so the matrix pools by summing; the wide form is the readable twin.",
+            "percents": {
+                "pct": "n"
+            }
+        },
+        "04_states/state_transitions.csv": {
+            "method": "per_site_only",
+            "grain": "transition",
+            "keys": [
+                "from"
+            ],
+            "_why": "The WIDE readable twin of the count file above. Pooling it would double-count the same transitions; pool the long form and re-widen if a reader wants the matrix."
+        },
+        "04_states/dose_state_prevalence.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "window_idx",
+                "state"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from strobe.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
+            "percents": {
+                "pct": "n"
+            },
+            "denominator_within": [
+                "window_idx"
+            ]
+        },
+        "04_states/dose_state_transition_counts.csv": {
+            "method": "count_matrix",
+            "grain": "transition",
+            "keys": [
+                "from",
+                "to"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "n_at_risk",
+            "_why": "Section 8.3 transition level: n_at_risk is transitions ORIGINATING in that state, not episodes. Excludes absorbing origins and the final window. The long count form exists so the matrix pools by summing; the wide form is the readable twin.",
+            "percents": {
+                "pct": "n"
+            }
+        },
+        "04_states/dose_state_transitions.csv": {
+            "method": "per_site_only",
+            "grain": "transition",
+            "keys": [
+                "from"
+            ],
+            "_why": "The WIDE readable twin of the count file above. Pooling it would double-count the same transitions; pool the long form and re-widen if a reader wants the matrix."
+        },
+        "04_states/state_prevalence_at_risk.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "window_idx",
+                "state"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "_why": "Same numerator as state_prevalence, different denominator: VENTILATED only, which shrinks 14,897 -> 10,999 -> 8,146 -> 6,728. The pair is the point; pooling one without the other loses the distinction between 'of everyone' and 'of those still at risk'.",
+            "percents": {
+                "pct": "n"
+            },
+            "denominator_within": [
+                "window_idx"
+            ]
+        },
+        "05_titration/coadministration.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "group"
+            ],
+            "numerators": [
+                "n_paired",
+                "n_episodes"
+            ],
+            "denominator": "n_events",
+            "carry_deff": true,
+            "cluster": "episode",
+            "_why": "Section 8.3 event level: events with a fentanyl bolus within +/-30 min, over events in that group, restricted to ventilated windows. CLUSTERED in episodes -- the point estimate is exact, the naive binomial interval is not. Carry deff.",
+            "percents": {
+                "pct_paired": "n_paired"
+            }
+        },
+        "05_titration/indication.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "event_type",
+                "class",
+                "window_hours"
+            ],
+            "numerators": [
+                "n_assessed",
+                "n_indicated",
+                "n_episodes"
+            ],
+            "denominator": "n_events",
+            "carry_deff": true,
+            "cluster": "episode",
+            "extra_denominator": {
+                "pct_indicated_of_assessed": "n_assessed"
+            },
+            "_why": "Section 8.3: THREE proportions share this row and two share a numerator. pct_indicated_all is n_indicated/n_events; pct_indicated_of_assessed is the SAME numerator over n_assessed. Both must be recomputed from summed counts, never averaged.",
+            "percents": {
+                "pct_assessed": "n_assessed",
+                "pct_indicated_all": "n_indicated"
+            }
+        },
+        "05_titration/indication_window_sensitivity.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "event_type",
+                "class",
+                "window_hours"
+            ],
+            "numerators": [
+                "n_assessed",
+                "n_indicated",
+                "n_episodes"
+            ],
+            "denominator": "n_events",
+            "cluster": "episode",
+            "_why": "The 1-4h sweep of the row above. Pools identically. A result that appears only at the widest window is measuring assessment cadence, not indication -- which is why the sweep is pooled rather than only the primary window.",
+            "percents": {
+                "pct_assessed": "n_assessed",
+                "pct_indicated_all": "n_indicated"
+            }
+        },
+        "05_titration/window_sensitivity.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "window_minutes",
+                "group"
+            ],
+            "numerators": [
+                "n_paired"
+            ],
+            "denominator": "n_events",
+            "cluster": "episode",
+            "_why": "The 5-60 min bolus-window sweep. Same grain and same clustering as coadministration.",
+            "percents": {
+                "pct_paired": "n_paired"
+            }
+        },
+        "05_titration/charting_precision.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "window_minutes",
+                "charted"
+            ],
+            "numerators": [
+                "n_paired"
+            ],
+            "denominator": "n_events",
+            "cluster": "episode",
+            "_why": "Whether the pairing survives when the charted action label is required to agree. A measurement-quality check, poolable by summing.",
+            "percents": {
+                "pct_paired": "n_paired"
+            }
+        },
+        "05_titration/charting_agreement.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "action",
+                "kind"
+            ],
+            "numerators": [
+                "n_events"
+            ],
+            "_why": "Counts of charted action label against the rate delta that defines the event. Summable."
+        },
+        "05_titration/adherence_distribution.csv": {
+            "method": "sum_counts",
+            "grain": "episode",
+            "keys": [
+                "scope"
+            ],
+            "numerators": [
+                "n_never",
+                "n_always",
+                "n_episodes",
+                "n_episodes_ge_min_events"
+            ],
+            "denominator": "n_episodes_ge_min_events",
+            "_why": "Section 8.3: denominator is n_episodes_ge_min_events (>= 2 increases), NOT n_episodes. Getting that wrong inflates the denominator with episodes that could not have adhered.",
+            "percents": {
+                "pct_never": "n_never",
+                "pct_always": "n_always"
+            }
+        },
+        "05_titration/rate_change_magnitude.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "statistic",
+                "unit"
+            ],
+            "numerators": [
+                "n_at_or_above"
+            ],
+            "denominator": "n",
+            "carry_range": [
+                "value"
+            ],
+            "cluster": "episode",
+            "_why": "Restructured 2026-10-05 from a column named mcg_per_hr that held percentages. The share-at-or-above rows pool by summing; the quantile rows do not and are carried as a range."
+        },
+        "05_titration/pooling_histograms.csv": {
+            "method": "sum_bins",
+            "grain": "distribution",
+            "keys": [
+                "variable",
+                "bin"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "n_total",
+            "bin_edges": [
+                "bin_lo",
+                "bin_hi"
+            ],
+            "_why": "The two histograms emitted by 05 rather than 02: rate-change magnitude and per-episode adherence. Identical treatment to the 02 file.",
+            "percents": {
+                "pct": "n"
+            }
+        },
+        "06_unit_variation/unit_adherence.csv": {
+            "method": "heterogeneity_source",
+            "grain": "event",
+            "keys": [
+                "metric",
+                "unit_key",
+                "unit",
+                "series"
+            ],
+            "numerators": [
+                "n_paired"
+            ],
+            "denominator": "n_events",
+            "unit_keys_internal_only": [
+                "location_name"
+            ],
+            "cluster": "episode",
+            "_why": "SECTION 8.7: NEVER POOLED BY LABEL. care_setting level sets differ by site by construction and location_name is site-local free text, so a row keyed by unit name cannot be summed across sites. It is instead the INPUT to the between-site dispersion statistic and to F1/F2, where each unit is a point under an anonymised label. The per-site rows pass through unchanged; nothing is summed across a unit name."
+        },
+        "06_unit_variation/year_adherence.csv": {
+            "method": "per_site_only",
+            "grain": "event",
+            "keys": [
+                "metric",
+                "year"
+            ],
+            "_why": "Section 8.4: the year series is per site. Calendar coverage differs, and a conversion such as MIMIC may carry shifted dates, so a pooled year curve would mix eras."
+        },
+        "06_unit_variation/attribution_funnel.csv": {
+            "method": "sum_counts",
+            "grain": "event",
+            "keys": [
+                "metric",
+                "step"
+            ],
+            "numerators": [
+                "n_events",
+                "n_episodes"
+            ],
+            "_why": "How many events were attributable to a care location at all. Summable, and worth pooling: the unattributed share is a data-quality contrast between sites."
+        },
+        "06_unit_variation/overdispersion.csv": {
+            "method": "per_site_only",
+            "grain": "event",
+            "keys": [
+                "metric",
+                "unit_key",
+                "series"
+            ],
+            "_why": "The WITHIN-site dispersion of units inside that hospital. Not pooled: the between-SITE statistic is computed fresh by pool_sites.R from unit_adherence.csv using the same overdispersion() in utils/pooling.R, grouped by site instead of by unit. Carrying both side by side is the actual finding -- variation within a hospital, and between them."
+        }
+    },
+    "label_columns": [
+        "bin_hi",
+        "bin_label",
+        "bin_lo",
+        "charted",
+        "kind",
+        "panel_hours",
+        "reason",
+        "statistic",
+        "unit",
+        "window_minutes",
+        "window_start_hr"
+    ],
+    "_label_columns_why": "Carried from the first site into the POOLED row, never summed. window_start_hr is the hour a window starts, not a quantity -- summing it across sites produces a number with no meaning, and NA-ing it makes the pooled row unreadable. Found by the idempotence test. `denominator` was in this list and had to come out: it is a NUMERIC denominator in pooling_categorical and a STRING stratum label in dose_summary and balanced_panels. Being in both lists produced a duplicated column. Where it labels, it is a key.",
+    "not_poolable_columns": [
+        "ci_hi",
+        "ci_lo",
+        "deff",
+        "events_per_episode",
+        "indicated_ci_hi",
+        "indicated_ci_lo",
+        "indicated_deff",
+        "max",
+        "median",
+        "median_adherence",
+        "min",
+        "n_suppressed_small_cell",
+        "overall_pct_all_events",
+        "overall_pct_attributed",
+        "p90",
+        "p95",
+        "panel_n",
+        "pct_indicated_backward_only",
+        "pct_indicated_of_assessed",
+        "pct_missing_pre_locf",
+        "q1",
+        "q3",
+        "value"
+    ],
+    "_not_poolable_columns_why": "Explicitly NA in the POOLED row, because they are quantities a sum cannot produce. A median has no closed form across sites -- the histogram carries that. A per-site confidence interval and design effect describe THAT site's clustering. pct_indicated_of_assessed has a different denominator (n_assessed) and is recomputed separately rather than summed. Leaving these blank is the honest answer; carrying one site's value into a pooled row would be a lie about what it describes. mean and sd were removed on review: they ARE poolable wherever sum and sum_sq ship, which is exactly what pooling_continuous.csv exists for. In files that carry only a mean they are unpoolable, and the engine's guard reports that per file rather than this list asserting it globally.",
+    "_per_file_not_poolable": "A file entry may carry its own `not_poolable` list, unioned with the global one. Poolability is a property of what a file SHIPS, not of a column name."
+}

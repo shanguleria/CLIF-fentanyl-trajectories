@@ -453,45 +453,14 @@ plot_units <- unit_tbl[unit_tbl$n_suppressed_small_cell == 0, ]
 # otherwise inflate the estimate of the very null they are judged against. The
 # formal test below uses the UN-Winsorised Q -- Winsorising sizes the inflation
 # robustly, it does not test whether there is one.
-winsorise <- function(z, trim) {
-  if (trim <= 0) return(z)
-  q <- quantile(z, c(trim, 1 - trim), names = FALSE)
-  pmin(pmax(z, q[1]), q[2])
-}
-
-overdispersion <- function(d, p0, trim) {
-  # Null binomial variance on the PERCENTAGE scale, which is the scale the
-  # envelope is drawn on -- the diagnostic has to describe the limits as drawn,
-  # not a proportion-scale twin of them.
-  v <- p0 * (100 - p0) / d$n_events
-  z <- (d$pct_paired - p0) / sqrt(v)
-  i_n <- length(z)
-  q_stat <- sum(z^2)
-  # DerSimonian-Laird on the same null variances, for the ADDITIVE random
-  # effects form the paper says it prefers. With null variances the weights are
-  # proportional to n_events, so the weighted mean is p0 by construction and
-  # the DL Q is the same statistic as sum(z^2) rather than a second quantity.
-  w <- 1 / v
-  tau2 <- max(0, (q_stat - (i_n - 1)) / (sum(w) - sum(w^2) / sum(w)))
-  data.frame(
-    n_units = i_n,
-    q_stat = q_stat,
-    q_df = i_n - 1L,
-    q_p = pchisq(q_stat, i_n - 1L, lower.tail = FALSE),
-    phi = q_stat / i_n,
-    phi_winsorised = sum(winsorise(z, trim)^2) / i_n,
-    # On phi's own scale. phi carries divisor I while Q is chi-square on I-1 df,
-    # so the threshold must carry the same divisor or the comparison is off by
-    # I/(I-1) -- 20% at six units.
-    phi_crit_95 = qchisq(0.95, i_n - 1L) / i_n,
-    tau2 = tau2,
-    mean_binomial_var = mean(v),
-    # The share of between-unit spread that is NOT sampling error. This is what
-    # the funnel's volume axis exists to ask -- "are the small units just
-    # noisy?" -- answered as a number rather than left to the eye.
-    share_not_sampling = tau2 / (tau2 + mean(v)),
-    stringsAsFactors = FALSE)
-}
+# winsorise() and overdispersion() moved to utils/pooling.R on 2026-10-26, so the
+# same statistic serves units-within-this-site and sites-within-the-consortium.
+# It returns TWO families -- read the header there before using either. This
+# script uses only the FUNNEL family; the meta-analytic (ma_*) columns belong to
+# the pooled output, where a k of sites is what they describe.
+FUNNEL_COLS <- c("k", "q_stat", "q_df", "q_p", "phi", "phi_winsorised",
+                 "phi_crit_95", "tau2", "mean_binomial_var",
+                 "share_not_sampling")
 
 OD <- list()
 for (m in METRICS) {
@@ -508,10 +477,14 @@ for (m in METRICS) {
                     m, k, sname, nrow(d)))
         next
       }
+      od <- overdispersion(d$pct_paired, d$n_events, p0, OD_TRIM)[, FUNNEL_COLS]
+      # `k` is the shared function's grouping-agnostic name; in THIS file the
+      # groups are units, and the captions say "units", so it ships under the
+      # name its readers expect. Renamed on write, not in the function.
+      names(od)[names(od) == "k"] <- "n_units"
       OD[[length(OD) + 1L]] <- cbind(
         data.frame(metric = m, unit_key = k, series = sname,
-                   stringsAsFactors = FALSE),
-        overdispersion(d, p0, OD_TRIM))
+                   stringsAsFactors = FALSE), od)
     }
   }
 }
@@ -520,13 +493,16 @@ for (m in METRICS) {
 # between-unit over-dispersion is not estimable from one or two units. This used
 # to be a crash -- do.call(rbind, list()) is NULL and `rownames(NULL) <- NULL`
 # errors -- which took out the whole script AFTER every figure had been written.
+# Derived from the function's OWN shape rather than retyped: a column added to
+# overdispersion() used to mean editing this list too, and a zero-row frame whose
+# columns disagree with the populated one is a defect that only appears at the
+# one site that triggers it.
+.od_shape <- overdispersion(c(10, 20), c(100, 100), 15, OD_TRIM)[, FUNNEL_COLS]
+names(.od_shape)[names(.od_shape) == "k"] <- "n_units"
 od_tbl <- if (length(OD)) do.call(rbind, OD) else
-  data.frame(metric = character(), unit_key = character(), series = character(),
-             n_units = integer(), q_stat = numeric(), q_df = integer(),
-             q_p = numeric(), phi = numeric(), phi_winsorised = numeric(),
-             phi_crit_95 = numeric(), tau2 = numeric(),
-             mean_binomial_var = numeric(), share_not_sampling = numeric(),
-             stringsAsFactors = FALSE)
+  cbind(data.frame(metric = character(), unit_key = character(),
+                   series = character(), stringsAsFactors = FALSE),
+        .od_shape[0, ])
 rownames(od_tbl) <- NULL
 if (!nrow(od_tbl))
   cat(paste0("\n  NOTE no metric x unit key has the >= 3 units the over-dispersion\n",
