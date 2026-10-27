@@ -18,5 +18,6 @@
         "crrt_therapy",
         "hospital_diagnosis"
     ],
-    "dose_unit_aliases": {}
+    "dose_unit_aliases": {},
+    "accepted_unhandled_fentanyl_units": []
 }

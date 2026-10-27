@@ -798,12 +798,27 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
     out[unit == "mcg/kg/min"] = dose * 60.0 * w
     out[unit == "mcg/min"] = dose * 60.0
     unresolved = dose.notna() & out.isna()
+    # Units the SITE has chosen to leave unconverted (config.json
+    # accepted_unhandled_fentanyl_units; absent/empty = none, so the run stops).
+    # Left NaN on purpose, counted here, and dropped (and counted again) in
+    # _infusion_events. Any unit not listed there still stops the run.
+    accepted = {u.lower().strip() for u in CONFIG.get("accepted_unhandled_fentanyl_units", [])}
+    known = unresolved & unit.isin(accepted)
+    if known.any():
+        print(f"  fentanyl infusion: {int(known.sum()):,} row(s) in known-unhandled units "
+              f"{sorted(unit[known].unique())} across "
+              f"{int(m.loc[known, 'encounter_block'].nunique())} block(s) "
+              f"set to NaN (not converted)")
+    unresolved &= ~known
     if unresolved.any():
         bad = sorted(unit[unresolved].dropna().unique())
         raise SystemExit(
             f"fentanyl infusion: {int(unresolved.sum()):,} rows in unhandled units {bad}. "
             f"Add them to _to_mcg_hr rather than dropping -- a dropped unit removes "
-            f"exposure for whichever patients were charted that way."
+            f"exposure for whichever patients were charted that way. If the unit "
+            f"cannot be converted and you accept losing those rows, list it in "
+            f"config.json accepted_unhandled_fentanyl_units and confirm the share "
+            f"of rows with your data owner first."
         )
     return out
 
