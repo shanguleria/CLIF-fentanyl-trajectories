@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "code"))
@@ -235,6 +236,35 @@ def load_core() -> dict:
     return t, raw_anchor, imv[["hospitalization_id", "recorded_dttm"]].copy()
 
 
+def _load_assessments(hid: dict) -> pd.DataFrame:
+    """patient_assessments, matched to the protocol's categories ignoring case.
+
+    CLIF 2.1 spells it 'RASS', but the read filter is literal and a site's ETL may
+    have lowercased it (Rush charts 'rass'). The site's actual spellings are read
+    from the file, matched case-insensitively to the protocol's names, queried
+    under the site's spelling, and renamed back to ours straight after the read,
+    so every consumer and outlier bound sees one spelling. Each remap is printed.
+    """
+    fold = {c.casefold(): c for c in ASSESS_NEEDED}
+    assert len(fold) == len(ASSESS_NEEDED), "protocol categories differ only by case"
+    kw = _kw()
+    path = Path(kw["data_directory"]) / "clif_patient_assessments.parquet"
+    site = list(ASSESS_NEEDED)
+    remap: dict[str, str] = {}
+    if kw["filetype"] == "parquet" and path.exists():
+        present = pq.read_table(path, columns=["assessment_category"])["assessment_category"] \
+                    .unique().drop_null().to_pylist()
+        remap = {v: fold[v.casefold()] for v in present
+                 if v.casefold() in fold and v != fold[v.casefold()]}
+        site += sorted(remap)
+    df = PatientAssessments.from_file(**_kw(filters={**hid, "assessment_category": site})).df
+    if remap:
+        n = int(df["assessment_category"].isin(remap).sum())
+        df["assessment_category"] = df["assessment_category"].replace(remap)
+        print(f"  assessment_category matched ignoring case: {remap} -> {n:,} rows renamed")
+    return df
+
+
 def load_cohort_tables(hosp_ids: list[str]) -> dict:
     """Everything else, filtered to the cohort's hospitalizations and categories.
 
@@ -249,8 +279,7 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
             **_kw(filters={**hid, "lab_category": LAB_NEEDED})).df,
         "vitals": Vitals.from_file(
             **_kw(filters={**hid, "vital_category": VITAL_NEEDED})).df,
-        "assessments": PatientAssessments.from_file(
-            **_kw(filters={**hid, "assessment_category": ASSESS_NEEDED})).df,
+        "assessments": _load_assessments(hid),
         "mac": MedicationAdminContinuous.from_file(
             **_kw(filters={**hid, "med_category": _mac_categories()})).df,
         "mai": MedicationAdminIntermittent.from_file(
