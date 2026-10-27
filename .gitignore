@@ -9,6 +9,21 @@ logs/
 *.parquet
 !config/*.csv
 
+# Other sites' bundles, read by code/check_provenance.py and
+# code/pool_sites.R. Bare, for the same reason output/ is bare.
+#
+# This matters more than output/ does, not less. These are ANOTHER
+# INSTITUTION'S results, received under a DUA. They are PHI-free by
+# construction, but they are not ours to publish, and this repo is public --
+# so a `git add -A` after a site sends its bundle would put Rush's or
+# Northwestern's output in a public repository without them having agreed
+# to that.
+# Added 2026-10-26: the path had been referenced in five places since
+# 2026-10-02 and matched no ignore rule at all. Named multisite/ rather
+# than uploads/ (SG) -- the name should say what is in it, not how it got
+# there.
+multisite/
+
 # ---- R ----
 .Rproj.user/
 .Rhistory

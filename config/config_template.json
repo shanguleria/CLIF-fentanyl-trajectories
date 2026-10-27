@@ -1,12 +1,13 @@
 {
-    "_comment_shape": "Standard CLIF site config. site_name / clif_version / data_directory / filetype / timezone are the consortium-standard keys; the last three are the names clifpy itself requires, so this file is passed to clifpy with no translation layer. Everything below them is this project's protocol.",
+    "_comment": "Your site's identity and where its CLIF tables are. Copy to config/config.json and edit. Nothing here changes what is measured -- that all lives in config/protocol.json. See the README, 'Run it at your site', step 4.",
+
     "site_name": "YOUR_SITE",
     "clif_version": "2.1.0",
     "dataset_version": "",
     "data_directory": "/path/to/your/CLIF/tables",
     "filetype": "parquet",
     "timezone": "America/Chicago",
-    "_comment_versions": "clif_version is always the CLIF SPEC version (e.g. 2.1.0). A conversion/ETL release -- the MIMIC-to-CLIF build 1.1.0, say -- is NOT a CLIF version and goes in dataset_version. Leave dataset_version empty for a site's own tables.",
+
     "tables_in_use": [
         "patient",
         "hospitalization",
@@ -20,8 +21,6 @@
         "crrt_therapy",
         "hospital_diagnosis"
     ],
-    "_comment_protocol_moved": "THIS FILE IS SITE IDENTITY ONLY. Everything estimand-defining -- the cohort window and gap rules, the medication vocabulary, the outcome categories, the model and reporting parameters, and every covariate aggregation and missingness rule -- lives in config/protocol.json, which IS tracked in git and IS compared across sites by code/check_provenance.py. This file is not tracked (it carries local paths), so nothing estimand-defining may live here alone. Do not move a value back here to make a run work: a key here is invisible to the cross-site protocol check by design.",
-    "_comment_tables_in_use": "check_config.py fails the preflight for any table listed here that is absent from data_directory, so this list must name what the pipeline READS and nothing else. patient_procedures was removed on 2026-10-26: it was declared from the start and has never had a single consumer -- verified by grepping both the table name and clifpy's PatientProcedures class across all of code/, where the other eleven all appear and it does not -- so it blocked a site that lacks the table for no analytic reason. It is named in the TABLED tracheostomy rule (protocol.json, section 10a(c)) as a supporting identification route; add it back when that rule is implemented, not before.",
-    "_comment_dose_unit_aliases": "SITE VOCABULARY -> the canonical bolus units. med_dose_unit has NO permissible values in the CLIF mCIDE, so every site's free-text unit strings differ and this map cannot be protocol: it is the one estimand-affecting thing that is irreducibly site-specific. 'mcg of opiate' is UCMC's string and was HARDCODED in code/01_build_cohort.py until 2026-10-26, where another site could not change it without editing code and moving the code digest. Keys are matched after lower() and strip(); values must be one of the canonical units the bolus converter handles (mcg, mg, mcg/kg, mg/kg). An unmapped unit that carries a dose is REPORTED and NULLED, not silently dropped -- see the bolus report in Phase 0 -- and because bolus absence means zero, a nulled row then reads as 'no bolus given'. So check the Phase 0 bolus report at a new site before trusting the co-administration numbers: it names every unit it could not convert. This map is recorded in site_config_digest on every output, so the coordinating centre can see what a site normalised even though it cannot require equality.",
+
     "dose_unit_aliases": {}
 }

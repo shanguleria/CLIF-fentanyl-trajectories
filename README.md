@@ -1,7 +1,253 @@
 # CLIF-fentanyl-trajectories
 
-Group-based trajectory modeling of fentanyl dosing in mechanically ventilated
-ICU patients, using the Common Longitudinal ICU data Format (CLIF).
+How fentanyl is delivered to adults on invasive mechanical ventilation —
+continuous infusion, intermittent bolus, both, or neither — and how that
+changes over the ventilation course. Computed from a site's own CLIF 2.1
+tables, inside that site.
+
+Everything runs on one machine in your institution. Nothing reaches the network.
+The only thing that leaves is a folder of PHI-free aggregate CSVs and figures
+that you look at first and send deliberately.
+
+---
+
+## Run it at your site
+
+Eight steps. Expect step 6 to take 20–40 minutes and to stop at least once on
+something real about your data — see [Troubleshooting](#troubleshooting).
+
+### 1. Install the tools
+
+- **Python 3.11+** — builds the cohort (step 6, Phase 0)
+- **R 4.4+** — every analysis script after that
+- **git** — clone rather than download a ZIP, or the run cannot record which
+  code version produced it
+
+### 2. Get the code and its dependencies
+
+Clone **at the release tag**, not the default branch:
+
+```bash
+git clone --branch v0.7.0 https://github.com/shanguleria/CLIF-fentanyl-trajectories.git
+cd CLIF-fentanyl-trajectories
+
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+Rscript -e 'install.packages("renv"); renv::restore()'
+```
+
+Use `pip install -r requirements.txt`, not `pip install clifpy`. The versions are
+pinned exactly because clifpy's minor releases have changed CLIF datetime
+timezone handling, and that silently changes results.
+
+### 3. Check your CLIF tables
+
+Eleven tables, all CLIF 2.1, as `clif_<table>.parquet` (or `.csv`) in one
+directory:
+
+| table | used for |
+|---|---|
+| `patient`, `hospitalization`, `adt` | cohort, encounter stitching, care location |
+| `respiratory_support` | the ventilation anchor and episode boundaries |
+| `medication_admin_continuous` | fentanyl infusions, sedatives, vasopressors |
+| `medication_admin_intermittent` | fentanyl boluses |
+| `vitals`, `labs` | severity covariates, weight for dosing |
+| `patient_assessments` | RASS, and your pain instrument — see [What differs between sites](#what-differs-between-sites) |
+| `crrt_therapy`, `hospital_diagnosis` | renal replacement, comorbidity index |
+
+Step 5 verifies they are all present before anything is read. Full field-level
+requirements are in [Required CLIF tables and fields](#required-clif-tables-and-fields).
+
+### 4. Write your site config
+
+```bash
+cp config/config_template.json config/config.json
+```
+
+Edit six things, and nothing else:
+
+| key | what to set |
+|---|---|
+| `site_name` | your site identifier; stamped on every output |
+| `clif_version` | the CLIF **spec** version your tables implement (`2.1.0`) |
+| `dataset_version` | an ETL release if your tables came from one (MIMIC-to-CLIF `1.1.0`); empty for your own data |
+| `data_directory` | absolute path to the directory holding the tables |
+| `filetype` | `parquet` or `csv` |
+| `timezone` | your site's local zone — every analysis window is a wall-clock interval |
+
+Leave `tables_in_use` alone. Set `dose_unit_aliases` only if step 6 reports a
+`med_dose_unit` string it cannot convert.
+
+**`config/protocol.json` is a different kind of file. Do not edit it.** It holds
+everything that defines what is measured, it is tracked in git, and it is
+compared byte-for-byte across sites — a change there makes your results
+unpoolable with everyone else's. If a run fails and the fix looks like
+changing a number in `protocol.json`, that is a conversation with the study
+team, not a local edit.
+
+### 5. Check the config before you run anything
+
+```bash
+python3 code/check_config.py
+```
+
+Runs in a second, opens no table. It confirms the config is complete, that
+`data_directory` really holds the tables named in `tables_in_use`, and that every
+category declared in `protocol.json` is a real CLIF mCIDE value. Repeat until it
+prints `READY.`
+
+### 6. Run the pipeline
+
+```bash
+./run_pipeline.sh          # macOS / Linux
+.\run_pipeline.ps1         # Windows PowerShell
+```
+
+Both runners do the same thing: preflight, then the six analysis steps in order,
+stopping on the first error, then a verification pass over the shareable outputs.
+If that last pass fails the outputs exist but **must not be sent**.
+
+### 7. Look at the results, then send them
+
+```
+output/final_no_phi/     <- send this, and only this
+```
+
+Read `output/final_no_phi/01_cohort/strobe.txt` first — it is the cohort flow,
+and the step that excluded the most patients is usually where a data problem
+shows up. Then skim `01_cohort/diagnostics/missingness.csv`.
+
+Send `output/final_no_phi/` entire. **Do not send** `output/intermediate_phi/`,
+which is patient-level and must never leave your institution.
+
+### 8. Update to a newer version
+
+```bash
+git fetch --tags && git checkout v0.8.0
+pip install -r requirements.txt
+Rscript -e 'renv::restore()'
+./run_pipeline.sh
+```
+
+A protocol change bumps `definition_version` in `protocol.json`, and every site
+has to re-run before results can be combined. The study team will say when.
+
+---
+
+## Keep patient data inside your site
+
+Two output directories, and the split is the whole safety model:
+
+| directory | contents | leaves the site? |
+|---|---|---|
+| `output/intermediate_phi/` | one row per patient per window | **never** |
+| `output/final_no_phi/` | aggregate counts, rates, figures | yes, deliberately |
+
+`.gitignore` excludes all of `output/` with a bare rule, so nothing from either
+can be committed — verified by test, not by inspection
+(`tests/test_paths.py`). The pipeline writes a warning README into the PHI
+directory at runtime so it survives `git clean`.
+
+No step in the pipeline contacts the network.
+
+---
+
+## What differs between sites
+
+The first thing that differs, and the one most likely to be wrong, is **which
+pain instrument you chart**.
+
+| `assessment_category` | scale | threshold | covariate |
+|---|---|---|---|
+| `NVPS` | 0–10 | ≥ 4 | `nvps` |
+| `cpot_total` | 0–8 | ≥ 3 | `cpot_total` |
+| `BPS` | 3–12 | ≥ 6 | `bps` |
+
+**You should not need to edit anything.** All three are declared; each is cut at
+its own threshold; a site that charts none is refused rather than quietly
+producing an empty pain panel. Phase 0 prints a zero-record line for every
+instrument you do not chart, and that line is expected.
+
+Watch the case: the CLIF mCIDE spells `NVPS` and `BPS` upper-case and the CPOT
+family lower-case (`cpot_total`). Step 5 validates every declared category
+against clifpy's packaged schema, so a misspelling fails in a second rather than
+silently matching nothing for the whole study.
+
+Raw scores are never pooled across instruments — the scales are not comparable.
+Dichotomising each at its own threshold is what makes them combinable.
+
+---
+
+## Troubleshooting
+
+### It stops with an error
+
+Expect this once or twice. Each guard below exists because the alternative was a
+plausible wrong number. Fix at the named line; do not drop the rows.
+
+| message | meaning |
+|---|---|
+| `rows in unhandled units` | a fentanyl dose unit `_to_mcg_hr` does not convert. **Add it**, never drop it |
+| `med_category ... matched no rows` | fentanyl is missing from a medication table; the message prints what *is* there |
+| `device_category value not in clifpy's schema` | a casing or vocabulary mismatch in `respiratory_support` |
+| `adt is missing hospital_id` | encounter stitching cannot run |
+| `not one pain instrument matched a row` | see [What differs between sites](#what-differs-between-sites) |
+| `an empty cohort is a bug, not a finding` | an earlier filter removed everything; read `strobe.txt` |
+| `dose above the derived ceiling` | proof the outlier bounds did not run |
+
+### It finishes, but a number looks wrong
+
+These degrade quietly, so check them by hand:
+
+1. **The Phase 0 bolus report.** A dose in an unmapped `med_dose_unit` is
+   nulled, and because absence of a bolus means zero, a nulled row reads
+   downstream as *no bolus given*. This is the most likely cause of a wrong
+   co-administration rate. Add your spellings to `dose_unit_aliases`.
+2. **`imv_episode_gap_hours = 8`** is tuned to one site's charting cadence and
+   nothing checks it locally. It sets the ventilation anchor, so it sets every
+   window. Print your own IMV inter-record gap quantiles before trusting it.
+3. **`care_setting` can collapse.** It is `location_type` falling back to
+   `location_category`. If your ADT populates `location_type` on non-ICU rows,
+   the ED merges into the ICU with no error. Check the level counts in
+   `care_intervals.parquet` before reading the unit figures.
+4. **Small sites suppress more.** A caterpillar with two or three units is not a
+   variation estimate. Report the suppression count.
+
+---
+
+## Try it without real data
+
+The single-patient figure renders from a synthetic trace, so the figure code can
+be checked on a machine with no CLIF tables at all:
+
+```bash
+EXEMPLAR_SOURCE=synthetic Rscript code/03_exemplar.R
+```
+
+Writes to `output/dev_synthetic/` — never to the shareable tree — and labels the
+panel `GENERATED DATA, NOT A PATIENT`.
+
+---
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
+
+195 tests. They check config integrity, unit conversion, the PHI boundary, the
+pooling arithmetic and the heterogeneity statistics — on synthetic frames and
+config files, never on patient data, so they run anywhere. Both runners execute
+them as the preflight.
+
+---
+
+# Reference
+
+Everything below is detail. You do not need it to run the pipeline.
+
+---
 
 ## Objective
 
@@ -30,6 +276,34 @@ literature and the design notes are kept outside the repository.
 > below remain in the repo and still run, but they are **tabled**, not part of the
 > current analysis, and their outputs on disk predate their own scripts. Do not
 > cite a number from them without re-running. See `.claude/claude-todo.md`.
+
+## Pipeline steps
+
+| Step | Language | Script | Description |
+|---|---|---|---|
+| 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
+| 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
+| 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and the site's pain score. The episode is **drawn at random from those meeting the pre-specified rule** in `protocol.json` → `exemplar`, never chosen by inspection |
+| 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
+| 4 | R | `code/05_titration.R` | **Titration practice, both halves.** *Response*: how often a rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid, with rate decreases as a negative control. *Indication*: how often an increase or a bolus had a qualifying pain score or agitation within ±1 h, swept to 4 h — a level at each instrument's own threshold, never a change |
+| 5 | R | `code/06_unit_variation.R` | **Variation in both step-4 metrics** — co-administration and documented indication, each split by the ICU unit the patient was in when the event was charted and by calendar year. Caterpillar and funnel views per unit key. Caterpillar intervals are a cluster bootstrap resampling episodes rather than events; funnel limits are unadjusted binomial, with over-dispersion measured into `overdispersion.csv` and applied nowhere. Describes variation; models no association |
+
+These six steps are the current analysis and are exactly what the runners
+execute. The **tabled** scripts moved to `code/tabled/` on 2026-09-23
+(`gbmt_classes.R`, `lcmm_classes.R`, `transition_model.R`, `outcomes.R`), joined
+by `landmark_cohort.R` on 2026-09-30 — see **Objective**. The landmark script's
+only consumer of `landmark_cohort.parquet` was the already-tabled gbmt/lcmm
+pair, so a live step existed largely to feed tabled work; `06_unit_variation.R`
+took the slot it vacated and nothing else renumbered. `time_to_event.parquet` is
+unaffected — it is a Phase 0 product that steps 1 and 3 still read, so the STROBE
+landmark row survives. They still run, but by hand:
+`Rscript code/tabled/gbmt_classes.R`. Their names and output folders carry **no
+step number**: the number line belongs to the live pipeline, and while these
+scripts kept their old numbers two different scripts claimed 04 and two claimed
+05. They were also removed from both runners, because `outcomes.R` is an
+unconditional `stop()` and while it sat in the step
+list `./run_pipeline.sh` exited non-zero on every run — the documented
+one-command build could never succeed.
 
 ## Required CLIF tables and fields
 
@@ -313,76 +587,6 @@ Shareable outputs carry a provenance block from `provenance()` — see
 [Definitions and provenance](#definitions-and-provenance) for the fields and
 how a coordinating centre confirms that several sites ran the same analysis.
 
-## Prerequisites
-
-**Python** 3.11+ for data preparation (Phase 0), **R** 4.4+ for modeling
-(Phases 1–6). `gbmt` and `lcmm` are R-only, which is why the pipeline is split.
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-Rscript -e 'install.packages("renv"); renv::restore()'
-```
-
-## Running the pipeline
-
-**macOS / Linux**
-
-```bash
-./run_pipeline.sh
-```
-
-**Windows (PowerShell)**
-
-```powershell
-.\run_pipeline.ps1
-```
-
-Both runners run the preflight (`code/check_config.py`) first, then execute the
-steps below in order, stopping on first error, and finish by **verifying the
-shareable outputs**. The preflight confirms the config is complete and that
-`data_directory` actually holds the tables named in `tables_in_use` — it checks
-by filename and opens nothing, so a bad path fails in a second rather than an
-hour into Phase 0. Run it on its own at any time:
-
-```bash
-python3 code/check_config.py
-```
-
-The preflight suites test **config files and pure functions only**.
-`tests/test_pooling.py` reads produced outputs, so it runs at the end instead:
-in the preflight it failed on a clean clone, where those files do not exist
-yet, and aborted the run before anything could create them.
-
-## Pipeline steps
-
-| Step | Language | Script | Description |
-|---|---|---|---|
-| 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
-| 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
-| 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and the site's pain score. The episode is **drawn at random from those meeting the pre-specified rule** in `protocol.json` → `exemplar`, never chosen by inspection |
-| 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
-| 4 | R | `code/05_titration.R` | **Titration practice, both halves.** *Response*: how often a rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid, with rate decreases as a negative control. *Indication*: how often an increase or a bolus had a qualifying pain score or agitation within ±1 h, swept to 4 h — a level at each instrument's own threshold, never a change |
-| 5 | R | `code/06_unit_variation.R` | **Variation in both step-4 metrics** — co-administration and documented indication, each split by the ICU unit the patient was in when the event was charted and by calendar year. Caterpillar and funnel views per unit key. Caterpillar intervals are a cluster bootstrap resampling episodes rather than events; funnel limits are unadjusted binomial, with over-dispersion measured into `overdispersion.csv` and applied nowhere. Describes variation; models no association |
-
-These six steps are the current analysis and are exactly what the runners
-execute. The **tabled** scripts moved to `code/tabled/` on 2026-09-23
-(`gbmt_classes.R`, `lcmm_classes.R`, `transition_model.R`, `outcomes.R`), joined
-by `landmark_cohort.R` on 2026-09-30 — see **Objective**. The landmark script's
-only consumer of `landmark_cohort.parquet` was the already-tabled gbmt/lcmm
-pair, so a live step existed largely to feed tabled work; `06_unit_variation.R`
-took the slot it vacated and nothing else renumbered. `time_to_event.parquet` is
-unaffected — it is a Phase 0 product that steps 1 and 3 still read, so the STROBE
-landmark row survives. They still run, but by hand:
-`Rscript code/tabled/gbmt_classes.R`. Their names and output folders carry **no
-step number**: the number line belongs to the live pipeline, and while these
-scripts kept their old numbers two different scripts claimed 04 and two claimed
-05. They were also removed from both runners, because `outcomes.R` is an
-unconditional `stop()` and while it sat in the step
-list `./run_pipeline.sh` exited non-zero on every run — the documented
-one-command build could never succeed.
-
 ## Project structure
 
 ```
@@ -434,7 +638,13 @@ CLIF-fentanyl-trajectories/
 │   ├── test_waterfall_cache.py   # the cache key covers every input
 │   ├── test_pooling.py           # pooling exports are exactly poolable
 │   └── test_doses.py             # every charted dose unit converts correctly
+├── multisite/                    # gitignored -- OTHER SITES' bundles as received,
+│   ├── ucmc/                     #   one dir per site, each an unmodified copy of
+│   ├── rush/                     #   that site's output/final_no_phi/. Read by
+│   └── northwestern/             #   check_provenance.py and pool_sites.R
 ├── output/
+│   ├── pooled/                   # pool_sites.R output: one CSV per input file
+│   │                             #   with a POOLED row + heterogeneity.csv
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
 │   ├── final_no_phi/             # THE UPLOAD SET. PHI-free; one dir per script,
@@ -493,10 +703,10 @@ languages must produce the same digest; `tests/test_paths.py` asserts it.
 
 ### Confirming that several sites ran the same analysis
 
-At the coordinating centre, over the uploaded bundles:
+At the coordinating centre, over the site bundles:
 
 ```bash
-python3 code/check_provenance.py uploads/site_a uploads/site_b uploads/site_c
+python3 code/check_provenance.py multisite/site_a multisite/site_b multisite/site_c
 ```
 
 It reports one row per site and then separates the two kinds of divergence:
@@ -507,6 +717,13 @@ It reports one row per site and then separates the two kinds of divergence:
 - **Code** (`code_digest`) — reported, never fatal, and named down to the file.
   A site may legitimately have had to extend `_to_mcg_hr` with a locally charted
   dose unit to run at all; this pipeline's own error message instructs it to.
+
+## Data safety
+
+Patient-level data never leaves `data/intermediate_phi/` and
+`output/intermediate_phi/`, both gitignored and both carrying a warning label
+written at runtime. Only `output/final_no_phi/` is intended for transfer; its
+contents are aggregate by construction and PHI-checked at assembly.
 
 ## Contributing
 
@@ -522,48 +739,3 @@ another site is worse than no pointer, since the reader cannot tell whether they
 are missing a file or the reference is stale.)
 
 **Any generated code must be read by a human before it is run or committed.**
-
-## Data safety
-
-Patient-level data never leaves `data/intermediate_phi/` and
-`output/intermediate_phi/`, both gitignored and both carrying a warning label
-written at runtime. Only `output/final_no_phi/` is intended for transfer; its
-contents are aggregate by construction and PHI-checked at assembly.
-
-## Onboarding a new site
-
-1. Clone the repo **at the release tag the study is using** — `git clone` rather
-   than a ZIP download, so `code_version` resolves. `cp
-   config/config_template.json config/config.json`.
-2. Set `site_name`, `clif_version`, `dataset_version`, `data_directory`,
-   `filetype` and `timezone`. **`config.json` is site identity only** — if you
-   find yourself wanting to change a number that affects the cohort, it is in
-   `protocol.json` and it is not yours to change. `protocol.json` and
-   `outlier_config.json` define the measurement; if two sites set them
-   differently the pooled result is not meaningful, and `check_provenance.py`
-   will say so.
-3. **Confirm which pain instrument you chart** — `NVPS`, `cpot_total` or `BPS`
-   — and check the exact spelling against the `assessment_category` mCIDE. This
-   is the first thing to differ between sites and the one most likely to be
-   wrong: see [Pain instruments across sites](#pain-instruments-across-sites).
-   You should not need to edit anything; all three are declared. Phase 0 prints
-   a zero-record line for each one you do not chart, and refuses if you chart
-   none.
-4. Install pinned dependencies (see Prerequisites). `clifpy` must be the pinned
-   version exactly — its minor releases have changed CLIF datetime tz handling.
-5. Run `python3 code/check_config.py` until it prints `READY.` It validates every
-   declared category against clifpy's packaged mCIDE schemas, so a misspelled
-   instrument or medication fails here in a second rather than silently matching
-   zero rows for the whole study.
-6. **Check your `med_dose_unit` strings** and add any site-specific spelling to
-   `dose_unit_aliases`. Then run the pipeline and read the Phase 0 bolus report:
-   a dose in an unmapped unit is nulled, and a nulled bolus is indistinguishable
-   downstream from no bolus at all.
-7. Run the pipeline. Expect it to halt at least once on something real about
-   your data — an unhandled fentanyl dose unit, a device value outside the
-   schema. Those are findings, not obstacles; fix them at the named line rather
-   than dropping the rows, and note what you changed.
-8. Review `output/final_no_phi/` and send only that — **not** `output/parked/`,
-   `output/intermediate_phi/` or `output/dev_synthetic/`. Its `provenance.json`
-   files are what the coordinating centre uses to confirm every site ran the same
-   analysis (`code/check_provenance.py`).

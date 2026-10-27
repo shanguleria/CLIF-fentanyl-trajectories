@@ -1,10 +1,10 @@
 """Confirm that several sites ran the same analysis.
 
-Run at the COORDINATING CENTRE over the uploaded bundles -- it needs nothing
+Run at the COORDINATING CENTRE over the site bundles -- it needs nothing
 from a site beyond the `output/final_no_phi/` upload they already send, since
 every directory in there carries a provenance.json.
 
-    python code/check_provenance.py uploads/ucmc uploads/rush uploads/nu
+    python code/check_provenance.py multisite/ucmc multisite/rush multisite/nu
 
 Protocol divergence (protocol.json, outlier_config.json, definition_version)
 makes a pooled result meaningless and exits non-zero. Code divergence is
