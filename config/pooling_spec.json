@@ -95,7 +95,13 @@
             "_why": "Section 8.3 episode-level: one row per episode, so the interval pools honestly. Sum both and recompute the percentage; never average the percentages.",
             "percents": {
                 "pct": "n"
-            }
+            },
+            "_order": 80,
+            "_title": "Table 1, categorical",
+            "_grain": "episode -- one row per episode, so intervals pool honestly",
+            "_numerator": "episodes with that level in that stratum",
+            "_denominator": "episodes in that stratum",
+            "_caveat": "Table 1 p-values are deliberately dropped from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n."
         },
         "02_descriptive/pooling_histograms.csv": {
             "method": "sum_bins",
@@ -115,7 +121,13 @@
             "_why": "Section 8.4: a median has no closed form across sites, so eight skewed or zero-inflated variables ship an absolute-bin histogram instead. n_total is OBSERVED VALUES, not windows -- pair it with missingness.csv, never with a window count.",
             "percents": {
                 "pct": "n"
-            }
+            },
+            "_order": 170,
+            "_title": "Pooled distributions (02) -- absolute bins",
+            "_grain": "observed value",
+            "_numerator": "observed values falling in that bin",
+            "_denominator": "n_total -- OBSERVED VALUES of that variable, not windows",
+            "_caveat": "A median has no closed form across sites, so skewed and zero-inflated variables ship a histogram on config-declared absolute bins. Pair it with missingness.csv, never with a window count. Pooled quantiles are approximate to within a bin width, except where exact zero has its own bin."
         },
         "02_descriptive/baseline_characteristics.csv": {
             "method": "per_site_only",
@@ -138,7 +150,12 @@
             },
             "denominator_within": [
                 "__first_window__"
-            ]
+            ],
+            "_order": 90,
+            "_title": "Retention on ventilation over the window grid",
+            "_grain": "episode-window, clustered",
+            "_numerator": "episodes still ventilated in window w",
+            "_denominator": "the anchor cohort, FIXED at every window"
         },
         "02_descriptive/dose_summary.csv": {
             "method": "sum_counts",
@@ -160,7 +177,13 @@
                 "mean",
                 "sd"
             ],
-            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from."
+            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from.",
+            "_order": 100,
+            "_title": "Share of windows receiving each drug",
+            "_grain": "episode-window, clustered",
+            "_numerator": "windows with dose > 0",
+            "_denominator": "VENTILATED windows in w -- not alive-admitted",
+            "_caveat": "The receivers_only rows carry no percentage by design: that subset is already filtered to dose > 0, so a 100 there would be structural."
         },
         "02_descriptive/balanced_panels.csv": {
             "method": "sum_counts",
@@ -183,7 +206,12 @@
                 "mean",
                 "sd"
             ],
-            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from."
+            "_not_poolable_why": "This file ships a mean with NO sum_sq, so a pooled mean cannot be formed from it. pooling_continuous.csv carries the sufficient statistics for the same variables and is where the pooled central tendency comes from.",
+            "_order": 110,
+            "_title": "Balanced-panel dosing overlays",
+            "_grain": "episode-window, clustered",
+            "_numerator": "windows with dose > 0",
+            "_denominator": "episodes ventilated in the window ENDING at h"
         },
         "02_descriptive/imv_encounter_duration.csv": {
             "method": "side_by_side",
@@ -209,7 +237,13 @@
             },
             "denominator_within": [
                 "window_idx"
-            ]
+            ],
+            "_order": 120,
+            "_title": "Delivery-state prevalence",
+            "_grain": "episode-window, clustered",
+            "_numerator": "episodes in that state in window w",
+            "_denominator": "all anchor episodes, with terminal states carried forward",
+            "_caveat": "Rows sum to 100% within a window, which is why the denominator is self-contained and why a suppressed cell here would break the total."
         },
         "04_states/state_transition_counts.csv": {
             "method": "count_matrix",
@@ -225,7 +259,13 @@
             "_why": "Section 8.3 transition level: n_at_risk is transitions ORIGINATING in that state, not episodes. Excludes absorbing origins and the final window. The long count form exists so the matrix pools by summing; the wide form is the readable twin.",
             "percents": {
                 "pct": "n"
-            }
+            },
+            "_order": 150,
+            "_title": "Delivery-state transitions",
+            "_grain": "transition",
+            "_numerator": "transitions from origin to destination",
+            "_denominator": "n_at_risk -- transitions ORIGINATING in that state, not episodes",
+            "_caveat": "Excludes absorbing origins and the final window."
         },
         "04_states/state_transitions.csv": {
             "method": "per_site_only",
@@ -251,7 +291,12 @@
             },
             "denominator_within": [
                 "window_idx"
-            ]
+            ],
+            "_order": 140,
+            "_title": "Dose-band state prevalence",
+            "_grain": "episode-window, clustered",
+            "_numerator": "episodes in that dose band in window w",
+            "_denominator": "all anchor episodes, terminal states carried forward"
         },
         "04_states/dose_state_transition_counts.csv": {
             "method": "count_matrix",
@@ -267,7 +312,12 @@
             "_why": "Section 8.3 transition level: n_at_risk is transitions ORIGINATING in that state, not episodes. Excludes absorbing origins and the final window. The long count form exists so the matrix pools by summing; the wide form is the readable twin.",
             "percents": {
                 "pct": "n"
-            }
+            },
+            "_order": 160,
+            "_title": "Dose-band state transitions",
+            "_grain": "transition",
+            "_numerator": "transitions from origin to destination",
+            "_denominator": "n_at_risk -- transitions originating in that band"
         },
         "04_states/dose_state_transitions.csv": {
             "method": "per_site_only",
@@ -293,7 +343,13 @@
             },
             "denominator_within": [
                 "window_idx"
-            ]
+            ],
+            "_order": 130,
+            "_title": "Delivery-state prevalence among those still at risk",
+            "_grain": "episode-window, clustered",
+            "_numerator": "same numerator as state_prevalence",
+            "_denominator": "VENTILATED episodes only, so it shrinks window by window",
+            "_caveat": "The pair is the point: one answers 'of everyone', the other 'of those still at risk'."
         },
         "05_titration/coadministration.csv": {
             "method": "sum_counts",
@@ -311,7 +367,13 @@
             "_why": "Section 8.3 event level: events with a fentanyl bolus within +/-30 min, over events in that group, restricted to ventilated windows. CLUSTERED in episodes -- the point estimate is exact, the naive binomial interval is not. Carry deff.",
             "percents": {
                 "pct_paired": "n_paired"
-            }
+            },
+            "_order": 10,
+            "_title": "Bolus co-administration at a fentanyl rate increase",
+            "_grain": "event, clustered within episodes",
+            "_numerator": "rate-change events with a fentanyl bolus charted within +/-30 min",
+            "_denominator": "rate-change events of that kind, ventilated windows only",
+            "_caveat": "`any increase` = initiation union uptitration; downtitration is the NEGATIVE CONTROL and is excluded from it. `deff` is blank in the pooled row on purpose: it describes clustering within ONE site's episodes, so averaging two of them would describe nothing. The point estimate pools exactly; the interval does not."
         },
         "05_titration/indication.csv": {
             "method": "sum_counts",
@@ -336,7 +398,13 @@
             "percents": {
                 "pct_assessed": "n_assessed",
                 "pct_indicated_all": "n_indicated"
-            }
+            },
+            "_order": 20,
+            "_title": "Was the escalation indicated? Documented pain or agitation nearby",
+            "_grain": "event, clustered within episodes",
+            "_numerator": "pct_assessed: events with ANY score of that class within the window. pct_indicated_all: events with a score AT OR ABOVE that instrument's threshold",
+            "_denominator": "events of that type. pct_indicated_of_assessed uses n_assessed instead, which is what separates documentation from indication",
+            "_caveat": "THE PAIN CLASS IS NOT COMPARABLE ACROSS SITES that chart different instruments: cpot_total >= 3 on a 0-8 scale and NVPS >= 4 on a 0-10 scale do not mark the same severity, and they behave differently under the window sweep. The SEDATION class uses RASS >= +1 everywhere and is the clean cross-site comparison."
         },
         "05_titration/indication_window_sensitivity.csv": {
             "method": "sum_counts",
@@ -357,7 +425,13 @@
             "percents": {
                 "pct_assessed": "n_assessed",
                 "pct_indicated_all": "n_indicated"
-            }
+            },
+            "_order": 50,
+            "_title": "Indication against assessment-window width",
+            "_grain": "event, clustered within episodes",
+            "_numerator": "as indication.csv, swept over W = 1-4 h",
+            "_denominator": "as indication.csv",
+            "_caveat": "Widening the window buys more ASSESSED events faster than more INDICATED ones, so the level rises with W at every site. The primary window is 1 h."
         },
         "05_titration/assessment_frequency.csv": {
             "method": "sum_counts",
@@ -384,7 +458,13 @@
                 "gap_p95"
             ],
             "_not_poolable_why": "The gap quantiles are quantiles and do not pool; they are the per-site answer and the RANGE across sites is the thing to report. records_per_ventilated_day is blanked here but IS recoverable at the centre: sum(n_records) / (sum(n_ventilated_windows) * window_hours / 24). It is left blank rather than summed because the engine has no generic path to a rate whose denominator is a unit conversion of another column.",
-            "_why": "Answers the reviewer objection that a low indicated fraction reflects missing documentation rather than absent pain. Keyed by INSTRUMENT, so n_ventilated_windows repeats across the rows of one site and sums correctly across sites within an instrument -- no double counting. The denominator is VENTILATED windows, matching the indication analysis; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is 1.36x larger at UCMC, and setting the two side by side without noticing that looks like a contradiction."
+            "_why": "Answers the reviewer objection that a low indicated fraction reflects missing documentation rather than absent pain. Keyed by INSTRUMENT, so n_ventilated_windows repeats across the rows of one site and sums correctly across sites within an instrument -- no double counting. The denominator is VENTILATED windows, matching the indication analysis; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is 1.36x larger at UCMC, and setting the two side by side without noticing that looks like a contradiction.",
+            "_order": 30,
+            "_title": "How often is a score documented at all?",
+            "_grain": "episode-window (4h)",
+            "_numerator": "ventilated windows containing at least one score of that instrument",
+            "_denominator": "that site's ventilated windows",
+            "_caveat": "An instrument charted at only ONE site pools to that site's own value by construction -- it is not a two-site estimate. The denominator is VENTILATED windows; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is larger, so quoting the two together without saying so looks contradictory."
         },
         "05_titration/window_sensitivity.csv": {
             "method": "sum_counts",
@@ -401,7 +481,13 @@
             "_why": "The 5-60 min bolus-window sweep. Same grain and same clustering as coadministration.",
             "percents": {
                 "pct_paired": "n_paired"
-            }
+            },
+            "_order": 40,
+            "_title": "Co-administration against pairing-window width",
+            "_grain": "event, clustered within episodes",
+            "_numerator": "events with a bolus within W minutes",
+            "_denominator": "rate-change events of that kind",
+            "_caveat": "A result that holds only at the widest window is measuring charting cadence rather than practice. Read the ORDERING across widths, not the level."
         },
         "05_titration/charting_precision.csv": {
             "method": "sum_counts",
@@ -418,7 +504,13 @@
             "_why": "Whether the pairing survives when the charted action label is required to agree. A measurement-quality check, poolable by summing.",
             "percents": {
                 "pct_paired": "n_paired"
-            }
+            },
+            "_order": 60,
+            "_title": "Does pairing survive on timestamps charted on the hour?",
+            "_grain": "event",
+            "_numerator": "events paired with a bolus within W minutes",
+            "_denominator": "events in that on-the-hour / off-the-hour class",
+            "_caveat": "On-the-hour timestamps are likely retrospectively rounded, so the true minute is unknown and pairing fails. A measurement-quality check, not a finding."
         },
         "05_titration/charting_agreement.csv": {
             "method": "sum_counts",
@@ -449,7 +541,13 @@
             "percents": {
                 "pct_never": "n_never",
                 "pct_always": "n_always"
-            }
+            },
+            "_order": 70,
+            "_title": "Per-episode share of increases that were paired",
+            "_grain": "episode",
+            "_numerator": "pct_never: episodes at exactly 0. pct_always: episodes at exactly 1",
+            "_denominator": "n_episodes_ge_min_events -- episodes with at least 2 increases, NOT n_episodes",
+            "_caveat": "A single-event episode can only score 0 or 1, which would pile artificial mass at both ends of a distribution meant to describe a tendency. The word 'adherence' asserts a standard that no evidence here establishes."
         },
         "05_titration/rate_change_magnitude.csv": {
             "method": "sum_counts",
@@ -486,7 +584,12 @@
             "_why": "The two histograms emitted by 05 rather than 02: rate-change magnitude and per-episode adherence. Identical treatment to the 02 file.",
             "percents": {
                 "pct": "n"
-            }
+            },
+            "_order": 180,
+            "_title": "Pooled distributions (05) -- absolute bins",
+            "_grain": "observed value",
+            "_numerator": "observed values falling in that bin",
+            "_denominator": "n_total -- observed values of that variable"
         },
         "06_unit_variation/unit_adherence.csv": {
             "method": "heterogeneity_source",
@@ -584,5 +687,6 @@
         "value"
     ],
     "_not_poolable_columns_why": "Explicitly NA in the POOLED row, because they are quantities a sum cannot produce. A median has no closed form across sites -- the histogram carries that. A per-site confidence interval and design effect describe THAT site's clustering. pct_indicated_of_assessed has a different denominator (n_assessed) and is recomputed separately rather than summed. Leaving these blank is the honest answer; carrying one site's value into a pooled row would be a lie about what it describes. mean and sd were removed on review: they ARE poolable wherever sum and sum_sq ship, which is exactly what pooling_continuous.csv exists for. In files that carry only a mean they are unpoolable, and the engine's guard reports that per file rather than this list asserting it globally.",
-    "_per_file_not_poolable": "A file entry may carry its own `not_poolable` list, unioned with the global one. Poolability is a property of what a file SHIPS, not of a column name."
+    "_per_file_not_poolable": "A file entry may carry its own `not_poolable` list, unioned with the global one. Poolability is a property of what a file SHIPS, not of a column name.",
+    "_summary_contract": "pool_sites.R renders output/pooled/pooled_summary.md from the _title, _grain, _numerator, _denominator and _caveat keys on each entry that declares `percents`. An entry with percents and no _numerator is a gap: the number would ship with no statement of what it counts, which is the thing the summary exists to prevent. The engine asserts it."
 }

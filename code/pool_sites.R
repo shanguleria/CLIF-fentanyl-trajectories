@@ -246,7 +246,15 @@ pool_sum_counts <- function(d, keys, spec, rel) {
       blank <- site_all_na[rownames(out)]
       recomputed[!is.na(blank) & blank] <- NA_real_
     }
-    out[[pc]] <- recomputed
+    # Round to the precision the SITES shipped for this column, read off their
+    # own values rather than fixed: coadministration ships 1 decimal and the
+    # histograms ship 3, and a pooled row reading 81.222814864283% next to a
+    # site row reading 81.2% is the kind of thing that reaches a manuscript.
+    dec <- max(c(0L, vapply(as.character(d[[pc]]), function(v) {
+      v <- sub("^.*\\.", "", v[grepl("\\.", v)])
+      if (!length(v)) 0L else nchar(sub("0+$", "", v))
+    }, integer(1))), na.rm = TRUE)
+    out[[pc]] <- round(recomputed, dec)
   }
   # Anything numeric that is neither summed nor a label nor a recomputed percent
   # is a quantity a sum cannot produce. Say NA rather than carry a site's value.
@@ -308,7 +316,12 @@ pool_bins <- function(d, keys, rel) {
                data.frame(site = "POOLED", n = as.vector(n), stringsAsFactors = FALSE))
   tot <- tapply(out$n, out$variable, sum, na.rm = TRUE)
   out$n_total <- as.vector(tot[as.character(out$variable)])
-  out$pct <- 100 * out$n / out$n_total
+  # Same precision rule as the counts pooler: match what the sites shipped.
+  dec <- max(c(0L, vapply(as.character(d$pct), function(v) {
+    v <- sub("^.*\\.", "", v[grepl("\\.", v)])
+    if (!length(v)) 0L else nchar(sub("0+$", "", v))
+  }, integer(1))), na.rm = TRUE)
+  out$pct <- round(100 * out$n / out$n_total, dec)
   out
 }
 
@@ -356,6 +369,105 @@ for (rel in claimed) {
 }
 
 
+# ---- The readable summary ----------------------------------------------------
+# A pooled percentage with no statement of what it counts is the thing this
+# document exists to prevent. Every measure gets its grain, its numerator, its
+# denominator and its caveat, rendered from config/pooling_spec.json rather than
+# retyped here -- so the prose cannot drift from the method it describes.
+
+md_table <- function(d, cols) {
+  hdr <- paste0("| ", paste(cols, collapse = " | "), " |")
+  sep <- paste0("|", paste(rep("---", length(cols)), collapse = "|"), "|")
+  # Counts get thousands separators: this document exists to be READ, and
+  # 62998 against 62,998 is the difference between scanning and parsing.
+  fmt <- function(v) {
+    x <- suppressWarnings(as.numeric(v))
+    ifelse(is.na(x), ifelse(is.na(v) | v == "", "--", as.character(v)),
+           ifelse(x == round(x) & abs(x) >= 1000,
+                  formatC(x, format = "d", big.mark = ","), as.character(v)))
+  }
+  rows <- apply(d[, cols, drop = FALSE], 1, function(r) paste0("| ", paste(fmt(r), collapse = " | "), " |"))
+  c(hdr, sep, rows)
+}
+
+write_summary <- function() {
+  # Every percent-bearing entry must carry a description, or a number ships with
+  # nothing saying what it counts.
+  gaps <- Filter(function(rel) {
+    e <- FILES[[rel]]
+    !is.null(e[["percents"]]) && is.null(e[["_numerator"]])
+  }, claimed)
+  if (length(gaps))
+    stop("these entries declare `percents` but no `_numerator` in ",
+         "config/pooling_spec.json, so their pooled value would ship with no ",
+         "statement of what it counts: ", paste(gaps, collapse = ", "),
+         call. = FALSE)
+
+  have <- Filter(function(rel) !is.null(FILES[[rel]][["_numerator"]]) &&
+                   file.exists(file.path(OUT, gsub("/", "__", rel))), claimed)
+  ord <- vapply(have, function(rel) {
+    o <- FILES[[rel]][["_order"]]; if (is.null(o)) 999 else as.numeric(o)
+  }, numeric(1))
+  have <- have[order(ord)]
+
+  L <- c(
+    "# Pooled summary",
+    "",
+    sprintf("%d site(s): **%s**. Generated %s from pooling spec %s.",
+            K, paste(sites, collapse = ", "),
+            format(Sys.time(), "%Y-%m-%d %H:%M %Z"), SPEC$definition_version),
+    "",
+    "Every percentage below is **sum of numerators over sum of denominators**,",
+    "never an average of the sites' percentages. The site exports carry both",
+    "counts precisely so that no percentage is reconstructed from a rounded one.",
+    "",
+    "**Real site names appear here.** Anonymise before anything audience-facing.",
+    "")
+
+  for (rel in have) {
+    e <- FILES[[rel]]
+    d <- utils::read.csv(file.path(OUT, gsub("/", "__", rel)),
+                         stringsAsFactors = FALSE, check.names = FALSE)
+    keys <- intersect(unlist(e[["keys"]]), names(d))
+    L <- c(L, sprintf("## %s", e[["_title"]]), "",
+           sprintf("`%s` &mdash; grain: **%s**", rel, e[["_grain"]]), "",
+           sprintf("- **Numerator:** %s", e[["_numerator"]]),
+           sprintf("- **Denominator:** %s", e[["_denominator"]]), "")
+    if (!is.null(e[["_caveat"]]))
+      L <- c(L, sprintf("> %s", e[["_caveat"]]), "")
+
+    for (pc in names(e[["percents"]])) {
+      num <- e[["percents"]][[pc]]
+      if (!all(c(pc, num) %in% names(d))) next
+      den <- e[["denominator"]]
+      show <- c(keys, "site", num,
+                if (!is.null(den) && den %in% names(d)) den, pc)
+      nrow_per_site <- nrow(d) / max(1L, length(unique(d$site)))
+      if (nrow_per_site > 24) {
+        # Too many rows to read. Ship the pooled rows and point at the CSV.
+        sub <- d[d$site == "POOLED", , drop = FALSE]
+        L <- c(L, sprintf("`%s` has %d rows per site &mdash; POOLED rows only here; full table in the CSV.",
+                          pc, round(nrow_per_site)), "",
+               md_table(utils::head(sub, 12), show), "")
+      } else {
+        # Keep the ORDER THE SITE WROTE -- initiation, uptitration,
+        # downtitration, any increase is a logical sequence that alphabetical
+        # sorting scrambles into "any increase" first. Group sites under each
+        # key, keys in first-appearance order.
+        kk <- if (length(keys)) do.call(paste, c(lapply(keys, function(k)
+                 as.character(d[[k]])), sep = "\r")) else rep("", nrow(d))
+        o <- d[order(match(kk, unique(kk)),
+                     match(d$site, c(sites, "POOLED"))), , drop = FALSE]
+        L <- c(L, md_table(o, show), "")
+      }
+    }
+  }
+  writeLines(L, file.path(OUT, "pooled_summary.md"))
+  written <<- c(written, "pooled_summary.md")
+  cat(sprintf("  pooled_summary.md  (%d measure(s) described)\n", length(have)))
+}
+
+
 # ---- 5. Between-site heterogeneity --------------------------------------------
 # The same overdispersion() the funnel uses, grouped by SITE instead of by unit.
 # Same algebra, different grouping -- which is the whole point: if units inside
@@ -396,6 +508,10 @@ if (length(het)) {
 } else {
   cat("  no unit_adherence rows, so nothing to compare between sites\n")
 }
+
+
+cat("\nSummary\n")
+write_summary()
 
 
 # ---- 6. Provenance -------------------------------------------------------------
