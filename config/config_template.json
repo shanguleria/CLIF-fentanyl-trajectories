@@ -19,5 +19,5 @@
         "hospital_diagnosis"
     ],
     "dose_unit_aliases": {},
-    "accepted_unhandled_fentanyl_units": []
+    "accepted_unhandled_dose_units": {}
 }

@@ -781,6 +781,11 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     return grid[["encounter_block", "hr", "rate"]]
 
 
+def _accepted_units() -> dict[str, list[str]]:
+    """{drug: [units]} the site has chosen to leave unconverted. Empty = stop on any."""
+    return CONFIG.get("accepted_unhandled_dose_units", {})
+
+
 def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
     """Convert charted fentanyl infusion dose to mcg/hr using the charted unit.
 
@@ -799,10 +804,10 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
     out[unit == "mcg/min"] = dose * 60.0
     unresolved = dose.notna() & out.isna()
     # Units the SITE has chosen to leave unconverted (config.json
-    # accepted_unhandled_fentanyl_units; absent/empty = none, so the run stops).
+    # accepted_unhandled_dose_units.fentanyl; absent/empty = none, so the run stops).
     # Left NaN on purpose, counted here, and dropped (and counted again) in
     # _infusion_events. Any unit not listed there still stops the run.
-    accepted = {u.lower().strip() for u in CONFIG.get("accepted_unhandled_fentanyl_units", [])}
+    accepted = {u.lower().strip() for u in _accepted_units().get("fentanyl", [])}
     known = unresolved & unit.isin(accepted)
     if known.any():
         print(f"  fentanyl infusion: {int(known.sum()):,} row(s) in known-unhandled units "
@@ -817,7 +822,7 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
             f"Add them to _to_mcg_hr rather than dropping -- a dropped unit removes "
             f"exposure for whichever patients were charted that way. If the unit "
             f"cannot be converted and you accept losing those rows, list it in "
-            f"config.json accepted_unhandled_fentanyl_units and confirm the share "
+            f"config.json accepted_unhandled_dose_units and confirm the share "
             f"of rows with your data owner first."
         )
     return out
@@ -846,7 +851,8 @@ def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
 
 def _to_target_rate(m: pd.DataFrame) -> pd.Series:
     """Convert a sedative infusion to its own target unit. Config: dose_units."""
-    rate, rep = convert_doses(m, "med_category", "med_dose", "med_dose_unit")
+    rate, rep = convert_doses(m, "med_category", "med_dose", "med_dose_unit",
+                              accepted=_accepted_units())
     print(f"  {rep}")
     return rate
 

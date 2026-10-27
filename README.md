@@ -187,7 +187,7 @@ plausible wrong number. Fix at the named line; do not drop the rows.
 
 | message | meaning |
 |---|---|
-| `rows in unhandled units` | a fentanyl dose unit `_to_mcg_hr` does not convert, and the run **stops**. Add it to `_to_mcg_hr`; if it truly cannot be converted (e.g. a bare `mcg` amount), list it in `config.json` `accepted_unhandled_fentanyl_units` only after confirming the share of rows with your data owner. Accepted rows are counted on the console and excluded |
+| `rows in unhandled units` | a fentanyl dose unit `_to_mcg_hr` does not convert, and the run **stops**. Add it to `_to_mcg_hr`; if it truly cannot be converted (e.g. a bare `mcg` amount), list it in `config.json` `accepted_unhandled_dose_units` only after confirming the share of rows with your data owner. Accepted rows are counted on the console and excluded |
 | `med_category ... matched no rows` | fentanyl is missing from a medication table; the message prints what *is* there |
 | `device_category value not in clifpy's schema` | a casing or vocabulary mismatch in `respiratory_support` |
 | `adt is missing hospital_id` | encounter stitching cannot run |
@@ -508,7 +508,7 @@ is handed to the library with no translation layer.
 | `filetype` | `parquet` or `csv`; passed straight to clifpy |
 | `timezone` | your site's local zone. Every window is a wall-clock interval, so this shifts results if wrong |
 | `tables_in_use` | CLIF tables loaded by Phase 0, and the set `check_config.py` verifies by filename |
-| `accepted_unhandled_fentanyl_units` | fentanyl dose units you have chosen to leave unconverted (default `[]`, so any unconvertible unit stops the run). Counted and excluded, not guessed. UCMC lists `mcg` (90 rows site-wide, pending confirmation). Digested into `site_config_digest`, so the centre can see it |
+| `accepted_unhandled_dose_units` | `{drug: [units]}` you have chosen to leave unconverted, for continuous-infusion rows (default `{}`, so any unconvertible unit stops the run). Counted and excluded, not guessed. UCMC lists fentanyl `mcg`, propofol `mcg`/`mg`, midazolam `mg`, dexmedetomidine `mcg` — bare amounts, not rates; 175 rows site-wide, pending confirmation with the site. Digested into `site_config_digest`, so the centre can see it |
 | `dose_unit_aliases` | **your** free-text `med_dose_unit` strings → the canonical bolus units. `med_dose_unit` has no mCIDE, so this is the one estimand-affecting thing that is irreducibly site-specific. UCMC maps `"mcg of opiate"` → `mcg`. An unmapped unit carrying a dose is reported and nulled, and a nulled bolus reads downstream as *no bolus given* — **so read the Phase 0 bolus report before trusting the co-administration numbers at a new site** |
 
 **`config/protocol.json` — the estimand. Do not edit any of this to make a run
