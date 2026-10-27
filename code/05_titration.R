@@ -114,6 +114,7 @@ OWNED <- list(
               "indication.png",
               "charting_precision.csv", "rate_change_magnitude.csv",
               "charting_agreement.csv", "adherence_distribution.csv",
+              "assessment_frequency.csv",
               "pooling_histograms.csv",
               "coadministration.png", "window_sensitivity.png",
               "provenance.json", "captions.md"))
@@ -417,6 +418,67 @@ cat(sprintf("\nPooling histograms: %s (%d bins total)\n",
             paste(HIST_MINE, collapse = ", "), nrow(pool_histograms)))
 
 
+# ---- 8a. How often is a score documented at all? -----------------------------
+# THE REVIEWER'S FIRST OBJECTION, answered with a measurement rather than a
+# caveat: a low indicated fraction could mean pain was absent, or it could mean
+# nobody wrote a score down. indication.csv already separates those two with its
+# `of assessed` denominator; this table says how often a score exists in the
+# first place, per instrument, so the separation can be defended at every site.
+#
+# WHY IT HAS TO BE PER SITE. Assessment cadence is the biggest thing that differs
+# between sites and the thing the +/-1h window is tuned to. A site charting q4h
+# measures something different by the same name, and until 2026-10-27 the only
+# record of UCMC's cadence was PROSE IN protocol.json -- one site, one date, not
+# recomputed anywhere and impossible to pool. Now every site computes its own.
+#
+# DENOMINATOR IS VENTILATED WINDOWS, deliberately. missingness.csv counts the
+# same scores over ALIVE-ADMITTED windows, which at UCMC is 251,695 against
+# 184,854 ventilated -- 1.36x too big. Set against indication.csv's 82.8% that
+# looks like a contradiction and is really a denominator mismatch, so this table
+# uses the same restriction the indication analysis does.
+
+asm_w <- asm
+asm_w$window_idx <- floor(asm_w$t_hr / WINDOW_H)
+vent_keys <- paste(long$encounter_block[long$ventilated],
+                   long$window_idx[long$ventilated], sep = "\r")
+n_vent_windows <- length(vent_keys)
+vent_days <- n_vent_windows * WINDOW_H / 24
+
+asm_freq <- do.call(rbind, lapply(sort(unique(asm$instrument)), function(ins) {
+  d <- asm_w[asm_w$instrument == ins, ]
+  # Gaps are WITHIN an episode and between consecutive records. A gap across two
+  # episodes is not a charting interval, it is a discharge.
+  gaps <- unlist(lapply(split(d$t_hr, d$encounter_block), function(t) {
+    t <- sort(t); if (length(t) < 2L) numeric(0) else diff(t)
+  }), use.names = FALSE)
+  in_vent <- paste(d$encounter_block, d$window_idx, sep = "\r") %in% vent_keys
+  q <- function(p) if (!length(gaps)) NA_real_ else
+    round(as.numeric(stats::quantile(gaps, p, names = FALSE)), 2)
+  data.frame(
+    instrument = ins,
+    class = if (ins %in% names(PAIN_THRESH)) "pain" else "sedation",
+    n_records = nrow(d),
+    n_episodes_with_any = length(unique(d$encounter_block)),
+    # The poolable pair: these two sum across sites, the quantiles below do not.
+    n_ventilated_windows = n_vent_windows,
+    n_windows_with_any = length(unique(
+      paste(d$encounter_block, d$window_idx, sep = "\r")[in_vent])),
+    records_per_ventilated_day = round(nrow(d) / vent_days, 2),
+    n_gaps = length(gaps),
+    gap_p50 = q(0.50), gap_p75 = q(0.75), gap_p90 = q(0.90), gap_p95 = q(0.95),
+    stringsAsFactors = FALSE)
+}))
+asm_freq$pct_windows_with_any <-
+  round(100 * asm_freq$n_windows_with_any / asm_freq$n_ventilated_windows, 1)
+stopifnot(
+  "a documented window count exceeds the ventilated windows it is counted over" =
+    all(asm_freq$n_windows_with_any <= asm_freq$n_ventilated_windows))
+
+cat("\nAssessment documentation frequency (ventilated windows)\n")
+print(asm_freq[, c("instrument", "class", "n_records", "records_per_ventilated_day",
+                   "pct_windows_with_any", "gap_p50", "gap_p90")], row.names = FALSE)
+
+
 # ---- 8b. Was the dose change indicated? --------------------------------------
 # The other half of the titration question. Coadministration above asks whether
 # a bolus ACCOMPANIED an increase; this asks whether anything documented
@@ -707,6 +769,7 @@ write_out(mag,  "rate_change_magnitude.csv")
 write_out(agree, "charting_agreement.csv")
 write_out(adh_dist, "adherence_distribution.csv")
 write_out(pool_histograms, "pooling_histograms.csv")
+write_out(asm_freq, "assessment_frequency.csv")
 write_out(ind, "indication.csv")
 write_out(ind_sens, "indication_window_sensitivity.csv")
 

@@ -359,6 +359,33 @@
                 "pct_indicated_all": "n_indicated"
             }
         },
+        "05_titration/assessment_frequency.csv": {
+            "method": "sum_counts",
+            "grain": "episode_window",
+            "keys": [
+                "instrument",
+                "class"
+            ],
+            "numerators": [
+                "n_records",
+                "n_episodes_with_any",
+                "n_windows_with_any",
+                "n_gaps"
+            ],
+            "denominator": "n_ventilated_windows",
+            "percents": {
+                "pct_windows_with_any": "n_windows_with_any"
+            },
+            "not_poolable": [
+                "records_per_ventilated_day",
+                "gap_p50",
+                "gap_p75",
+                "gap_p90",
+                "gap_p95"
+            ],
+            "_not_poolable_why": "The gap quantiles are quantiles and do not pool; they are the per-site answer and the RANGE across sites is the thing to report. records_per_ventilated_day is blanked here but IS recoverable at the centre: sum(n_records) / (sum(n_ventilated_windows) * window_hours / 24). It is left blank rather than summed because the engine has no generic path to a rate whose denominator is a unit conversion of another column.",
+            "_why": "Answers the reviewer objection that a low indicated fraction reflects missing documentation rather than absent pain. Keyed by INSTRUMENT, so n_ventilated_windows repeats across the rows of one site and sums correctly across sites within an instrument -- no double counting. The denominator is VENTILATED windows, matching the indication analysis; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is 1.36x larger at UCMC, and setting the two side by side without noticing that looks like a contradiction."
+        },
         "05_titration/window_sensitivity.csv": {
             "method": "sum_counts",
             "grain": "event",
