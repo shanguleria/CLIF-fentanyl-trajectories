@@ -1208,7 +1208,7 @@ def nee_covariate(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
     m = _attach_current_weight(m, t)
     conv = m.copy()
     conv["dose_std"], drep = convert_doses(conv, "med_category", "med_dose",
-                                           "med_dose_unit")
+                                           "med_dose_unit", accepted=_accepted_units())
     print(drep)
     conv, rep = apply_med_converted(conv, "med_category", "dose_std", config=OUTLIERS)
     print(rep)
@@ -1424,7 +1424,9 @@ def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
     m, _ = apply_med_raw(m, "med_category", "med_dose", "med_dose_unit", config=OUTLIERS)
     m = _attach_current_weight(m, t)
     conv = m.copy()
-    conv["dose_std"], _ = convert_doses(conv, "med_category", "med_dose", "med_dose_unit")
+    conv["dose_std"], drep = convert_doses(conv, "med_category", "med_dose", "med_dose_unit",
+                                           accepted=_accepted_units())
+    print(drep)
     conv = conv[conv["dose_std"] > 0]
     conv = _to_windows(conv, cohort, "admin_dttm")
     if conv.empty:
