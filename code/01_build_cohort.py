@@ -144,6 +144,18 @@ STROBE: list[tuple[str, int]] = []
 FLOW: list[dict] = []
 
 
+def asof(left: pd.DataFrame, right: pd.DataFrame, *, left_on: str, right_on: str,
+         **kw) -> pd.DataFrame:
+    """merge_asof that tolerates mixed datetime resolutions.
+
+    pandas 3 keeps each column's unit, and merge_asof refuses us-vs-ns keys. The
+    CLIF parquet tables mix both (e.g. resp/medication us, vitals/labs ns). Only
+    the unit is cast to the left key's; tz and values are unchanged.
+    """
+    right = right.assign(**{right_on: right[right_on].astype(left[left_on].dtype)})
+    return pd.merge_asof(left, right, left_on=left_on, right_on=right_on, **kw)
+
+
 def note(label: str, n: int) -> None:
     """A diagnostic count. Does not enter the cohort flow."""
     STROBE.append((label, n))
@@ -1197,10 +1209,10 @@ def oxygenation_covariate(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
 
     def pair(readings: pd.DataFrame, time_col: str) -> pd.DataFrame:
         r = readings.sort_values(time_col, kind="stable")
-        m = pd.merge_asof(r, fio2, left_on=time_col, right_on="recorded_dttm",
+        m = asof(r, fio2, left_on=time_col, right_on="recorded_dttm",
                           by="encounter_block", direction="backward",
                           tolerance=pd.Timedelta(hours=FIO2_LOOKBACK_H))
-        m = pd.merge_asof(m.sort_values(time_col), any_row, left_on=time_col,
+        m = asof(m.sort_values(time_col), any_row, left_on=time_col,
                           right_on="recorded_dttm", by="encounter_block",
                           direction="backward",
                           tolerance=pd.Timedelta(hours=FIO2_LOOKBACK_H),
@@ -1328,7 +1340,7 @@ def _attach_current_weight(med: pd.DataFrame, t: dict) -> pd.DataFrame:
             .dropna().sort_values("recorded_dttm", kind="stable"))
 
     out = med.sort_values("admin_dttm", kind="stable")
-    out = pd.merge_asof(out, w, left_on="admin_dttm", right_on="recorded_dttm",
+    out = asof(out, w, left_on="admin_dttm", right_on="recorded_dttm",
                         by="encounter_block", direction="backward",
                         suffixes=("", "_w"))
     out = out.rename(columns={"vital_value": "weight_kg"})
@@ -1544,9 +1556,9 @@ def attach_weight(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     anchors = cohort[["encounter_block", "anchor_dttm"]].sort_values("anchor_dttm",
                                                                      kind="stable")
 
-    back = pd.merge_asof(anchors, w, left_on="anchor_dttm", right_on="recorded_dttm",
+    back = asof(anchors, w, left_on="anchor_dttm", right_on="recorded_dttm",
                          by="encounter_block", direction="backward")
-    fwd = pd.merge_asof(anchors, w, left_on="anchor_dttm", right_on="recorded_dttm",
+    fwd = asof(anchors, w, left_on="anchor_dttm", right_on="recorded_dttm",
                         by="encounter_block", direction="forward")
     out = back.rename(columns={"vital_value": "weight_kg", "recorded_dttm": "weight_dttm"})
     need = out["weight_kg"].isna()
