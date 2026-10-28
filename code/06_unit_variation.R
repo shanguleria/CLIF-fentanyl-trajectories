@@ -1,29 +1,17 @@
 # ==============================================================================
 # 06_unit_variation.R  --  bolus co-administration by ICU unit and by calendar year
 #
-# Purpose : Split 05_titration.R's single overall number by WHERE and WHEN. Which ICU was the patient in when the rate change was charted, and what calendar year was it? Caterpillar and funnel views per unit, and the metric across the years the extract spans.
+# Purpose : Split 05_titration.R's overall number by unit and by calendar year.
+#           Caterpillar and funnel views per unit, plus a year series.
 # Author  : Shan Guleria
 # Created : 2026-09-30
 # Inputs  : output/intermediate_phi/titration_events_classified.parquet, icu_intervals.parquet, trajectory_long.parquet
 # Outputs : output/final_no_phi/06_unit_variation/ : the files listed in OWNED
 #
-# NOT A QUALITY MEASURE. No evidence establishes that pairing a bolus with an
-# up-titration is better care. This describes VARIATION IN PRACTICE. A unit with
-# a lower rate is not thereby worse, and tests/test_protocol.py bans the words
-# quality, performance and benchmark from this file for that reason.
-#
-# THE EVENTS ARE NOT REDEFINED HERE. 05_titration.R owns what counts as an
-# initiation, an uptitration and a pairing; this script reads its classified
-# output and only splits it. A second implementation of "what is an uptitration"
-# would be a drift hazard with no upside.
-#
-# THE INTERVALS DESCRIBE, THEY DO NOT ADJUST. The bootstrap resamples EPISODES
-# because events cluster within them. It says how much a unit's observed rate
-# would wobble if the care process re-ran. It does NOT adjust for case mix -- a
-# unit's rate reflects who it admits as much as how it practises -- and the
-# association between unit and adherence is deliberately not modelled (SG,
-# 2026-09-30). See protocol.json unit_variation._STATUS_model for what the
-# deferred method is and how its estimand differs from this one.
+# NOT A QUALITY MEASURE: this describes variation in practice, not a ranking.
+# tests/test_protocol.py bans the words quality, performance and benchmark here.
+# Events are NOT redefined here; 05_titration.R owns the definitions. The intervals
+# describe sampling only -- see protocol.json unit_variation._STATUS_model.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -40,8 +28,7 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "figures.R"))
-# boot_group() lives in pooling.R so 05 and 06 cannot drift in how they
-# bootstrap the same clustered proportion.
+# boot_group() lives in pooling.R so 05 and 06 cannot drift.
 source(here("code", "utils", "pooling.R"))
 
 
@@ -56,9 +43,7 @@ WINDOW_H <- COV$cohort$window_hours
 EXTENT_H <- COV$cohort$granular_extent_hours
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Read from the config, never defaulted here: the attribution rule and the
-# resample count are federation-critical, and a local default is how a site
-# keeps computing on the old numbers after the consortium moves them.
+# Federation-critical: read from the config, never defaulted here.
 SPEC <- COV$unit_variation
 stopifnot("protocol.json must declare a `unit_variation` block" = !is.null(SPEC))
 ATTR_CATS <- unlist(SPEC$attributed_location_categories)
@@ -73,9 +58,7 @@ stopifnot("protocol.json must declare a `titration` block" = !is.null(TSPEC))
 WIN_MIN   <- as.numeric(TSPEC$bolus_window_minutes)
 MIN_DELTA <- as.numeric(TSPEC$min_rate_change_mcg_hr)
 
-# Read from the protocol, not inherited from 05_titration.R: the flags in
-# indication_events.parquet were computed at this window, and a caption naming
-# a different one would be wrong in the direction nobody checks.
+# From the protocol, not from 05: the flags were computed at this window.
 ISPEC <- COV$indication
 stopifnot("protocol.json must declare an `indication` block" = !is.null(ISPEC))
 IND_WIN_H <- as.numeric(ISPEC$indication_window_hours)
@@ -84,8 +67,7 @@ stopifnot(
   "at least one unit key must be declared" = length(UNIT_KEYS) >= 1,
   "min_events_per_unit must clear the disclosure floor" = MIN_UNIT >= MIN_CELL,
   "bootstrap_resamples must be a positive whole number" = B_RESAMP > 0,
-  # Winsorising at 0.5 per end would pull every unit to the median and report
-  # phi = 0 regardless of the data, so the upper bound is not cosmetic.
+  # Winsorising at 0.5 per end reports phi = 0 regardless of the data.
   "overdispersion_trim must be a fraction per end, in [0, 0.5)" =
     is.finite(OD_TRIM) && OD_TRIM >= 0 && OD_TRIM < 0.5
 )
@@ -93,8 +75,7 @@ stopifnot(
 EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
 CONTROL_KIND <- "downtitration"      # the negative control, excluded from "increases"
 
-# Two-sided normal deviates for the funnel's control limits. 95% and 99.8% are
-# Spiegelhalter's conventional pair for institutional comparison.
+# Two-sided deviates for the funnel: Spiegelhalter's conventional 95% / 99.8% pair.
 Z_INNER <- qnorm(0.975)
 Z_OUTER <- qnorm(0.999)
 
@@ -115,22 +96,11 @@ manifest <- require_manifest(dirs, here())
 message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
-# Two metrics, named so each file says which question it answers. Figure names
-# are derived from METRICS x UNIT_KEYS rather than written out, so adding either
-# cannot leave a figure unowned and therefore uncleared. CLAUDE.md's first
-# config-integrity rule: iterate the keys rather than restating them.
+# Figure names derive from METRICS x UNIT_KEYS, so neither can leave a figure unowned.
 METRICS <- c("coadmin", "indication")
 
-# WHICH UNIT KEYS CAN THIS SITE ACTUALLY GROUP BY? care_setting is derived from
-# location_type coalesced to location_category, both REQUIRED mCIDE columns, so
-# it reproduces everywhere. location_name is OPTIONAL in the CLIF adt schema
-# (required: False, no permissible values) and a site may simply not have it.
-# Until 2026-10-26 an absent key tripped a stopifnot after every figure had been
-# written -- a hard stop at the end of a long run, fixable only by editing the
-# protocol, which would then break the cross-site digest equality the whole
-# provenance scheme rests on. So: discover availability HERE, from the schema
-# only, before the owned-output list is derived from it. Reading names costs no
-# rows and touches no patient data.
+# location_name is OPTIONAL in the CLIF adt schema, so availability is read from the
+# SCHEMA before OWNED is derived from it, never asserted after the figures are written.
 .ci_path <- file.path(dirs$out_phi, "care_intervals.parquet")
 if (file.exists(.ci_path)) {
   .have <- names(arrow::open_dataset(.ci_path))
@@ -156,15 +126,7 @@ OWNED <- list(
   phase = c("unit_adherence.csv", "year_adherence.csv", "attribution_funnel.csv",
             "overdispersion.csv",
             FIGS, "provenance.json", "captions.md"))
-# Renamed 2026-09-30 when the indication metric joined: "unit_caterpillar" did
-# not say a caterpillar OF WHAT, which was merely terse with one metric and
-# ambiguous with two. Built with paste0 so a name-level find-and-replace cannot
-# reach into the list of old names -- lessons.md #13.
-# Two rounds. The `unit_` prefix went on 2026-09-30 when the indication metric
-# joined and "a caterpillar of what" became ambiguous. The `location_type`
-# suffix went the same day, when the ED joined the ICU as an attributed setting
-# and the key became care_setting -- location_type is null for every non-ICU
-# row, so it could not name the new label.
+# Retired names, built with paste0 so find-and-replace cannot reach them (lessons.md #13).
 OLD_KEYS <- c("location_type", "location_name")
 RETIRED <- file.path("output", "final_no_phi", "06_unit_variation",
                      c(paste0(paste0("unit_", "caterpillar_"), OLD_KEYS, ".png"),
@@ -199,8 +161,7 @@ stopifnot(
     all(c("encounter_block", "t_hr", "event_type", "any_indicated") %in% names(ind_ev)),
   "an indication event is neither an increase nor a bolus" =
     all(ind_ev$event_type %in% c("increase", "bolus")),
-  # UNIT_KEYS was already narrowed to what the schema carries, so this can only
-  # fail if the frame read here is not the one whose schema was inspected.
+  # UNIT_KEYS was narrowed to the schema above; this catches a different frame.
   "care_intervals is missing a unit key that its own schema advertised" =
     all(UNIT_KEYS %in% names(icu)),
   "care_intervals carries a location_category the config does not attribute" =
@@ -213,15 +174,8 @@ stopifnot(
 
 # ---- 6. Attribution ----------------------------------------------------------
 # Each event is credited to the unit the patient was PHYSICALLY IN when it was
-# charted, not to a single label for the whole episode. 6.4% of attributed
-# episodes touch more than one unit inside the 72h window (11.0% of whole ICU
-# hospitalizations do, over their longer span -- two denominators, not one
-# number). An episode-level label would credit every one of that episode's
-# events to whichever unit held the most time.
-# See protocol.json unit_variation._why_event_level.
-#
-# Written once and applied per metric: a bolus carries an encounter_block and a
-# t_hr exactly as a rate change does, so the same interval join credits it.
+# charted, not to one episode-level label -- see protocol.json
+# unit_variation._why_event_level. A bolus joins the same way a rate change does.
 
 attribute <- function(d, what) {
   d$row_id <- seq_len(nrow(d))
@@ -232,9 +186,7 @@ attribute <- function(d, what) {
                  by = "encounter_block", all.x = FALSE)
   pairs <- pairs[pairs$t_hr >= pairs$t_start_hr & pairs$t_hr < pairs$t_end_hr, ]
 
-  # Phase 0 refuses to emit overlapping ICU intervals, so an event can match at
-  # most one. Re-asserted rather than assumed: a duplicated event would be
-  # counted twice and inflate whichever units overlapped.
+  # Phase 0 refuses overlapping intervals, so an event matches at most one.
   stopifnot("an event matched more than one care interval" = !anyDuplicated(pairs$row_id))
 
   att <- merge(d, pairs[, c("row_id", UNIT_KEYS)], by = "row_id", all.x = TRUE)
@@ -243,10 +195,7 @@ attribute <- function(d, what) {
   stopifnot("the year join changed the event count" = nrow(att) == n_events,
             "an event has no anchor year" = all(!is.na(att$anchor_year)))
 
-  # UNATTRIBUTED IS A ROW, NOT A DROP. A ventilated patient can be off the unit
-  # -- in a procedural or radiology location -- when the event is charted.
-  # Dropping those would shrink the denominator in the direction that flatters
-  # every unit.
+  # Unattributed is a ROW, not a drop -- dropping off-unit events flatters every unit.
   att$attributed <- !is.na(att[[UNIT_KEYS[1]]])
   n_unatt <- sum(!att$attributed)
   cat(sprintf("  %-11s %s event(s), %s episode(s); attributed %s (%.1f%%), unattributed %s (%.1f%%)\n",
@@ -264,7 +213,7 @@ attribute <- function(d, what) {
                    length(unique(att$encounter_block[att$attributed])),
                    length(unique(att$encounter_block[!att$attributed]))))
 
-  # The accounting must close. Watched failing before it was kept (lessons.md #6).
+  # The accounting must close.
   stopifnot("attributed + unattributed does not equal the event total" =
               sum(att$attributed) + n_unatt == n_events)
   list(att = att, funnel = funnel, n_events = n_events, n_unatt = n_unatt)
@@ -272,35 +221,14 @@ attribute <- function(d, what) {
 
 
 # ---- 7. Cluster bootstrap ----------------------------------------------------
-# Resample EPISODES, not events. 05_titration.R records that event-level
-# percentages "carry no valid confidence interval without accounting for
-# clustering within episode": episodes contribute several events each and the
-# habit is correlated inside one. Resampling episodes keeps an episode's events
-# together, which is the whole point.
-#
-# It measures the clustering rather than assuming a value for it, and it needs no
-# package the pinned stack does not already have.
+# Resample EPISODES, not events: the habit is correlated within an episode.
 
-# THE EPISODE UNIVERSE IS PER METRIC, not shared. The coadmin metric runs on
-# rate increases; the indication metric also covers boluses, and an episode can
-# contribute a bolus without ever contributing an increase. Resampling one
-# metric against the other's episode list would give those episodes no chance
-# of being drawn -- match() would return NA and their events would silently
-# carry NA weight. Passed in rather than inferred inside, so the caller has to
-# say which universe it means.
+# The episode universe is PER METRIC: an episode can contribute a bolus without ever
+# contributing an increase, and the other metric's list would give it NA weight.
 
-# boot_group() is in code/utils/pooling.R -- shared with 05_titration.R.
-
-# Two metrics, one machine. Each declares its events, the 0/1 column, its
-# series, and which series is the COMBINED one -- the union of the others, used
-# for the ordering, the reference rule and the funnel's single point per unit.
-#
-# Run as SUBSETS per series rather than one frame with duplicated rows: a
-# duplicated row would double sum(n) inside boot_group() and halve the naive
-# binomial variance, silently doubling the reported design effect.
-# Increases only for the coadmin metric. The negative control belongs to
-# 05_titration.R, where it establishes the coincidental-pairing floor; splitting
-# it by unit would invite reading a control as a finding.
+# Each metric declares its events, the 0/1 column, its series, and which is COMBINED
+# (the union of the others). Series run as SUBSETS -- duplicated rows would double
+# sum(n) in boot_group() and double the reported deff. Increases only for coadmin.
 inc <- ev[ev$kind != CONTROL_KIND, ]
 
 ANALYSES <- list(
@@ -354,8 +282,7 @@ for (m in METRICS) {
   y$year <- as.integer(y$year)
   YEAR[[m]] <- y[order(y$year), ]
 
-  # A component series must reproduce its parent, or the subsetting has dropped
-  # something. Watched failing before it was kept (lessons.md #6).
+  # A component series must reproduce its parent, or the subsetting dropped rows.
   comb <- u[u$series == spec$combined, ]
   chk <- aggregate(n_events ~ unit_key + unit,
                    data = u[u$series != spec$combined, ], FUN = sum)
@@ -375,24 +302,12 @@ for (m in METRICS) {
 unit_tbl <- do.call(rbind, UNIT)
 
 # ---- the location_name -> care_setting crosswalk -----------------------------
-# A location_name row and a care_setting row are separate row SETS with nothing
-# linking them, and the mapping lives only in care_intervals.parquet, which is
-# PHI-side and never leaves the site. So the coordinating centre cannot tell that
-# N03B is a medical ICU unless the site says so, which is what this column does.
-# It is what lets the combined, anonymised location_name panel be coloured by
-# CARE SETTING rather than by site -- a reader then sees whether medical ICUs
-# cluster high ACROSS hospitals, which is a far stronger claim than "units vary".
-# Added 2026-10-26 (SG) specifically for that figure.
-#
-# No new disclosure: the unit names already ship (SG, 2026-10-26) and
-# care_setting is mCIDE-controlled.
+# The mapping lives only in PHI-side care_intervals.parquet, so this column is what
+# lets the pooled location_name panel be coloured by care setting.
 .xw <- unique(icu[, c("location_name", "care_setting")])
 .multi <- names(which(table(.xw$location_name) > 1L))
 if (length(.multi))
-  # A ward reclassified mid-period maps to two settings. Reported rather than
-  # silently resolved to the first or the modal one: a unit whose setting
-  # changed is a fact about the site, and a figure that colours it one colour is
-  # making a choice someone should have made deliberately.
+  # A ward reclassified mid-period maps to two settings; reported, not resolved.
   cat(sprintf(paste0("\n  NOTE %d location_name(s) map to more than one ",
                      "care_setting and ship as 'multiple': %s\n"),
               length(.multi), paste(.multi, collapse = ", ")))
@@ -416,16 +331,8 @@ stopifnot(
   "a bootstrap interval does not contain its point estimate" =
     all(unit_tbl$ci_lo <= unit_tbl$pct_paired & unit_tbl$pct_paired <= unit_tbl$ci_hi) &&
     all(year_tbl$ci_lo <= year_tbl$pct_paired & year_tbl$pct_paired <= year_tbl$ci_hi),
-  # deff widens nothing since 2026-10-05 -- it is reported, not applied -- but a
-  # value below 1 would mean the episode bootstrap is not measuring clustering
-  # at all: negative intracluster correlation, or Monte Carlo noise at a true
-  # deff near 1. Either way the number we ship for pooling would mislead.
-  # NA is tolerated and counted below, not asserted on: deff is var/naive and
-  # `naive` is zero when a proportion sits exactly at 0% or 100%, which is a
-  # degenerate denominator rather than a fault. all(NA >= 1) is NA, and
-  # stopifnot() on NA aborts with "missing value where TRUE/FALSE needed" -- a
-  # cryptic stop, after every figure is written, at any site small enough to have
-  # a unit that never paired a bolus.
+  # deff is reported, never applied; below 1 means no clustering is being measured.
+  # na.rm is required -- naive is zero at exactly 0% or 100% and NA aborts stopifnot().
   "the design effect is below 1, so the bootstrap is not measuring clustering" =
     all(unit_tbl$deff >= 1, na.rm = TRUE) && all(year_tbl$deff >= 1, na.rm = TRUE)
 )
@@ -438,15 +345,8 @@ if (.nd)
 
 
 # ---- 8. Disclosure -----------------------------------------------------------
-# Suppression, not a printed note. 04 and 05 report small cells and publish them
-# because their tables are prevalence and NA-ing a cell stops a column summing
-# to 100. Here a suppressed unit simply does not appear, so the pooling.R
-# convention applies instead: blank the RATE, keep the COUNT, flag the row.
-#
-# It keys on the unit's COMBINED event count and takes the whole unit with it,
-# per metric. Suppressing series independently would leave one series published
-# while another was withheld, and the combined row would let a reader recover
-# the withheld one by subtraction.
+# Per the pooling.R convention: blank the RATE, keep the COUNT, flag the row. Keys on
+# the COMBINED count and takes the whole unit, so subtraction cannot recover a series.
 
 unit_tbl$n_suppressed_small_cell <- 0L
 for (m in METRICS) {
@@ -467,32 +367,10 @@ plot_units <- unit_tbl[unit_tbl$n_suppressed_small_cell == 0, ]
 
 
 # ---- 8b. Over-dispersion, measured and never applied -------------------------
-# The envelope at section 9 is unadjusted binomial, so "is the spread across
-# units wider than binomial sampling allows?" has to be answered out loud
-# rather than absorbed into the limits.
-#
-# Spiegelhalter, Qual Saf Health Care 2005;14:347-51, "Estimating an
-# over-dispersion factor". z is a unit's deviation from the overall rate in null
-# binomial SEs; Q = sum(z^2) is chi-square on I-1 df when every unit truly sits
-# at the overall rate; phi = Q/I is the multiplicative factor that WOULD widen
-# the limits by sqrt(phi) if we chose to adjust.
-#
-# THIS IS A DIFFERENT QUANTITY FROM THE DEFF. phi is BETWEEN-unit spread; the
-# episode-cluster deff is WITHIN-episode correlation and is grouping-invariant.
-# Neither substitutes for the other and neither is applied to anything.
-#
-# Computed on plot_units, i.e. AFTER suppression, so the diagnostic describes
-# the units the figure actually draws rather than a set no reader can see.
-
-# Winsorise rather than trim: Spiegelhalter's reason is that divergent units
-# otherwise inflate the estimate of the very null they are judged against. The
-# formal test below uses the UN-Winsorised Q -- Winsorising sizes the inflation
-# robustly, it does not test whether there is one.
-# winsorise() and overdispersion() moved to utils/pooling.R on 2026-10-26, so the
-# same statistic serves units-within-this-site and sites-within-the-consortium.
-# It returns TWO families -- read the header there before using either. This
-# script uses only the FUNNEL family; the meta-analytic (ma_*) columns belong to
-# the pooled output, where a k of sites is what they describe.
+# Spiegelhalter, Qual Saf Health Care 2005;14:347-51. z is a unit's deviation from the
+# overall rate in null binomial SEs; Q = sum(z^2) is chi-square on I-1 df; phi = Q/I
+# would widen the section 9 limits by sqrt(phi) if applied. BETWEEN-unit, unlike the
+# WITHIN-episode deff. The ma_* columns overdispersion() also returns are pooled-only.
 FUNNEL_COLS <- c("k", "q_stat", "q_df", "q_p", "phi", "phi_winsorised",
                  "phi_crit_95", "tau2", "mean_binomial_var",
                  "share_not_sampling")
@@ -505,17 +383,14 @@ for (m in METRICS) {
                         plot_units$series == sname, ]
       p0 <- unit_tbl$overall_pct[unit_tbl$metric == m &
                                   unit_tbl$series == sname][1]
-      # Below three units Q has 0 or 1 df and Winsorising 10% of them moves
-      # nothing, so the row would read as a measurement without being one.
+      # Below three units Q has 0 or 1 df, so the row would not be a measurement.
       if (nrow(d) < 3) {
         cat(sprintf("  NOTE %s / %s / %s: %d unit(s), too few to test\n",
                     m, k, sname, nrow(d)))
         next
       }
       od <- overdispersion(d$pct_paired, d$n_events, p0, OD_TRIM)[, FUNNEL_COLS]
-      # `k` is the shared function's grouping-agnostic name; in THIS file the
-      # groups are units, and the captions say "units", so it ships under the
-      # name its readers expect. Renamed on write, not in the function.
+      # `k` is the shared function's grouping-agnostic name; here they are units.
       names(od)[names(od) == "k"] <- "n_units"
       OD[[length(OD) + 1L]] <- cbind(
         data.frame(metric = m, unit_key = k, series = sname,
@@ -523,15 +398,8 @@ for (m in METRICS) {
     }
   }
 }
-# A site with fewer than three attributed units in every metric x key produces
-# NO rows, and that is a true statement about the site rather than an error:
-# between-unit over-dispersion is not estimable from one or two units. This used
-# to be a crash -- do.call(rbind, list()) is NULL and `rownames(NULL) <- NULL`
-# errors -- which took out the whole script AFTER every figure had been written.
-# Derived from the function's OWN shape rather than retyped: a column added to
-# overdispersion() used to mean editing this list too, and a zero-row frame whose
-# columns disagree with the populated one is a defect that only appears at the
-# one site that triggers it.
+# Fewer than three attributed units anywhere produces NO rows, which is a true
+# statement about the site. The empty frame's columns come from the function's OWN shape.
 .od_shape <- overdispersion(c(10, 20), c(100, 100), 15, OD_TRIM)[, FUNNEL_COLS]
 names(.od_shape)[names(.od_shape) == "k"] <- "n_units"
 od_tbl <- if (length(OD)) do.call(rbind, OD) else
@@ -567,33 +435,15 @@ cat("\n")
 
 
 # ---- 9. Figures --------------------------------------------------------------
-# Journal style: no title, no subtitle, boxed legend at the foot, all type in
-# INK. The n, the denominator, the seed and the method live in the caption.
+# Journal style: no title, no subtitle, boxed legend at the foot, type in INK.
 
-# Deterministic label placement for the funnel, with a collision check.
-#
-# A label sits to the RIGHT of its point and flips LEFT exactly when drawing it
-# right would run past the panel edge -- measured geometry, not a tuned
-# fraction of the width, which happens to work for six units at one site and
-# silently stops working for a longer unit name elsewhere.
-#
-# Nothing is nudged off its point: if two labels would collide the run FAILS
-# rather than drawing them on top of each other, because a funnel with
-# overlapping labels is worse than one with none -- it puts a unit somewhere it
-# is not. A funnel's only legend is the control-limit linetype, so without
-# these the reader cannot tell which dot is which unit; the figure shipped that
-# way on 2026-09-30 and SG caught it.
-#
-# Extents are estimated in data units from the panel geometry: a 7.5 x 4.4in
-# figure leaves roughly 6.3 x 3.2in of panel, and 2.5pt text is about 1.55mm
-# per character wide and 3.0mm tall.
+# Deterministic funnel label placement, with a collision check. A label sits RIGHT of
+# its point and flips LEFT only when it would run past the panel edge. Extents in data
+# units: ~6.3 x 3.2in of panel, 2.5pt text ~1.55mm x 3.0mm.
 PANEL_W_MM <- 160; PANEL_H_MM <- 81
 CHAR_W_MM  <- 1.55; LINE_H_MM <- 3.0
 
-# Leading words EVERY unit label shares (a site that stores the hospital's full name
-# in location_name, e.g. "Rush University Medical Center K08 - ICU") say nothing
-# about which dot is which and cost ~75mm of a 160mm panel. Cut back to a word
-# boundary; a lone unit is left whole.
+# Leading words EVERY label shares can cost half the panel. Cut to a word boundary.
 strip_common_prefix <- function(lab) {
   if (length(lab) < 2) return(lab)
   w <- strsplit(lab, " ", fixed = TRUE)
@@ -619,18 +469,9 @@ funnel_labels <- function(x, y, lab, xr, yr) {
   out$x0 <- ifelse(flip, out$tx - w, out$tx)
   out$x1 <- ifelse(flip, out$tx, out$tx + w)
 
-  # Bounded vertical de-collision, per side. Two labels whose x extents overlap
-  # cannot share a y band, so the upper one is pushed up until it clears. An
-  # earlier version simply REFUSED on any collision, which was right when there
-  # were six short ICU names and too brittle at seven settings with
-  # "mixed_cardiothoracic_icu" among them -- it failed the whole run rather
-  # than moving a label 2mm. Moving is honest as long as the reader can still
-  # tell which point a label belongs to, which is what the leader line below is
-  # for; refusing stays the behaviour when de-collision cannot converge.
-  # ALL labels are compared, not just those on one side of their points: a label
-  # flipped left and one drawn right can still overlap when both are long (unit
-  # names that carry the hospital's full name run ~75mm of a 160mm panel), and a
-  # per-side pass never looked at that pair.
+  # Bounded vertical de-collision: labels whose x extents overlap cannot share a y
+  # band, so the upper one is pushed clear and the leader line keeps it attached. ALL
+  # labels are compared -- a left-flipped and a right-drawn label can still overlap.
   sep <- h * 1.15
   i <- order(out$ty)
   for (a in seq_along(i)[-1]) {
@@ -668,9 +509,7 @@ funnel_labels <- function(x, y, lab, xr, yr) {
   out
 }
 
-# `n_overall` is a REQUIRED argument, not read from the caller's scope: this is
-# called from inside two nested loops and reaching out for m/k/spec would be the
-# same closure-over-a-global hazard lessons.md #26 records about boot_group().
+# `n_overall` is a REQUIRED argument, never taken from scope -- two nested loops (lessons.md #26).
 deff_note <- function(x, n_overall) sprintf(
   paste0("Intervals are 2.5th-97.5th percentiles of %s bootstrap resamples of ",
          "EPISODES (seed %s), which keeps an episode's events together because ",
@@ -730,9 +569,7 @@ for (m in METRICS) {
   deff_m <- unit_tbl$deff[unit_tbl$metric == m &
                           unit_tbl$series == spec$combined][1]
   n_unatt_m <- FUNNEL[[m]]$n_events[3]
-  # Events per episode on the series the funnel draws. The funnel's limits
-  # assume independence within a unit; this is the number that says how wrong
-  # that is, so the caption states it rather than leaving the reader to infer.
+  # Events per episode: the funnel's limits assume independence within a unit.
   comb_ev <- series_subset(ATT[[m]][ATT[[m]]$attributed, ], spec, spec$combined)
   ev_per_ep <- nrow(comb_ev) / length(unique(comb_ev$encounter_block))
   pal <- setNames(unname(SERIES_COLOURS)[seq_along(spec$series)], spec$series)
@@ -746,28 +583,18 @@ for (m in METRICS) {
     n_units <- nrow(ord)
     dcomb <- d[d$series == spec$combined, ]
 
-    # The event count rides on the AXIS, not inside the panel. Drawn beside the
-    # interval it collided with the data at the busy end and forced a 30%
-    # right-hand margin to be left empty for it; on the axis it reads as what it
-    # is -- a property of the row, not a mark on the plot.
-    # trim = TRUE: format() otherwise pads every number to the widest, which
-    # puts a space inside the bracket ("( 4,445)") and reads as a typo. The
-    # axis is right-aligned, so the brackets line up without the pad.
+    # trim = TRUE, or format() pads to the widest and puts a space inside the bracket.
     axis_lab <- setNames(sprintf("%s  (%s)", ord$unit,
                                  format(ord$n_events, big.mark = ",", trim = TRUE)),
                          as.character(ord$unit))
 
-    # The combined series is the finding; the components are the decomposition.
-    # Opaque and large for the first, lighter and smaller for the rest, so the
-    # eye lands on the combined point and the components read as support.
+    # Combined series opaque and large, components lighter and smaller.
     is_comb <- spec$series == spec$combined
     A_VAL <- setNames(ifelse(is_comb, 1.00, 0.55), spec$series)
     S_VAL <- setNames(ifelse(is_comb, 2.90, 1.70), spec$series)
     L_VAL <- setNames(ifelse(is_comb, 0.70, 0.40), spec$series)
 
-    # How many ORDERED-ADJACENT pairs have overlapping intervals. Computed, not
-    # asserted: it is the number that says how much of the ordering a reader may
-    # actually read, and it has to come from the run that drew the panel.
+    # Ordered-adjacent pairs with overlapping intervals, from the run that drew the panel.
     n_adj_overlap <- if (n_units > 1L)
       sum(ord$ci_lo[-1] <= ord$ci_hi[-n_units]) else 0L
 
@@ -816,10 +643,8 @@ for (m in METRICS) {
                    "by how much each unit contributes; this one asks how much ",
                    "of the resulting ordering can be resolved.")))
 
-    # One layer per geom, with alpha/size/linewidth MAPPED rather than split into
-    # separate layers per series: position_dodge divides the slot by the number
-    # of groups present in a layer, so drawing the combined series on its own
-    # would dodge it into a different position from its components.
+    # alpha/size/linewidth are MAPPED, not a layer per series: position_dodge divides
+    # the slot by the groups in a layer, so a lone series would dodge to another spot.
     dodge <- position_dodge(width = 0.62)
     pl <- house(
       ggplot(d, aes(pct_paired, unit, colour = series, group = series)) +
@@ -830,8 +655,7 @@ for (m in METRICS) {
                       orientation = "y", width = 0, position = dodge) +
         geom_point(aes(alpha = series, size = series), position = dodge) +
         scale_colour_manual(values = pal, name = NULL, drop = FALSE) +
-        # The legend carries identity by colour alone; alpha and size encode
-        # emphasis, not a variable, so they must not appear in it.
+        # alpha and size encode emphasis, not a variable: keep them out of the legend.
         scale_alpha_manual(values = A_VAL, guide = "none") +
         scale_size_manual(values = S_VAL, guide = "none") +
         scale_linewidth_manual(values = L_VAL, guide = "none") +
@@ -841,14 +665,7 @@ for (m in METRICS) {
     ggsave(file.path(dirs$phase, fn), pl,
            width = 7.5, height = max(3.0, 1.4 + 0.46 * n_units), dpi = 200)
 
-    # The funnel stays on the COMBINED series: its point is one mark per unit
-    # against that unit's volume, and overlapping funnels defeat the envelope.
-    #
-    # UNADJUSTED binomial limits (SG, 2026-10-05). The envelope was previously
-    # widened by sqrt(deff). That factor measures WITHIN-EPISODE clustering,
-    # where Spiegelhalter's sqrt(phi) measures BETWEEN-UNIT over-dispersion --
-    # the same algebra applied to a different quantity. Over-dispersion is now
-    # MEASURED in overdispersion.csv and adjusted for nowhere.
+    # COMBINED series only; limits are UNADJUSTED binomial, over-dispersion never applied.
     grid_n <- seq(max(1, min(dcomb$n_events) * 0.6), max(dcomb$n_events) * 1.15,
                   length.out = 200)
     se <- sqrt(overall_m * (100 - overall_m) / grid_n)
@@ -858,9 +675,7 @@ for (m in METRICS) {
       data.frame(n = grid_n, lo = overall_m - Z_OUTER * se,
                  hi = overall_m + Z_OUTER * se, band = "99.8%"))
 
-    # The diagnostic for THIS panel's series, quoted in its caption. A site with
-    # fewer than three units gets no row (section 8b skips it), and then the
-    # sentence is simply omitted rather than printing a blank number.
+    # Quoted in this panel's caption; omitted where section 8b skipped the row.
     od_mk <- od_tbl[od_tbl$metric == m & od_tbl$unit_key == k &
                       od_tbl$series == spec$combined, ]
     od_note <- if (nrow(od_mk) == 1L)
@@ -942,8 +757,7 @@ for (m in METRICS) {
     ggsave(file.path(dirs$phase, fn), pl, width = 7.5, height = 4.4, dpi = 200)
   }
 
-  # Year. Every event carries a year, attributed or not, so this view uses the
-  # whole denominator rather than the ICU-attributed subset.
+  # Every event carries a year, so this view uses the whole denominator.
   yt <- year_tbl[year_tbl$metric == m, ]
   ypool <- yt$overall_pct[1]
   fn <- paste0(m, "_year.png")
@@ -978,12 +792,7 @@ for (m in METRICS) {
 
 # ---- 10. Write ---------------------------------------------------------------
 
-# The two files pool over DIFFERENT event sets, so the column cannot share a
-# name. unit_adherence covers attributed events only -- an event in no ICU or ED
-# interval cannot be credited to a unit -- while year_adherence covers all
-# events, because every event has a year. At UCMC that is 13.17% against 13.53%:
-# the same metric, two correct numbers, and a reader given one `overall_pct`
-# column has no way to tell which they are holding.
+# Different event sets, so the column cannot share a name: attributed events vs all.
 unit_tbl$overall_pct_attributed <- unit_tbl$overall_pct
 year_tbl$overall_pct_all_events <- year_tbl$overall_pct
 
@@ -1000,8 +809,7 @@ write.csv(year_tbl[order(year_tbl$metric, year_tbl$year),
           file.path(dirs$phase, "year_adherence.csv"), row.names = FALSE)
 write.csv(funnel_tbl, file.path(dirs$phase, "attribution_funnel.csv"),
           row.names = FALSE)
-# Rounded on write, unlike deff, because phi and tau2 are read by eye against a
-# threshold rather than recombined arithmetically by the coordinating centre.
+# Rounded on write, unlike deff: phi and tau2 are read against a threshold.
 od_out <- od_tbl
 num <- vapply(od_out, is.numeric, logical(1)) & names(od_out) != "n_units" &
        names(od_out) != "q_df"

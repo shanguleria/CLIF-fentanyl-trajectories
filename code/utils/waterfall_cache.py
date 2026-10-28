@@ -1,12 +1,11 @@
 """Content-addressed cache for the respiratory-support waterfall.
 
-The waterfall is the dominant cost of a Phase 0 run and its inputs change rarely.
-It is verified per-encounter independent (validation/waterfall_span_equivalence.py),
-so rows are cached PER HOSPITALIZATION: a narrowing cohort change is a full hit, a
-widening one computes only the new patients, and the cohort never enters the key.
+The waterfall is the dominant cost of a Phase 0 run. It is verified
+per-encounter independent (validation/waterfall_span_equivalence.py), so rows are
+cached PER HOSPITALIZATION and the cohort never enters the key.
 
-The key pins everything that can change the output. A cache cannot go stale
-silently, because any change to an input produces a different key and a miss.
+The key pins everything that can change the output, so any change to an input
+produces a different key and a miss rather than a stale hit.
 """
 from __future__ import annotations
 
@@ -33,9 +32,8 @@ def _source_identity(config: dict) -> str:
 def cache_key(config: dict, transform_fns: list) -> str:
     """Everything that can change the waterfalled rows, hashed.
 
-    transform_fns are the functions we apply around the vendor call; hashing their
-    SOURCE means editing them invalidates the cache automatically, rather than
-    relying on a version constant someone remembers to bump.
+    transform_fns are the functions applied around the vendor call; hashing their
+    SOURCE invalidates the cache on an edit, with no version constant to bump.
     """
     import clifpy
 
@@ -63,10 +61,9 @@ def _covered_path(key: str) -> Path:
 def _covered(key: str) -> set[str]:
     """Hospitalizations already ATTEMPTED, which is not the same as those with rows.
 
-    A hospitalization can sit in an IMV block because a sibling hospitalization was
-    ventilated, yet have no respiratory_support rows of its own. It contributes
-    nothing to the cache, so keying on rows alone would mark it missing forever and
-    re-attempt it on every run.
+    A hospitalization can sit in an IMV block because a sibling was ventilated and
+    still have no respiratory_support rows of its own, so keying on rows alone
+    would mark it missing forever and re-attempt it on every run.
     """
     f = _covered_path(key)
     return set(json.loads(f.read_text())) if f.exists() else set()

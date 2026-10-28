@@ -1,24 +1,14 @@
 # Fentanyl delivery states, shared by Phase 1 (description) and Phase 5 (model).
+# ONE definition in one place, or the model stops describing the figure.
 #
-# ONE definition, in one place. Phase 1 draws the alluvial and Phase 5 models the
-# transitions; if each restated the rule they would drift, and the model would
-# stop describing the figure.
-#
-# Seven mutually exclusive, exhaustive states per episode-window. Four describe
-# HOW fentanyl was delivered while ventilated. `extubated` is transient (patients
-# are reintubated, or leave); only `discharged alive` and `died` absorb.
-# States are defined by the delivery ROUTE, not by a threshold on dose, so there
-# are no cut points to defend -- which is the point, given that Phase 3/4 found
-# dose level to be continuous and its latent classes a discretisation of it.
+# Seven mutually exclusive, exhaustive states per episode-window; four describe
+# HOW fentanyl was delivered while ventilated, by ROUTE rather than by a dose
+# threshold. `extubated` is transient; only `discharged alive` and `died` absorb.
 
 STATE_LEVELS <- c("no fentanyl", "continuous only", "bolus only",
                   "continuous + bolus", "extubated", "discharged alive", "died")
-# ABSORBING states only. `extubated` is NOT one: 3.12% of extubated windows move
-# on -- 1.28% back to a ventilated fentanyl state (reintubation) and 1.84% out of
-# the hospital. Measured 2026-09-09 over 60,685 extubated windows. Treating it as
-# absorbing dropped every extubated-origin row from the transition model, which
-# removed reintubation and, worse, removed the extubated -> died / -> discharged
-# transitions where most hospital exits actually happen.
+# ABSORBING only. `extubated` is NOT: extubated windows move on, to reintubation
+# or out of the hospital, and absorbing it drops those rows from the model.
 STATE_ABSORBING <- c("discharged alive", "died")
 
 # Needs: alive_admitted, imv_status, inf_dose, bolus_dose, died
@@ -45,17 +35,12 @@ derive_states <- function(d) {
   d
 }
 
-# Consecutive (state at t, state at t+1) pairs, one row per episode-window pair.
-# Rows whose CURRENT state is ABSORBING are dropped: nothing transitions out of
-# one, and leaving them in would train the model on rows whose outcome is
-# deterministic. `extubated` is deliberately kept -- it is transient here, and
-# the extubated -> discharged / -> died / -> reintubated moves are the ones the
-# liberation story turns on.
+# Consecutive (state at t, state at t+1) pairs. Rows whose CURRENT state is
+# ABSORBING are dropped; `extubated` is kept, being transient here.
 transition_pairs <- function(d, id = "encounter_block", time = "window_idx") {
   d <- d[order(d[[id]], d[[time]]), ]
-  # Levels come off the FACTOR, not a global: a data frame built by
-  # derive_dose_states carries the dose levels, and hardcoding STATE_LEVELS here
-  # would silently NA every dose band. The factor already knows its own levels.
+  # Levels off the FACTOR, not a global: a frame from derive_dose_states carries
+  # the dose levels, which a hardcoded STATE_LEVELS would NA.
   lv <- levels(d$state)
   nxt <- ave(as.character(d$state), d[[id]], FUN = function(v) c(v[-1], NA))
   d$state_next <- factor(nxt, levels = lv)
@@ -63,26 +48,18 @@ transition_pairs <- function(d, id = "encounter_block", time = "window_idx") {
   droplevels(out, except = which(names(out) %in% c("state", "state_next")))
 }
 
-# State prevalence per window, as a percentage of the rows PASSED IN. The
-# denominator is therefore the caller's choice of at-risk set, and the two that
-# matter differ by more than half the cohort at 72h:
-#   prevalence_by_window(long)                  -- all episodes; the bands shrink
-#     as patients are extubated, discharged or die, which is the liberation view.
-#   prevalence_by_window(long[long$ventilated,]) -- still ventilated only; the
-#     bands answer "of the patients still on the vent, what are they getting?"
-# One function rather than two so the two figures can never drift in their
-# handling, which is why states.R exists at all.
+# State prevalence per window, as a percentage of the rows PASSED IN -- the
+# denominator is the caller's at-risk set, and the two differ by half the cohort
+# at 72h: all episodes (bands shrink as patients leave; the liberation view), or
+# long[long$ventilated, ] (of those still on the vent, what are they getting).
 prevalence_by_window <- function(d) {
   lv <- levels(d$state)
   do.call(rbind, lapply(sort(unique(d$window_idx)), function(w) {
     x <- d[d$window_idx == w, ]
     tb <- table(x$state)[lv]
     data.frame(window_idx = w, window_start_hr = x$window_start_hr[1],
-               # A FACTOR, carrying the source level order. As a character
-               # column ggplot re-sorts it alphabetically, which stacked the
-               # area charts in a different order from the alluvial drawn off
-               # the same states -- the two figures then disagree about which
-               # band is which. Fixed 2026-09-24.
+               # A FACTOR, carrying the source level order: as character, ggplot
+               # re-sorts it and the areas stack unlike the alluvial.
                state = factor(lv, levels = lv), n = as.integer(tb),
                pct = round(100 * as.numeric(tb) / nrow(x), 2))
   }))
@@ -100,11 +77,8 @@ transition_matrix <- function(d) {
         out)
 }
 
-# The same transitions in LONG form carrying COUNTS, which is what pools across
-# sites: sum n over (from, to), then recompute the percentage. The wide matrix
-# above ships row percentages rounded to 2 dp, so reconstructing a count from it
-# costs up to +/- 4.5 transitions at n_at_risk = 91,033. Both ship -- the matrix
-# is the readable artifact, this is the poolable one.
+# The same transitions LONG, carrying COUNTS, which is what pools: sum n over
+# (from, to), then recompute the percentage. The matrix above ships rounded.
 transition_counts <- function(d) {
   lv <- levels(d$state)
   stopifnot("state and state_next must share a level set" =
@@ -115,8 +89,7 @@ transition_counts <- function(d) {
   names(out) <- c("from", "to", "n")
   out$n_at_risk <- as.integer(rowSums(tm)[out$from])
   out$pct <- round(100 * out$n / out$n_at_risk, 2)
-  # Factors carrying the source level order, so a reader sorts the way the
-  # figures stack rather than alphabetically.
+  # Factors in the source level order, so a reader sorts as the figures stack.
   out$from <- factor(out$from, levels = lv[lv %in% rownames(tm)])
   out$to   <- factor(out$to, levels = lv)
   out <- out[order(out$from, out$to), c("from", "to", "n", "n_at_risk", "pct")]
@@ -124,8 +97,7 @@ transition_counts <- function(d) {
   out
 }
 
-# History features, so the model is not forced into a Markov assumption. Each is
-# computed from the past only -- nothing here may look forward.
+# History features, so the model is not forced to be Markov. Past only.
 add_history <- function(d, id = "encounter_block", time = "window_idx",
                         dose = "total_dose", window_h = 4) {
   d <- d[order(d[[id]], d[[time]]), ]
@@ -145,32 +117,23 @@ add_history <- function(d, id = "encounter_block", time = "window_idx",
 
 # ---- Second state definition: delivery INTENSITY ------------------------------
 #
-# The states above describe HOW fentanyl was delivered. These describe HOW MUCH.
-# Both are run over the same cohort, the way Lyons et al. (Crit Care Explor
-# 2022;4:e0784) fit two multistate models -- AKI stage, then AKI x IMV -- on one
-# cohort to triangulate. The terminal three states are shared, so everything
-# downstream (transition_pairs, transition_matrix, add_history, the per-origin
-# multinomial, the hazard curves) works on either without modification.
+# The states above describe HOW fentanyl was delivered; these, HOW MUCH. Both run
+# over the same cohort (as Lyons et al., Crit Care Explor 2022;4:e0784, fit two
+# multistate models on one), and the terminal three states are shared, so
+# everything downstream works on either definition unmodified.
 #
-# WHY A DECLARED BAND IS NOT THE LATENT CLASS WE REJECTED. Phases 3-4 found dose
-# level continuously distributed with no gaps. That kills a LATENT class claim --
-# an assertion that k kinds of patient exist, which gbmt made and could not
-# support -- but says nothing about a DECLARED band, which asserts nothing and
-# only labels. KDIGO stage, the state definition in Lyons, is itself a cut on a
-# continuous creatinine ratio.
+# A DECLARED band is not the latent class Phases 3-4 rejected: it asserts no
+# subpopulations, it only labels, as KDIGO stage cuts a continuous ratio.
 #
-# WHY window_mcg AND NOT total_dose. total_dose is a RATE (mcg/hr); window_mcg is
-# the AMOUNT actually delivered (mcg), summed over the hourly cells the patient
-# was present for. They differ only in the 632 windows (0.34%) that straddle
-# discharge or death, where rate * window_hours would credit a patient with drug
-# they were not there to receive. See protocol.json exposure._two_scales.
+# window_mcg, NOT total_dose: total_dose is a RATE (mcg/hr), window_mcg the
+# AMOUNT (mcg) over the hourly cells the patient was present for -- they differ
+# in windows straddling discharge or death. See protocol.json exposure._two_scales.
 
 DOSE_LABELS <- c("zero", "low", "medium", "high")
 
-# Cuts are NOT defaulted. They are federation-critical (protocol.json
-# exposure.dose_states._cuts_MUST_BE_ABSOLUTE) and a default here is exactly the
-# hardcoded-duplicate-that-drifts failure: a site editing the config would keep
-# silently cutting at the old values.
+# Cuts are NOT defaulted: they are federation-critical (protocol.json
+# exposure.dose_states._cuts_MUST_BE_ABSOLUTE) and would drift from an edited
+# config.
 derive_dose_states <- function(d, cuts, labels = DOSE_LABELS) {
   need <- c("alive_admitted", "imv_status", "window_mcg", "died")
   missing <- setdiff(need, names(d))
@@ -188,9 +151,8 @@ derive_dose_states <- function(d, cuts, labels = DOSE_LABELS) {
     "window_mcg must never be negative" = all(d$window_mcg >= 0, na.rm = TRUE))
 
   lv <- dose_state_levels(labels)
-  # breaks = (-Inf, 0], (0, c1], (c1, c2], (c2, Inf) -- zero is its own band, not
-  # the bottom of `low`: giving no fentanyl is a different decision from giving a
-  # little, and 51.6% of ventilated windows are in it.
+  # breaks = (-Inf, 0], (0, c1], (c1, c2], (c2, Inf): zero is its own band, not
+  # the bottom of `low`.
   band <- as.character(cut(d$window_mcg, breaks = c(-Inf, 0, cuts, Inf),
                            labels = labels, right = TRUE))
   vent <- !is.na(d$imv_status) & d$imv_status == 1
@@ -212,23 +174,12 @@ stopifnot("the two definitions must share their absorbing states" =
             all(STATE_ABSORBING %in% dose_state_levels()))
 
 # ---- Predominant intensity, for stratification --------------------------------
-# Over an episode's AT-RISK time -- every ventilated window -- the patient is in
-# exactly one declared intensity band at all times, so one band holds more time
-# than the others. That band labels the episode.
-#
-# A DECLARED rule, not a latent one: the same ground on which the bands
-# themselves survived after gbmt was tabled. It asserts nothing about
-# subpopulations existing, it only labels.
-#
-# NOT A TRAJECTORY, and must never be called one. Modal time ignores ORDER --
-# only 44.9% of episodes end in the state they began in (measured 2026-09-24),
-# so "started high and weaned" and "stayed medium throughout" can share a label.
-#
-# Returns one row per episode: the band (an ORDERED factor, so a trend test is
-# available), the share of at-risk time in it, whether that share was tied, and
-# the at-risk duration. The last two exist because both carry artifacts that must
-# stay visible -- a coin-flip label is not a stratum, and a short course cannot
-# accumulate zero windows.
+# Over an episode's AT-RISK time -- every ventilated window -- one declared band
+# holds the most time and labels the episode. A DECLARED rule, not a latent one.
+# NOT A TRAJECTORY: modal time ignores ORDER, so "started high and weaned" and
+# "stayed medium throughout" can share a label. One row per episode: the band
+# (ORDERED, so a trend test is available), its share of at-risk time, whether
+# that share tied, and the at-risk duration -- a coin-flip label is no stratum.
 predominant_band <- function(d, cuts, labels = DOSE_LABELS, window_h = 4,
                              tie_break = c("higher", "lower")) {
   tie_break <- match.arg(tie_break)
@@ -250,9 +201,8 @@ predominant_band <- function(d, cuts, labels = DOSE_LABELS, window_h = 4,
   counts <- as.matrix(tab)
   at_risk <- rowSums(counts)
 
-  # Ties resolve toward the HIGHER band, so a tie is never settled in the
-  # direction of less exposure. max.col's "last" takes the rightmost maximum,
-  # and the columns are in ascending band order.
+  # Ties resolve toward the HIGHER band, never toward less exposure: max.col
+  # "last" takes the rightmost maximum and the columns ascend.
   idx <- max.col(counts, ties.method = if (tie_break == "higher") "last" else "first")
   top <- counts[cbind(seq_len(nrow(counts)), idx)]
   # tied = at least two bands share the maximum

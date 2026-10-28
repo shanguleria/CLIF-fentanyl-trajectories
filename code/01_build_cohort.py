@@ -73,9 +73,7 @@ LAB_VARS = {
     for k, v in COV["time_varying"].items()
     if not k.startswith("_") and (v.get("source") or {}).get("table") == "labs"
 }
-# Same shape as LAB_VARS, and for the same reason: the set of assessment
-# covariates is whatever the config declares, so adding a score is a config edit
-# rather than an edit in two places that can disagree.
+# Same shape as LAB_VARS: the declared set comes from the config, not a second list.
 ASSESS_VARS = {
     k: v["source"]["category"]
     for k, v in COV["time_varying"].items()
@@ -85,12 +83,8 @@ ZERO_VARS = COV["missing_values"]["absence_means_zero"]["members"]
 NOT_VENT_VARS = COV["missing_values"]["absence_means_not_ventilated"]["members"]
 SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 
-# Everything this script owns. Cleared before it runs so a crash cannot leave a stale file
-# The shareable tree is subdivided by the script that produced each file; the
-# phaseN_ prefixes stay, so the folder says which script and the prefix says
-# which phase. manifest.json is the exception and lives at the ROOT of
-# out_final: it is not a Phase 0 result but the pipeline's staleness marker,
-# which every later phase consults through require_manifest().
+# Everything this script owns, cleared before the run so a crash leaves nothing.
+# manifest.json is the exception: the staleness marker at the ROOT of out_final.
 PHASE_DIR = "01_cohort"
 
 OWNED = {
@@ -108,14 +102,11 @@ OWNED = {
                     "diagnostics.csv"],
 }
 
-# Paths this script used to write and no longer does. Cleared so a relocation
-# cannot leave a stale twin the owned list no longer names.
-# Two rounds of retirement. The prefixes are written out with an f-string rather
-# than inline so a future find-and-replace on output names cannot silently strip
-# them -- which is exactly what happened here on 2026-09-23.
+# Paths this script used to write and no longer does, cleared so a relocation
+# leaves no stale twin. Prefixes via f-string: find-and-replace cannot strip them.
 _P0 = "phase0_"
 RETIRED_OUTPUTS = [
-    # flat locations retired 2026-09-08 when out_final was subdivided by script
+    # flat locations, before out_final was subdivided by script
     f"output/final_no_phi/{_P0}missingness.csv",
     f"output/final_no_phi/{_P0}missingness_patterns.csv",
     f"output/final_no_phi/{_P0}diagnostics.csv",
@@ -126,11 +117,9 @@ RETIRED_OUTPUTS = [
     f"output/final_no_phi/diagnostics/{_P0}missingness.csv",
     f"output/final_no_phi/diagnostics/{_P0}missingness_patterns.csv",
     f"output/final_no_phi/diagnostics/{_P0}diagnostics.csv",
-    # icu_intervals.parquet became care_intervals.parquet on 2026-09-30, when the
-    # ED joined the ICU as an attributed location and the old name became a lie.
-    # Built with an f-string for the same reason as the prefixes above.
+    # icu_intervals.parquet, now care_intervals.parquet (f-string, as above)
     f"output/intermediate_phi/{'icu_'}intervals.parquet",
-    # the phase0_ prefix itself retired 2026-09-23 -- the phases are gone
+    # the phase0_ prefix itself
     f"output/final_no_phi/{_P0}manifest.json",
     f"output/final_no_phi/01_cohort/{_P0}strobe.csv",
     f"output/final_no_phi/01_cohort/{_P0}strobe.txt",
@@ -149,9 +138,8 @@ def asof(left: pd.DataFrame, right: pd.DataFrame, *, left_on: str, right_on: str
          **kw) -> pd.DataFrame:
     """merge_asof that tolerates mixed datetime resolutions.
 
-    pandas 3 keeps each column's unit, and merge_asof refuses us-vs-ns keys. The
-    CLIF parquet tables mix both (e.g. resp/medication us, vitals/labs ns). Only
-    the unit is cast to the left key's; tz and values are unchanged.
+    merge_asof refuses us-vs-ns keys and the CLIF tables mix both. Only the unit
+    is cast to the left key's; tz and values are unchanged.
     """
     right = right.assign(**{right_on: right[right_on].astype(left[left_on].dtype)})
     return pd.merge_asof(left, right, left_on=left_on, right_on=right_on, **kw)
@@ -176,21 +164,12 @@ def flow(label: str, n_after: int, reason: str = "") -> None:
 
 
 # --------------------------------------------------------------------- loading
-# Only the categories the analysis actually uses are read. Pushed down to the
-# parquet read, this is the difference between 9 lab categories and ~50.
+# Only the categories the analysis uses are read, pushed down to the parquet read.
 LAB_NEEDED = sorted(set(LAB_VARS.values()) | {"po2_arterial", "creatinine",
                                               "platelet_count"})
 VITAL_NEEDED = ["spo2", "map", "weight_kg", "height_cm"]
-# gcs_total is unioned in explicitly: it is a SOFA INPUT carried by
-# _sofa_inputs() with its own cap, not a declared time_varying covariate, so
-# it is absent from ASSESS_VARS and would be dropped from the read filter.
-#
-# The indication instruments are unioned in for the same reason, and they are
-# deliberately NOT time_varying covariates: assessment_covariates() raises
-# SystemExit when a declared category matches no rows, which is right for a
-# required covariate and fatal for an optional one. CPOT is not charted at
-# UCMC. Iterating the config's own keys rather than naming instruments here
-# means a site adding BPS or PAINAD edits config only.
+# gcs_total is a SOFA input with its own cap and the indication instruments are
+# site-optional, so neither is in ASSESS_VARS and both are unioned in here.
 INDICATION = COV.get("indication", {})
 INDICATION_INSTRUMENTS = sorted(
     set(INDICATION.get("pain_instruments", {}))
@@ -231,7 +210,7 @@ def load_core() -> dict:
     raw_anchor = (imv.groupby("hospitalization_id")["recorded_dttm"].min()
                      .rename("imv_dttm").reset_index())
     print(f"  {'resp_support IMV screen':.<52} {len(raw_anchor):,} hospitalizations")
-    # The IMV series is kept whole: outcomes are ascertained after the trajectory
+    # The IMV series is kept whole: outcomes are ascertained past the trajectory
     # window, so they cannot use the span-trimmed waterfall.
     return t, raw_anchor, imv[["hospitalization_id", "recorded_dttm"]].copy()
 
@@ -239,11 +218,8 @@ def load_core() -> dict:
 def _load_assessments(hid: dict) -> pd.DataFrame:
     """patient_assessments, matched to the protocol's categories ignoring case.
 
-    CLIF 2.1 spells it 'RASS', but the read filter is literal and a site's ETL may
-    have lowercased it (Rush charts 'rass'). The site's actual spellings are read
-    from the file, matched case-insensitively to the protocol's names, queried
-    under the site's spelling, and renamed back to ours straight after the read,
-    so every consumer and outlier bound sees one spelling. Each remap is printed.
+    The read filter matches literally, so the site's spellings are queried and
+    renamed back to the protocol's right after the read. Each remap is printed.
     """
     fold = {c.casefold(): c for c in ASSESS_NEEDED}
     assert len(fold) == len(ASSESS_NEEDED), "protocol categories differ only by case"
@@ -266,11 +242,7 @@ def _load_assessments(hid: dict) -> pd.DataFrame:
 
 
 def load_cohort_tables(hosp_ids: list[str]) -> dict:
-    """Everything else, filtered to the cohort's hospitalizations and categories.
-
-    Pushed down to the read: an unfiltered site-wide load makes the respiratory
-    waterfall alone take hours.
-    """
+    """Everything else, filtered at the read to the cohort's ids and categories."""
     hid = {"hospitalization_id": hosp_ids}
     t = {
         "hospital_diagnosis": HospitalDiagnosis.from_file(**_kw(filters=hid)).df,
@@ -302,8 +274,8 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
                 rs.waterfall(verbose=False, return_dataframe=True))
             frames.append(fresh)
         else:
-            # These hospitalizations sit in an IMV block because a sibling was
-            # ventilated; they have no respiratory_support rows of their own.
+            # In an IMV block via a sibling; no respiratory_support rows of
+            # their own.
             fresh = pd.DataFrame(columns=["hospitalization_id"])
             print(f"  {len(missing):,} hospitalization(s) have no "
                   f"respiratory_support rows; recorded as covered")
@@ -320,8 +292,7 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
 def _canonicalise_devices(df: pd.DataFrame) -> pd.DataFrame:
     """Restore mCIDE casing for the category columns the waterfall lowercases.
 
-    clifpy's waterfall returns device_category as 'imv'/'room air' rather than
-    the schema's 'IMV'/'Room Air'. Comparing against the canonical value then
+    clifpy returns 'imv' for 'IMV', so a comparison against the canonical value
     matches nothing and empties the cohort without raising.
     """
     import yaml
@@ -349,12 +320,7 @@ def _canonicalise_devices(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_long_tables(t: dict, mapping: pd.DataFrame) -> dict:
-    """Attach encounter_block and apply outlier bounds once per table.
-
-    Every consumer previously did this itself: vitals was merged and bounded five
-    times over 10.5M rows, labs three times over 3.8M. apply_long is idempotent,
-    so the repeats were pure cost.
-    """
+    """Attach encounter_block and apply outlier bounds once per table; idempotent."""
     spec = {
         "labs": ("labs", "lab_category", "lab_value_numeric"),
         "vitals": ("vitals", "vital_category", "vital_value"),
@@ -418,12 +384,8 @@ def build_blocks(t: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def hospital_intervals(t: dict, mapping: pd.DataFrame) -> pd.DataFrame:
-    # location_* joined the whitelist on 2026-09-30 for 06_unit_variation.R.
-    # clifpy's adt schema makes location_category and location_type REQUIRED
-    # category columns and location_name optional free text, and
-    # stitch_encounters already demands location_category, so the first two are
-    # guaranteed wherever this pipeline runs at all. The `if c in` guard still
-    # covers a site without location_name.
+    # location_* is for 06_unit_variation.R; location_name is the one optional in
+    # clifpy's adt schema, which is what the `if c in` guard covers.
     cols = [c for c in ("hospital_id", "hospital_type", "in_dttm", "out_dttm",
                         "location_category", "location_name", "location_type")
             if c in t["adt"].columns]
@@ -453,25 +415,9 @@ def hospital_endpoints(hi: pd.DataFrame) -> pd.DataFrame:
 def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Care-location stays per episode, on the relative clock, for 06_unit_variation.R.
 
-    NO DERIVATION, exactly as titration_export() does it. The attribution rule --
-    which unit gets credit for a titration event -- is an analysis parameter, so
-    it lives in the R script. Emitting raw intervals on the same relative clock
-    the events already use means the rule can change for the cost of an R re-run
-    and never a Phase 0 rebuild.
-
-    A RELATIVE CLOCK, AND NOTHING ELSE. `in_dttm`/`out_dttm` are real calendar
-    timestamps; hours since the anchor are not. The datetime assert below is the
-    same contract exemplar_export() and titration_export() hold.
-
-    Unit labels are NOT reduced to one per episode here. Two different
-    denominators, both measured at UCMC on 2026-09-30 and neither a substitute
-    for the other: 11.0% of ICU HOSPITALIZATIONS touch more than one unit, while
-    6.4% of ATTRIBUTED EPISODES do so inside the 72h observation window, the
-    window being the shorter span. The second is the one that bears on
-    attribution. protocol.json's `_DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE` records what
-    collapsing to an admitting label costs: CRRT-dose-lmtp "silently discarded
-    the very variation that makes it worth carrying, and at a single-hospital
-    site the loss would have been invisible."
+    No derivation: the attribution rule is an analysis parameter and lives in the R
+    script. Unit labels are not reduced to one per episode; see protocol.json
+    unit_variation._DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE. Relative hours only.
     """
     spec = COV.get("unit_variation")
     if spec is None:
@@ -502,29 +448,21 @@ def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     icu["t_start_hr"] = (icu["in_dttm"] - icu["anchor_dttm"]).dt.total_seconds() / 3600.0
     icu["t_end_hr"] = (icu["out_dttm"] - icu["anchor_dttm"]).dt.total_seconds() / 3600.0
 
-    # An open-ended stay (no out_dttm charted) runs to the end of the grid rather
-    # than being dropped. Dropping it would silently unattribute every event in a
-    # patient still in the unit when the extract was cut.
+    # An open-ended stay (no out_dttm) runs to the end of the grid, not dropped:
+    # the patient may still be in the unit at the extract cut.
     n_open = int(icu["t_end_hr"].isna().sum())
     if n_open:
         icu.loc[icu["t_end_hr"].isna(), "t_end_hr"] = float(EXTENT_H)
         note("ICU intervals with no out_dttm, run to the end of the grid", n_open)
     icu = icu[icu["t_start_hr"].notna()]
 
-    # Discard non-overlapping intervals BEFORE clipping. A stay that ended before
-    # intubation has t_end_hr <= 0; clipping first would collapse it to a
-    # zero-width interval sitting exactly on the anchor, which is not nothing --
-    # it would claim hour 0 for the wrong unit.
+    # Discard non-overlapping intervals BEFORE clipping: a stay ending before
+    # intubation would collapse onto the anchor and claim hour 0 for its unit.
     icu = icu[(icu["t_end_hr"] > 0) & (icu["t_start_hr"] < EXTENT_H)].copy()
     icu["t_start_hr"] = icu["t_start_hr"].clip(lower=0.0)
     icu["t_end_hr"] = icu["t_end_hr"].clip(upper=float(EXTENT_H))
 
-    # care_setting = location_type where CLIF populates it, else
-    # location_category. Emitted ALONGSIDE the raw columns, never overwriting
-    # location_type: silently redefining a CLIF column name to mean something
-    # else is how the next reader is misled. location_type is non-null only for
-    # ICU rows, so this yields the mCIDE ICU types plus the other attributed
-    # categories by name.
+    # care_setting = location_type (ICU only) else location_category, alongside.
     if "location_type" in icu.columns:
         icu["care_setting"] = (icu["location_type"].astype("string")
                                .fillna(icu["location_category"].astype("string")))
@@ -538,9 +476,8 @@ def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
            .sort_values(["encounter_block", "t_start_hr"], kind="stable")
            .reset_index(drop=True))
 
-    # Overlapping intervals inside one block would let a single event match two
-    # units and be counted twice. Loud rather than silently de-duplicated: if a
-    # site's adt has overlaps, that is a fact about the data the site must see.
+    # Overlapping intervals would let one event match two units and be counted
+    # twice. Raised rather than de-duplicated: an overlap is a fact about the adt.
     nxt = out.groupby("encounter_block")["t_start_hr"].shift(-1)
     overlap = (out["t_end_hr"] > nxt).fillna(False)
     if overlap.any():
@@ -552,11 +489,7 @@ def care_intervals(hi: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
 
     assert not any(pd.api.types.is_datetime64_any_dtype(out[c]) for c in out.columns), \
         "care_intervals carries a datetime"
-    # Guarded on emptiness: min()/max() of an empty column is NaN, and every
-    # comparison against NaN is False, so an unguarded bound assert would fail
-    # here with "outside the grid" at a site whose ICU stays simply do not
-    # overlap the observation window -- a misleading message for a legitimate,
-    # if degenerate, state.
+    # Guarded on emptiness: an all-NaN comparison is False and would mislead.
     if len(out):
         assert out["t_start_hr"].min() >= 0 and out["t_end_hr"].max() <= EXTENT_H, \
             f"care_intervals fall outside [0, {EXTENT_H}]"
@@ -578,14 +511,10 @@ def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
     """Continuous IMV episodes per encounter block.
 
     An episode ends at whichever comes first:
-      - a waterfalled IMV -> non-IMV transition. Measured on real data, 100% of
-        these go to a real device (NIPPV, nasal cannula, trach collar, ...) and
-        none to a null device, so a transition is a true extubation.
-      - a gap between RAW IMV records longer than imv_episode_gap_hours. The
-        waterfall alone is not sufficient: where no subsequent device is ever
-        charted, nothing breaks the segment and it carries IMV forward -- measured
-        at p90 30h and up to 1,137h past the last raw record, in 19.3% of
-        hospitalizations. Those extubations are invisible to it.
+      - a waterfalled IMV -> non-IMV transition, i.e. a true extubation.
+      - a gap between RAW IMV records longer than imv_episode_gap_hours. Where no
+        later device is charted the waterfall carries IMV forward indefinitely,
+        so those extubations are invisible to it.
     """
     wf = (resp[["hospitalization_id", "recorded_dttm", "device_category"]]
           .merge(mapping, on="hospitalization_id", how="inner")
@@ -621,9 +550,8 @@ def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
     trans = (imv.groupby("encounter_block")["transition_dttm"].min()
                 .rename("wf_transition").reset_index())
     out = out.merge(trans, on="encounter_block", how="left")
-    # The episode ENDS at the last IMV record; the transition is what tells us it
-    # ended rather than continued. A transition charted within one gap-threshold of
-    # that last record means the extubation was observed.
+    # The episode ends at the last IMV record; a transition within one
+    # gap-threshold of it says the extubation was observed.
     out["first_episode_end"] = out["raw_episode_end"]
     out["first_imv_episode_hours"] = (
         (out["first_episode_end"] - out["anchor_dttm"]).dt.total_seconds() / 3600)
@@ -644,8 +572,7 @@ def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
 
 def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
     c = blocks.merge(anchor, on="encounter_block", how="inner", validate="one_to_one")
-    # Not a flow step: the anchor comes from the same IMV series that selected these
-    # blocks, so this can only ever be equal. It is a consistency check.
+    # Not a flow step but a consistency check: the same IMV series is on both sides.
     assert len(c) == len(blocks), (
         f"anchor merge lost {len(blocks) - len(c)} blocks; the IMV screen and the "
         f"episode builder disagree, which should be impossible"
@@ -679,19 +606,8 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
 
 
 def note_dependence(cohort: pd.DataFrame) -> None:
-    """Repeat-encounter dependence, measured on the FINAL analytic cohort.
-
-    One of the dependence diagnostics protocol.json requires, so it is the
-    number a reader checks against the cohort size and it has to reconcile.
-    It therefore cannot live in build_cohort(), which returns BEFORE the weight
-    exclusion in main(): measured there it covered 14,921 blocks and reported
-    934 patients with more than one, against a shipped cohort of 14,897. The
-    reconciling figure is 932.
-
-    Emits the patient count too. Nothing else in the shareable tree carries it,
-    so describing the cohort in prose previously required reading the PHI
-    parquet for a number the diagnostics file should have held all along.
-    """
+    """Repeat-encounter dependence, after main()'s weight exclusion so it
+    reconciles with the shipped cohort size. Emits the patient count too."""
     per_patient = cohort.groupby("patient_id").size()
     note("patients in the analytic cohort", int(len(per_patient)))
     note("patients contributing more than one block", int((per_patient > 1).sum()))
@@ -727,14 +643,8 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
                      cats: list[str], rate_fn) -> pd.DataFrame:
     """Individual charted infusion records: exact admin_dttm, converted rate.
 
-    Split out of infusion_grid() on 2026-09-24 so the titration analysis can
-    reach the per-record grain the hourly binning throws away -- the same split
-    _bolus_events() got, and for the same reason. ONE copy of the unit
-    conversion, the outlier clip and the stop / not_administered zeroing lives
-    here; a second copy is how two places start disagreeing about a dose.
-
-    Returns every in-window record with a convertible rate, carrying `hr` for
-    the grid and `admin_dttm` for anything that needs real time.
+    ONE copy of the unit conversion, the outlier clip and the stop /
+    not_administered zeroing. Carries `hr` for the grid, `admin_dttm` for real time.
     """
     m = t["mac"][t["mac"]["med_category"].isin(cats)].merge(
         mapping, on="hospitalization_id", how="inner")
@@ -746,12 +656,8 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     m = m.merge(cohort[["encounter_block", "anchor_dttm", "weight_kg"]],
                 on="encounter_block", how="left")
     m["rate"] = rate_fn(m)
-    # A charted stop is a rate of zero, not a missing value -- and so is anything
-    # the nurse recorded as NOT ADMINISTERED. Every `stop` at UCMC is already
-    # `not_administered`, but the two are separate CLIF columns and a site may
-    # not pair them, so both are checked. Measured 2026-09-24: 802 rows carried a
-    # positive rate while charted not_administered and were being counted as drug
-    # given at full rate.
+    # A charted stop is a rate of zero, not a missing value, and so is anything
+    # charted NOT ADMINISTERED. Separate CLIF columns, so both are checked.
     act = m.get("mar_action_category", pd.Series(index=m.index, dtype=object))
     grp = m.get("mar_action_group", pd.Series(index=m.index, dtype=object))
     not_given = ((act.astype("string").str.lower() == "stop")
@@ -763,10 +669,7 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
               f"carried a positive rate and are zeroed")
 
     m["hr"] = ((m["admin_dttm"] - m["anchor_dttm"]).dt.total_seconds() // 3600).astype("Int64")
-    # A record inside the window whose converted rate is NaN disappears here.
-    # It is not necessarily wrong -- a dose charted with no value cannot be used
-    # -- but a silent drop of exposure is exactly what this pipeline reports
-    # everywhere else, so it is counted out loud.
+    # A record whose converted rate is NaN disappears here, so the drop is counted.
     in_window = (m["hr"] >= 0) & (m["hr"] < EXTENT_H)
     n_nan = int((in_window & m["rate"].isna()).sum())
     if n_nan:
@@ -778,23 +681,13 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
 
 def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
                   cats: list[str], rate_fn) -> pd.DataFrame:
-    """Hourly grid of infusion rate for `cats`. Config: exposure.infusion.
-
-    rate_fn maps the charted (dose, unit, weight) to the target rate; fentanyl
-    uses _to_mcg_hr, the sedatives go through the dose_units table.
-    """
+    """Hourly grid of infusion rate for `cats`, rate_fn converting the charted
+    (dose, unit, weight). Config: exposure.infusion."""
     m = _infusion_events(t, mapping, cohort, cats, rate_fn)
 
-    # THE LAST charted rate in the hour, which means sorting on TIME. Until
-    # 2026-09-24 the sort key was ["encounter_block", "hr", "rate"] -- no time
-    # component at all -- so `.last()` returned the HIGHEST rate in the hour.
-    # The two rules agree on a single-record hour and on an uptitration, and
-    # diverge wherever the rate falls inside one. A charted stop is exactly that
-    # case, so a stop was invisible whenever anything else was charted in the
-    # same hour. Measured before the fix: 9,312 cells (21.3% of multi-record
-    # cells) disagreed, the error was ALWAYS upward, median 50 mcg/hr, and 35.0%
-    # of episodes had at least one affected window. protocol.json ->
-    # exposure.infusion.algorithm had declared the correct rule all along.
+    # THE LAST charted rate in the hour (exposure.infusion.algorithm), so the sort
+    # key must carry TIME: without it `.last()` returns the highest rate instead,
+    # hiding a stop charted alongside anything else in the same hour.
     last = (m.sort_values(["encounter_block", "hr", "admin_dttm", "rate"], kind="stable")
               .groupby(["encounter_block", "hr"], as_index=False)["rate"].last())
 
@@ -816,12 +709,8 @@ def _accepted_units() -> dict[str, list[str]]:
 
 
 def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
-    """Convert charted fentanyl infusion dose to mcg/hr using the charted unit.
-
-    mcg/hr is how fentanyl is ordered, and it is what 99.5% of UCMC rows are
-    already charted in, so the dominant path is an identity and weight never
-    touches it. Weight is needed only for the weight-based minority.
-    """
+    """Charted fentanyl infusion dose -> mcg/hr. Most rows are mcg/hr already, so
+    the dominant path is an identity; weight is only for the weight-based arms."""
     unit = m["med_dose_unit"].astype("string").str.lower().str.strip()
     dose = pd.to_numeric(m["med_dose"], errors="coerce")
     w = pd.to_numeric(m["weight_kg"], errors="coerce")
@@ -832,10 +721,8 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
     out[unit == "mcg/kg/min"] = dose * 60.0 * w
     out[unit == "mcg/min"] = dose * 60.0
     unresolved = dose.notna() & out.isna()
-    # Units the SITE has chosen to leave unconverted (config.json
-    # accepted_unhandled_dose_units.fentanyl; absent/empty = none, so the run stops).
-    # Left NaN on purpose, counted here, and dropped (and counted again) in
-    # _infusion_events. Any unit not listed there still stops the run.
+    # Units the site leaves unconverted (config.json
+    # accepted_unhandled_dose_units.fentanyl). Left NaN; anything else stops the run.
     accepted = {u.lower().strip() for u in _accepted_units().get("fentanyl", [])}
     known = unresolved & unit.isin(accepted)
     if known.any():
@@ -860,9 +747,8 @@ def _to_mcg_hr(m: pd.DataFrame) -> pd.Series:
 def gate_dose_on_ventilation(long: pd.DataFrame) -> pd.DataFrame:
     """Force dose to 0 in alive-admitted windows the patient was not ventilated in.
 
-    Applied after status_covariates because it needs
-    imv_status. total_dose_ungated preserves the pre-gate value, so reversing the
-    decision is a column swap rather than another run.
+    Needs imv_status, so it runs after status_covariates. total_dose_ungated
+    preserves the pre-gate value.
     """
     off = long["alive_admitted"] & (long["imv_status"].fillna(0) == 0)
     long["total_dose_ungated"] = long["total_dose"]
@@ -916,10 +802,8 @@ def sedative_exposure(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
 def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Individual bolus administrations: exact admin_dttm, converted mcg, bounded.
 
-    Split out of bolus_doses() on 2026-09-24 so the exemplar export can reach the
-    per-administration grain that the 4h aggregation throws away. ONE copy of the
-    unit conversion and the outlier bound live here -- a second copy is how two
-    places quietly start disagreeing about what a mg is.
+    ONE copy of the unit conversion and the outlier bound, at the
+    per-administration grain the window aggregation throws away.
     """
     cats = COV["medications"]["opioid_bolus_categories"]
     b = t["mai"][t["mai"]["med_category"].isin(cats)].merge(
@@ -928,9 +812,6 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
                 on="encounter_block", how="inner")
 
     # Site vocabulary comes from config.json dose_unit_aliases, not from here.
-    # "mcg of opiate" is UCMC's string and lived in this line until 2026-10-26,
-    # so another site could only normalise its own by editing code -- which moves
-    # the code digest and makes it look like it ran a different analysis.
     aliases = {str(k).lower().strip(): v
                for k, v in (CONFIG.get("dose_unit_aliases") or {}).items()}
     unit = (b["med_dose_unit"].astype("string").str.lower().str.strip()
@@ -951,8 +832,7 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
     mcg[unit == "mcg/kg"] = dose * w
     mcg[unit == "mg/kg"] = dose * 1000.0 * w
 
-    # Unconvertible rows are reported, not raised: at UCMC they are 7.6% of rows
-    # and carry no dose at all, so raising would block the run over empty records.
+    # Unconvertible rows are reported, not raised: they carry no dose at all.
     unresolved = dose.notna() & mcg.isna()
     if unresolved.any():
         counts = unit[unresolved].fillna("<no unit>").value_counts()
@@ -962,13 +842,7 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
             print(f"    {u}: {n:,}")
     b["mcg"] = mcg
 
-    # PER DRUG. This applied fentanyl's [0, 1000] mcg bound to every member of
-    # opioid_bolus_categories until 2026-10-26. Inert while that list is
-    # fentanyl alone, and silently wrong the moment it is not: a site adding
-    # hydromorphone -- potency roughly 1 mcg fentanyl per 0.15 mcg hydromorphone
-    # -- would have had its doses judged against fentanyl's ceiling and summed
-    # into bolus_mcg as though they were fentanyl. A bound is per (drug, unit) in
-    # med_dose_raw and must be per drug here too.
+    # PER DRUG, as in med_dose_raw: every member is summed into one bolus_mcg.
     bounds = OUTLIERS["med_bolus_mcg"]
     missing = sorted(c for c in cats if c not in bounds)
     if missing:
@@ -999,18 +873,12 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
 
 
 def bolus_doses(b: pd.DataFrame) -> pd.DataFrame:
-    """Window bolus total / weight / window_hours. Summed, never carried forward.
-
-    Takes the per-administration frame from _bolus_events() rather than building
-    it, so the unit conversion and its console report happen once per run even
-    though two consumers now need the result.
-    """
+    """Window bolus total / weight / window_hours, summed from _bolus_events() and
+    never carried forward."""
     agg = b.groupby(["encounter_block", "window_idx"], as_index=False).agg(
         bolus_mcg=("mcg", "sum"), n_bolus=("mcg", "size"))
     # mcg delivered in the window, spread over its hours -> mcg/hr, the same scale
-    # as the infusion arm, so the two are additive. bolus_mcg travels alongside
-    # for the amount scale: a bolus is charted as an amount already, so unlike
-    # the infusion arm it needs no reconstruction and is exact in a short window.
+    # as the infusion arm, so the two are additive. bolus_mcg keeps the amount scale.
     agg["bolus_dose"] = agg["bolus_mcg"] / WINDOW_H
     return agg[["encounter_block", "window_idx", "bolus_dose", "bolus_mcg",
                 "n_bolus"]]
@@ -1020,18 +888,9 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
                     windows: pd.DataFrame) -> pd.DataFrame:
     g = grid.copy()
     g["window_idx"] = g["hr"] // WINDOW_H
-    # mean AND sum in one pass. The mean is the time-weighted RATE (mcg/hr); the
-    # sum over hourly cells, each an hour wide, is the AMOUNT delivered (mcg).
-    #
-    # These are NOT interchangeable by a factor of WINDOW_H. _hourly_scaffold
-    # drops cells past followup_end_dttm, so a window straddling discharge or
-    # death holds fewer than WINDOW_H cells -- 632 ventilated windows at UCMC
-    # (151 with 1 hour, 215 with 2, 266 with 3; measured 2026-09-09). There the
-    # mean is still the right rate but mean * WINDOW_H overstates the amount.
-    # Taking the sum directly is exact in both cases; reconstructing it from the
-    # mean is not, which is why both are computed here rather than derived later.
-    # Note extubation does NOT shorten a window: the scaffold ends at discharge
-    # or death, and an extubated patient keeps all WINDOW_H cells.
+    # mean AND sum in one pass: the mean is the RATE (mcg/hr), the sum over
+    # hour-wide cells the AMOUNT (mcg). Not interchangeable by WINDOW_H --
+    # _hourly_scaffold drops cells past followup_end_dttm, never past extubation.
     inf = g.groupby(["encounter_block", "window_idx"], as_index=False)["rate"].agg(
         inf_dose="mean", inf_mcg="sum")
 
@@ -1042,9 +901,8 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
     out["total_dose"] = out["inf_dose"] + out["bolus_dose"]        # mcg/hr
     out["window_mcg"] = out["inf_mcg"] + out["bolus_mcg"]          # mcg
 
-    # The derived ceiling is exact for the infusion arm only: it is
-    # max(mcg/hr) / min(weight). A window's bolus SUM has no principled ceiling,
-    # since several bounded boluses can stack, so that arm is reported not asserted.
+    # max(mcg/hr) / min(weight) bounds the infusion arm only; a bolus SUM can
+    # stack, so that arm is reported, not asserted.
     ceiling = fentanyl_sanity_ceiling(OUTLIERS)
     over_inf = out.loc[out["alive_admitted"], "inf_dose"] > ceiling
     if over_inf.any():
@@ -1052,9 +910,8 @@ def window_exposure(grid: pd.DataFrame, bolus: pd.DataFrame,
             f"{int(over_inf.sum()):,} windows have an INFUSION rate above the derived "
             f"ceiling of {ceiling:g} mcg/hr, which is proof the bounds did not run."
         )
-    # Between the charted mcg/hr bound and the derived ceiling sits a real region:
-    # a weight-based arm at its own bound, times a large weight. Bound-consistent,
-    # clinically extreme, and reported rather than silently accepted.
+    # Above the charted mcg/hr bound but below the ceiling is a weight-based arm
+    # at its own bound: bound-consistent, so reported rather than raised.
     charted_max = fentanyl_charted_max_mcg_hr(OUTLIERS)
     high = out.loc[out["alive_admitted"], "inf_dose"] > charted_max
     if high.any():
@@ -1083,12 +940,9 @@ def _window_of(dttm: pd.Series, anchor: pd.Series) -> pd.Series:
 def _to_windows(df: pd.DataFrame, cohort: pd.DataFrame, time_col: str) -> pd.DataFrame:
     """Map records to windows. Bounded by the window grid AND by follow-up.
 
-    A record charted at or after block_discharge_dttm belongs to no window: a
-    post-event window is structurally empty, not missing (protocol.json
-    windows._anchor_note). Without the follow-up bound, charting lag put 428
-    IMV records and 44 CRRT records into windows the patient had already been
-    discharged from, so `imv_status == 1` could be true where alive_admitted
-    was false. Same bound the hourly scaffold already applies.
+    A record at or after block_discharge_dttm belongs to no window: a post-event
+    window is empty, not missing (windows._anchor_note). Without the bound,
+    charting lag makes `imv_status == 1` true where alive_admitted is false.
     """
     d = df.merge(cohort[["encounter_block", "anchor_dttm", "followup_end_dttm"]],
                  on="encounter_block", how="inner")
@@ -1115,14 +969,10 @@ def lab_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
 def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     """Per-window sedation and pain scores. Config: time_varying.<assessments>.
 
-    Deliberately the same shape as lab_covariates(): variables, source categories
-    and summary rules all come from protocol.json, so adding a score is a config
-    edit. gcs_total is NOT here -- it is a SOFA input with its own cap, carried by
-    _sofa_inputs().
-
-    One instrument per construct is charted per site -- NVPS here, cpot_total or
-    BPS elsewhere -- so the pain variables carry site_optional and an absent one
-    becomes an all-NA column instead of a SystemExit. At least one must land.
+    Same shape as lab_covariates(): variables, categories and summary rules come
+    from protocol.json. gcs_total is NOT here -- it is a SOFA input with its own
+    cap, in _sofa_inputs(). An absent site_optional pain instrument becomes an
+    all-NA column rather than a SystemExit; one of them must land.
     """
     if not ASSESS_VARS:
         return pd.DataFrame()
@@ -1136,10 +986,8 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     for var, cat in ASSESS_VARS.items():
         spec = COV["time_varying"][var]
         how = spec["summary"]
-        # summary_rules says any rule outside its vocabulary must raise rather
-        # than default. That matters most HERE: pandas .agg would happily accept
-        # "median", so an undeclared rule would work in code while violating the
-        # protocol, and nothing downstream would ever say so.
+        # A rule outside summary_rules raises: .agg would accept "median" and
+        # violate the protocol silently.
         if how not in vocabulary:
             raise SystemExit(
                 f"time_varying.{var}.summary = {how!r} is not in "
@@ -1149,11 +997,8 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
         val = spec["source"]["value"]
         sub = asm[asm["assessment_category"] == cat]
         if sub.empty:
-            # A site-optional instrument is one of several measuring the same
-            # construct -- nvps / cpot_total / bps for pain -- and which one a
-            # site charts is a fact about the site, not a defect. Raising here
-            # would stop a CPOT site in Phase 0 on NVPS. Everything else still
-            # raises: a missing RASS or lactate is a broken extract.
+            # Which instrument a site charts is a fact about the site; a missing
+            # RASS or lactate still raises, being a broken extract.
             if spec.get("site_optional"):
                 absent.append(var)
                 print(f"    {var:.<24} {cat}: 0 records at this site -- declared "
@@ -1171,16 +1016,13 @@ def assessment_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
         out = agg if out is None else out.merge(
             agg, on=["encounter_block", "window_idx"], how="outer")
 
-    # An absent instrument still has to REACH A COLUMN. assert_config_is_honoured()
-    # requires it, and more to the point a declared key that produces no column at
-    # all is exactly the silent no-op that guard exists to catch.
+    # An absent instrument still has to reach a column (assert_config_is_honoured).
     if out is not None:
         for var in absent:
             out[var] = np.nan
 
-    # At least one pain instrument, or the build refuses. A site charting none has
-    # no analgesia signal at all, and an all-NA pain panel that nobody is told
-    # about is how that gets discovered after the analysis is written.
+    # At least one pain instrument, or the build refuses: an all-NA pain panel is
+    # no analgesia signal at all.
     pain_cats = set(COV.get("indication", {}).get("pain_instruments", {}))
     pain_vars = {v for v, c in ASSESS_VARS.items() if c in pain_cats}
     if pain_vars and not (pain_vars & set(present)):
@@ -1279,8 +1121,8 @@ def oxygenation_covariate(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     pf["ratio"] = pf["lab_value_numeric"] / pf["fio2_set"]
 
     vit = t["vitals"]
-    # Keep the unfiltered series: the ceiling filter is what separates a plateau
-    # window from one with no measurement at all, so the flags must see both.
+    # Keep the unfiltered series: the ceiling tells a plateau window from one
+    # with no measurement at all, and the flags need both.
     spo2_all = vit.loc[vit["vital_category"] == "spo2",
                        ["encounter_block", "recorded_dttm", "vital_value"]]
     spo2 = spo2_all[spo2_all["vital_value"] < SPO2_CEILING]
@@ -1300,16 +1142,14 @@ def oxygenation_covariate(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     pf_w, sf_w = summarise(pf, "pf_ratio"), summarise(sf, "sf_ratio")
     out = pf_w.merge(sf_w, on=["encounter_block", "window_idx"], how="outer")
 
-    # Raw availability BEFORE pairing, so a missing oxygenation can be attributed
-    # to the measurement, the SpO2 ceiling, or the FiO2 lookback.
+    # Raw availability BEFORE pairing, so an absence can be attributed to a cause.
     def flag(d: pd.DataFrame, time_col: str, name: str) -> pd.DataFrame:
         w = _to_windows(d, cohort, time_col)
         return (w.groupby(["encounter_block", "window_idx"], as_index=False)
                  .size().rename(columns={"size": name})[
                      ["encounter_block", "window_idx", name]])
 
-    # Plateau readings paired to FiO2: Severinghaus is undefined at or above the
-    # ceiling, but the FiO2 still bounds what the P/F could be.
+    # Severinghaus is undefined at or above the ceiling, but FiO2 still bounds P/F.
     plateau = spo2_all[spo2_all["vital_value"] >= SPO2_CEILING]
     if len(plateau):
         pl = pair(plateau.rename(columns={"recorded_dttm": "obs_dttm"}), "obs_dttm")
@@ -1379,11 +1219,9 @@ def _sofa_inputs(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
 def _attach_current_weight(med: pd.DataFrame, t: dict) -> pd.DataFrame:
     """Attach the most recent charted weight at each admin time.
 
-    clifpy demands a weight whenever the PREFERRED unit is weight-based, and that
-    branch is first in its CASE, so a missing weight masks every other cause of a
-    conversion failure. Attaching the column here also makes clifpy skip its own
-    vitals lookup. NEE follows CURRENT weight, unlike the dose denominator, which
-    is fixed at the anchor -- see protocol.json weight._DO_NOT_UNIFY.
+    Makes clifpy skip its own vitals lookup, where a missing weight masks every
+    other cause of a conversion failure. NEE follows CURRENT weight; the dose
+    denominator is fixed at the anchor (see weight._DO_NOT_UNIFY).
     """
     w = (t["vitals"].loc[t["vitals"]["vital_category"] == "weight_kg",
                  ["encounter_block", "recorded_dttm", "vital_value"]]
@@ -1411,8 +1249,8 @@ def _attach_current_weight(med: pd.DataFrame, t: dict) -> pd.DataFrame:
 def _sofa_pressors(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Max mcg/kg/min per window for the four SOFA vasopressors.
 
-    Absent drugs stay NULL. Coding them 0 makes the `<= 0.1` clause in the
-    cardiovascular score fire, giving every unpressored patient a score of 3.
+    Absent drugs stay NULL: coding them 0 fires the `<= 0.1` cardiovascular clause
+    and scores every unpressored patient 3.
     """
     m = t["mac"][t["mac"]["med_category"].isin(SOFA_PRESSORS)].merge(
         mapping, on="hospitalization_id", how="inner")
@@ -1458,9 +1296,8 @@ _SEVERINGHAUS_AT_CEILING = _severinghaus_at(SPO2_CEILING - 0.01)
 def oxygenation_absence_reasons(long: pd.DataFrame) -> pd.DataFrame:
     """Why an alive-admitted window carries no oxygenation, before any carry-forward.
 
-    Three mutually exclusive causes: nothing was measured; SpO2 was measured but
-    sat on the plateau where the Severinghaus transform is undefined; or a usable
-    measurement existed but no FiO2 could be paired to it within the lookback.
+    Three mutually exclusive causes: nothing measured; SpO2 on the plateau where
+    Severinghaus is undefined; or no FiO2 pairable within the lookback.
     """
     a = long[long["alive_admitted"]].copy()
     n_alive_admitted = len(a)
@@ -1592,32 +1429,14 @@ def baseline_sofa(t: dict, mapping: pd.DataFrame,
                   cohort: pd.DataFrame) -> pd.DataFrame:
     """Worst SOFA in the N hours BEFORE intubation. Config: time_invariant.sofa_baseline.
 
-    SG, 2026-10-27, specified the covariate for the outcome model as "SOFA
-    calculated using the worst values in the preceding 24h before intubation".
+    Not the window-0 SOFA, which covers hours AFTER the anchor and so sits on the
+    causal path. Reuses every existing extractor by SHIFTING THE COHORT: the anchor
+    moves back by the lookback and follow-up is set to the real anchor, so
+    _to_windows() maps the pre-intubation period onto windows 0..L/window_hours-1.
 
-    WHY NOT THE WINDOW-0 SOFA WE ALREADY HAVE. sofa_total at window 0 covers
-    hours 0-4 AFTER the anchor, so it is measured after intubation and after
-    sedation starts. Fentanyl and propofol both drop blood pressure, which is the
-    cardiovascular component; adjusting the outcome model for a value the exposure
-    helped cause would sit on the causal path and bias the exposure coefficient
-    toward the null. The baseline has to precede the exposure.
-
-    REUSES EVERY EXISTING EXTRACTOR BY SHIFTING THE COHORT, which is the only
-    reason this is short. oxygenation_covariate() alone carries FiO2
-    normalisation, the Severinghaus SpO2 fallback and the plateau rule; a second
-    copy cut to a pre-anchor window would be a federation-critical derivation
-    maintained twice. Instead the anchor is moved back by the lookback and
-    follow-up is set to the real anchor, so _to_windows() maps the pre-intubation
-    period onto windows 0..L/window_hours-1 and every downstream helper works
-    unchanged. Scoring then goes through the SAME score_sofa() as the windowed
-    version, so not one threshold is restated.
-
-    WORST, not last: min for map / platelets / GCS / P-F ratio, max for
-    creatinine / bilirubin / each vasopressor. on_vent is FALSE by construction --
-    the anchor is the first IMV record, so the patient is not invasively
-    ventilated before it. A patient transferred in already ventilated is the known
-    exception (cohort._comment_anchor) and will score the lower, not-ventilated
-    respiratory band.
+    WORST, not last: min for map / platelets / GCS / P-F ratio, max for creatinine
+    / bilirubin / each vasopressor. on_vent is False by construction, the anchor
+    being the first IMV record (exception: cohort._comment_anchor).
     """
     spec = COV["time_invariant"]["sofa_baseline"]
     L = float(spec["lookback_hours"])
@@ -1772,12 +1591,8 @@ def time_invariant(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.D
          int((~ti["encounter_block"].isin(with_dx)).sum()))
     ti.loc[~ti["encounter_block"].isin(with_dx), "cci"] = np.nan
 
-    # Calendar year of the anchor, for code/06_unit_variation.R. An INTEGER, not
-    # a date: year alone is what HIPAA safe harbour permits, and an int is what
-    # the no-datetime asserts on the shareable side will accept. The anchor is
-    # the start of ventilation rather than admission, so an episode is labelled
-    # by the year care was given, not the year the patient arrived -- the two
-    # differ only across a new-year boundary.
+    # Calendar year of the anchor, for code/06_unit_variation.R. An INTEGER, not a
+    # date: year alone is what HIPAA safe harbour and the no-datetime asserts allow.
     year_from = COV["unit_variation"]["year_from"]
     ti = ti.merge(cohort[["encounter_block", year_from]],
                   on="encounter_block", how="left", validate="one_to_one")
@@ -1863,11 +1678,8 @@ def apply_missingness(long: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, p
             n_miss = int(df.loc[alive_admitted, v].isna().sum())
             denom, unit = n_alive_admitted, "alive_admitted_windows"
         else:
-            # A time-invariant variable is a property of the EPISODE. Counted
-            # over the window grid, seven episodes missing an age read as "126
-            # of 268,146" -- the percentage is identical, the count is not
-            # interpretable, and until 2026-10-04 it sat in a column named
-            # n_alive_admitted while holding neither of that column's meanings.
+            # A time-invariant variable is a property of the EPISODE, so it is
+            # counted over episodes, not over the window grid.
             n_miss = int(df.groupby("encounter_block")[v].first().isna().sum())
             denom, unit = n_episodes, "episodes"
         rows.append({
@@ -1940,17 +1752,10 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
 def resolve_death(frame: pd.DataFrame, patient: pd.DataFrame) -> pd.DataFrame:
     """Death, for the WHOLE analytic cohort. Config: outcomes.death_definition.
 
-    THE ONLY PLACE the mortality rule lives. Two sources, in this order:
-    death_dttm supplies a TIMESTAMP, and a discharge_category in
-    mortality_categories supplies the FACT with block_discharge_dttm standing in
-    for the time. Neither alone is enough -- MEASURED at UCMC, of 9,328 patients
-    flagged Expired or Hospice only 4,621 (49.5%) carry a death_dttm, and 3,066
-    carry a death_dttm with no death discharge.
-
+    THE ONLY PLACE the mortality rule lives. Two sources, neither alone covering
+    the cohort: death_dttm supplies a TIMESTAMP, a discharge_category in
+    mortality_categories supplies the FACT with block_discharge_dttm for the time.
     Returns encounter_block, died, death_hr (hours from the anchor, NaT-safe).
-    Both the Phase 1 state description and the landmark outcomes read this, so
-    the two cannot drift -- before 2026-10-27 they were separate expressions and
-    a comment asserted they were identical.
     """
     f = frame[["encounter_block", "patient_id", "anchor_dttm",
                "block_discharge_dttm", "discharge_category"]].copy()
@@ -1958,14 +1763,10 @@ def resolve_death(frame: pd.DataFrame, patient: pd.DataFrame) -> pd.DataFrame:
         f = f.merge(patient[["patient_id", "death_dttm"]]
                     .drop_duplicates("patient_id"), on="patient_id", how="left")
     else:
-        # CLIF 2.1 makes death_dttm optional and the protocol's own note records
-        # it as unstable. A site without it falls back entirely to the terminal
-        # discharge, which is the branch that already does most of the work.
+        # death_dttm is optional in CLIF 2.1; without it only discharge is left.
         f["death_dttm"] = pd.NaT
-    # An ALL-NULL death_dttm column is tz-naive and subtracting the tz-aware
-    # anchor from it raises -- which is every site where no cohort patient
-    # carries one, plus the column just created. clifpy has already normalised
-    # real values to the site zone, so localise rather than convert.
+    # An all-null death_dttm column is tz-naive and subtracting the tz-aware
+    # anchor raises. Real values are in the site zone, so localise, not convert.
     dd = pd.to_datetime(f["death_dttm"])
     tz = f["anchor_dttm"].dt.tz
     dd = dd.dt.tz_localize(tz) if dd.dt.tz is None else dd.dt.tz_convert(tz)
@@ -1991,26 +1792,10 @@ def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
                    horizon_h: float) -> pd.DataFrame:
     """IMV / not-IMV intervals per block, from the WATERFALLED series.
 
-    THE OUTCOME SIDE OF THE AMENDMENT. Eligibility is NOT computed here -- it
-    still comes from the window grid, deliberately unchanged on 2026-10-27 so the
-    landmark cohort did not move. What changed is the outcome, which until then
-    read the RAW IMV screen: a `device_category == "IMV"` filter applied BEFORE
-    the waterfall fills anything in, and trimmed at 72h besides. A record charted
-    after the landmark whose device_category was null in the source was therefore
-    invisible to the outcome while the waterfall knew perfectly well it was IMV.
-    The grid and this function now derive from the same waterfalled series, which
-    is the drift the amendment closed.
-
-    MEASURED at UCMC 2026-10-27, before the change and under the then-current 72h
-    liberation threshold: 1,602 landmark blocks had no extubation at or after T;
-    579 of them had a real IMV -> non-IMV transition the trim was hiding, and
-    only 88 had no real record after T at all. Of the whole landmark cohort 98.4%
-    carried a real post-landmark record and the trim was discarding a median 236h
-    -- about ten days -- of real follow-up per patient.
-
-    Each row is a half-open interval [t_start_hr, t_end_hr) with one state. The
-    last record's interval runs to the end of follow-up, not to the next record,
-    because there is no next record.
+    Eligibility is NOT computed here; it comes from the window grid. Reading the
+    waterfalled series rather than the raw IMV screen keeps a record whose source
+    device_category was null. Each row is a half-open interval
+    [t_start_hr, t_end_hr) with one state; the last runs to the end of follow-up.
     """
     r = resp.merge(cohort[["encounter_block", "anchor_dttm", "followup_end_dttm"]],
                    on="encounter_block", how="inner")
@@ -2021,8 +1806,7 @@ def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
     r = r.sort_values(["encounter_block", "hr"], kind="stable")
     r["is_imv"] = r["device_category"].eq("IMV")
 
-    # Collapse consecutive records in the same state: an interval is a RUN, so a
-    # 48h liberation is one row rather than however many times it was charted.
+    # Collapse consecutive records in the same state: an interval is a RUN.
     r["run"] = (r["is_imv"] != r.groupby("encounter_block")["is_imv"].shift()).cumsum()
     iv = (r.groupby(["encounter_block", "run"], as_index=False)
             .agg(t_start_hr=("hr", "min"), is_imv=("is_imv", "first"),
@@ -2038,50 +1822,31 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
                          death_hr: pd.Series) -> pd.DataFrame:
     """VFD-28 from IMV onset. Config: outcomes.vfd.
 
-    A ventilator-free day is a day alive and off IMV, counted only inside a
-    liberation lasting at least successful_extubation_hours. Read
-    outcomes.vfd._definition and the four notes beside it before changing
-    anything here -- each branch below is one of them.
-
-    ORDER MATTERS. The discharged-alive extension lengthens the final interval
-    BEFORE the qualifying filter, not after. Extending afterwards would credit a
-    patient liberated at hour 640 and sent home at 660 with the 12 remaining
-    hours, when the whole liberation is 32h and qualifies for nothing.
-
-    TWO DIFFERENT WINDOWS, and conflating them is how the ceiling broke. A spell
-    QUALIFIES on its full length anywhere in [0, horizon]; it ACCRUES only over
-    [landmark_hours, horizon]. See the comment on accrued_h.
+    A day alive and off IMV, counted only inside a liberation lasting at least
+    successful_extubation_hours. Each branch below is one of the notes beside
+    outcomes.vfd._definition. ORDER MATTERS: the discharged-alive extension
+    lengthens the final interval BEFORE the qualifying filter. And a spell
+    QUALIFIES on its full length in [0, horizon] while ACCRUING only over
+    [landmark_hours, horizon].
     """
     horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
     succ_h = float(COV["outcomes"]["successful_extubation_hours"])
     landmark_h = float(COV["cohort"]["landmark_hours"])
 
-    # Takes the intervals rather than the raw series: _imv_intervals() merges the
-    # whole waterfalled respiratory_support, which is millions of rows, and the
-    # caller already needs the same intervals to find the liberation.
+    # Takes the intervals, not the raw series: the caller needs the same ones.
     iv = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable")
     idx = cohort.set_index("encounter_block")
     disc_h = ((idx["followup_end_dttm"] - idx["anchor_dttm"])
               .dt.total_seconds() / 3600)
 
-    # Death at or before the horizon zeroes the total, whatever was accrued.
-    # This is the convention that lets VFD sidestep the competing risk -- and it
-    # is also the right test for "alive at day 28", which `death_hr.isna()` is
-    # not: a death recorded AFTER day 28 still leaves the patient alive at it.
+    # Death at or before the horizon zeroes the total, whatever was accrued. Also
+    # the right test for "alive at day 28", which `death_hr.isna()` is not.
     died_in = (death_hr.reindex(idx.index) <= horizon_h).fillna(False)
 
     # Discharged alive before the horizon, split on the state AT discharge.
-    #   OFF IMV  -> assume alive and IMV-free through day 28; extend the spell.
-    #   ON IMV   -> SCORE ZERO. SG, 2026-10-27: "most of the censored patients
-    #               left to a SNF or LTACH on a vent. Our definition of VFD
-    #               should count these patients as 0 VFD28 as they almost
-    #               certainly would not liberate that quickly and are lost to
-    #               follow up."
-    # This is STRICTER than 0.9.0, which stopped accrual but let them keep what
-    # they had earned earlier. SG's original trach example said "gets 0 VFDs" and
-    # the two readings agree whenever the patient was never liberated, which is
-    # why the difference went unnoticed; they diverge for a patient liberated
-    # once, reintubated, and then sent out on the ventilator.
+    #   OFF IMV -> assume alive and IMV-free through day 28; extend the spell.
+    #   ON IMV  -> score zero: lost to follow-up on a ventilator, and unlikely to
+    #              liberate inside the horizon. See outcomes.vfd._definition.
     last = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable") \
              .groupby("encounter_block").tail(1)
     early_alive = (~died_in & (disc_h < horizon_h))
@@ -2099,25 +1864,12 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
 
     free = iv[~iv["is_imv"]].copy()
     free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
-    # A liberation shorter than succ_h is a FAILED extubation and contributes
-    # nothing -- SG: "extubated and reintubated within 48h, that is zero VFDs as
-    # the extubation was unsuccessful". Several qualifying ones each count.
+    # A liberation shorter than succ_h is a FAILED extubation and counts nothing.
     qual = free[free["dur_h"] >= succ_h].copy()
 
-    # ACCRUAL STARTS AT THE LANDMARK, even though the clock starts at intubation.
-    # SG, 2026-10-27: "max VFDs allowed by our definition is 25." Without this the
-    # observed maximum was 27.3d, and the ceiling was the visible symptom of a
-    # real problem: free time inside the first 72h sits INSIDE THE EXPOSURE
-    # WINDOW. A patient off the ventilator for 51 of the first 72 hours had far
-    # less opportunity to receive a fentanyl titration, so exposure and outcome
-    # would be mechanically coupled -- exactly what the landmark design exists to
-    # prevent.
-    #
-    # The spell still has to QUALIFY on its full length: a 60h liberation is a
-    # successful extubation whether or not part of it predates the landmark. Only
-    # the hours CREDITED are clipped. MEASURED at UCMC: 154 blocks (2.29%) change,
-    # 15 lose more than a day, the largest loss is 2.32d, and the maximum becomes
-    # exactly 25.00d with nothing above it. Median and mean move by <= 0.01d.
+    # ACCRUAL STARTS AT THE LANDMARK though the clock starts at intubation: free
+    # time before it sits INSIDE THE EXPOSURE WINDOW, coupling exposure and outcome.
+    # The spell still QUALIFIES on its full length; only credited hours are clipped.
     qual["accrued_h"] = (qual["t_end_hr"].clip(upper=horizon_h)
                          - qual["t_start_hr"].clip(lower=landmark_h)).clip(lower=0)
 
@@ -2125,8 +1877,8 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     out["vfd_hours"] = (qual.groupby("encounter_block")["accrued_h"].sum()
                             .reindex(idx.index).fillna(0.0))
     out.loc[died_in, "vfd_hours"] = 0.0
-    # Lost to follow-up ON a ventilator: zero, like death. Applied AFTER the sum
-    # so it overrides anything earned earlier rather than merely halting accrual.
+    # Lost to follow-up ON a ventilator: zero, like death. AFTER the sum, so it
+    # overrides anything earned earlier.
     out.loc[lost_on_vent, "vfd_hours"] = 0.0
     out["vfd_28"] = (out["vfd_hours"] / 24.0).round(2)
     out["vfd_zero_lost_on_vent"] = lost_on_vent & ~died_in
@@ -2142,33 +1894,19 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
                         resp: pd.DataFrame) -> pd.DataFrame:
     """One row per landmark block: liberation, death, and VFD-28.
 
-    ONE SERIES ANSWERS BOTH QUESTIONS as of 2026-10-27. Eligibility still comes
-    from the window grid -- deliberately unchanged, so the landmark cohort does
-    not move under this amendment -- but the OUTCOME now comes from the
-    waterfalled respiratory_support over the whole encounter block rather than
-    the raw IMV screen. See _imv_intervals() for what that fixes and by how much.
-
-    AN EXTUBATION AND A DEATH ARE SEPARABLE and are no longer collapsed. A
-    patient liberated on day 4 who dies on day 20 is a SUCCESS that also died:
-    extubation_event keeps the liberation, mortality_event keeps the death, and
-    VFD holds both by construction. MEASURED at UCMC before the change: 399
-    blocks, 5.9% of the cohort, had their liberation erased this way.
+    Eligibility comes from the window grid; the OUTCOME from the waterfalled
+    respiratory_support over the whole encounter block (see _imv_intervals()).
+    AN EXTUBATION AND A DEATH ARE SEPARABLE: a patient liberated on day 4 who dies
+    on day 20 keeps the liberation in extubation_event, the death in
+    mortality_event.
     """
     T = COV["cohort"]["landmark_hours"]
     succ_h = COV["outcomes"]["successful_extubation_hours"]
     horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
 
-    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T.
-    # SG, 2026-10-27: "landmark eligibility must be the state at 72h."
-    #
-    # Until 0.10.0 this read `imv_status == 1` off the window grid, which is
-    # max(device_category == "IMV") OVER [T-4, T). A patient with an IMV record at
-    # hour 69 who was extubated at hour 70 was therefore "ventilated at T" while
-    # already off the ventilator. MEASURED at UCMC: 238 blocks (3.6% of the old
-    # 6,728) were eligible on that reading but NOT on IMV at hour 72, and they
-    # were the source of a VFD-28 ceiling of 27.3 days against a definition that
-    # allows 25. Reading the state off the same interval series the outcome uses
-    # makes "ventilated at T" mean one thing.
+    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T:
+    # `imv_status` is max over [T-window, T) and so calls a patient extubated
+    # inside that window "ventilated at T".
     assert COV["cohort"]["landmark_definition"] == "state_at_T_observed", (
         f"protocol.json cohort.landmark_definition is "
         f"{COV['cohort']['landmark_definition']!r}, which this script does not "
@@ -2177,22 +1915,10 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     iv_all = _imv_intervals(resp, cohort, horizon_h)
     span = iv_all[(iv_all["t_start_hr"] <= T) & (iv_all["t_end_hr"] > T)]
     eligible = set(span.loc[span["is_imv"], "encounter_block"])
-    # THE TWO RULES DIFFER IN BOTH DIRECTIONS, and I asserted otherwise once.
-    # The first version of this code asserted `eligible <= grid_eligible` -- that
-    # the state-at-T rule is a strict subset of the any-record-in-the-window rule
-    # -- and the assertion fired on the first run. It is false, because the two
-    # differ for opposite reasons:
-    #
-    #   OLD not NEW : an IMV record inside [T-window, T) followed by extubation
-    #                 before T. Charted as ventilated in the window, not
-    #                 ventilated at T. These are the blocks SG's change excludes.
-    #   NEW not OLD : NO record charted inside [T-window, T) at all, so
-    #                 imv_status is null rather than 1, while the waterfall
-    #                 carries a real earlier IMV record forward to T. These are
-    #                 genuinely ventilated at T and the grid rule was dropping
-    #                 them for a CHARTING GAP -- exactly what the waterfall exists
-    #                 to repair.
-    #
+    # Neither rule is a subset of the other:
+    #   OLD not NEW : an IMV record inside [T-window, T) then extubation before T.
+    #   NEW not OLD : nothing charted inside [T-window, T), so imv_status is null,
+    #                 while the waterfall carries an earlier IMV record to T.
     # Both counts are printed so the trade is visible rather than asserted.
     grid = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
     grid_eligible = set(grid.loc[grid["imv_status"] == 1, "encounter_block"])
@@ -2202,28 +1928,11 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     note("  NEW only -- nothing charted in the window, waterfall carries IMV to T",
          len(eligible - grid_eligible))
 
-    # THE STATE AT T MUST BE OBSERVED, NOT IMPUTED. SG, 2026-10-27, chose a
-    # lookback after seeing what the bare state-at-T rule admitted: 444 blocks
-    # whose "on IMV at T" was the waterfall forward-filling across a MEDIAN 34.5h
-    # of no real charting (p90 57.6h), of which 0.2% were ever liberated and
-    # 93.7% scored zero VFDs as lost-on-a-ventilator. Two imputations compounding
-    # -- an imputed status at T admitted them, an imputed status at discharge
-    # zeroed them.
-    #
-    # L = imv_episode_gap_hours, DELIBERATELY THE SAME NUMBER. That constant is
-    # already justified as roughly the 98.5th percentile of normal IMV charting
-    # gaps at UCMC (p50 1.00h, p75 3.33h, p90 4.37h, p95 5.00h, p98 7.07h), i.e.
-    # the point beyond which silence is not routine charting. "Do consecutive
-    # records belong to one episode" and "does this record still support the state
-    # at T" are the same question, so inventing a second number would be two
-    # copies of one threshold waiting to drift. Declared separately so a site can
-    # see it applies here, and the note on each names the other.
-    #
-    # IT ALSO EXCLUDES BLOCKS THE OLD RULE ACCEPTED, which is the point:
-    # imv_status is computed over `t["resp"]`, which CONTAINS SCAFFOLD ROWS, so
-    # `imv_status == 1` could be satisfied by an imputed row. MEASURED at UCMC:
-    # 1,047 of 6,893 excluded, only 409 of them from the 444 -- the other 638 were
-    # grid-confirmed on scaffold alone.
+    # THE STATE AT T MUST BE OBSERVED, NOT IMPUTED: without this, "on IMV at T" can
+    # be the waterfall filling across days of no charting. The lookback equals
+    # imv_episode_gap_hours deliberately, one threshold rather than two copies; see
+    # protocol.json cohort.landmark_record_lookback_hours. It also excludes blocks
+    # the old rule accepted on SCAFFOLD ROWS in `t["resp"]`.
     lookback_h = float(COV["cohort"]["landmark_record_lookback_hours"])
     if "is_scaffold" not in resp.columns:
         raise SystemExit(
@@ -2242,10 +1951,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
          len(eligible - supported))
     eligible &= supported
 
-    # What DOES have to hold: being on IMV at T means follow-up extends past T,
-    # because every interval is clipped to followup_end_dttm. If the grid
-    # disagrees about ADMISSION the two series are inconsistent about something
-    # the waterfall cannot explain away.
+    # What does have to hold: on IMV at T means follow-up extends past T.
     admitted = set(long.loc[(long["window_start_hr"] == T - WINDOW_H)
                             & long["alive_admitted"], "encounter_block"])
     assert eligible <= admitted, (
@@ -2262,18 +1968,14 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     tte["hours_to_discharge"] = (
         (tte["block_discharge_dttm"] - tte["anchor_dttm"]).dt.total_seconds() / 3600)
 
-    # died / death_hr arrive on the cohort from resolve_death(); see there for
-    # the rule. Asserted rather than recomputed so there is no second expression
-    # of it to drift -- that drift is what this amendment repaired.
+    # died / death_hr arrive from resolve_death(); asserted, never recomputed.
     assert {"died", "death_hr"} <= set(tte.columns), \
         "resolve_death() must run before build_time_to_event()"
     # np.select below needs a real bool, and a merge can leave this as object.
     tte["died"] = tte["died"].fillna(False).astype(bool)
 
     # ---- liberation: the first QUALIFYING one at or after T ------------------
-    # Reuses the intervals built for eligibility: _imv_intervals() merges the
-    # whole waterfalled respiratory_support and doing it twice doubles the cost
-    # of the most expensive join in Phase 0.
+    # Reuses the intervals built for eligibility, the costliest join in Phase 0.
     iv = iv_all[iv_all["encounter_block"].isin(eligible)].copy()
     free = iv[~iv["is_imv"]].copy()
     free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
@@ -2284,8 +1986,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     note(f"blocks with a qualifying liberation (>= {succ_h:g}h off IMV) at/after T",
          int(tte["ext_hr"].notna().sum()))
 
-    # A liberation counts even if death follows it -- only a death BEFORE any
-    # qualifying liberation displaces it.
+    # A liberation counts even if death follows; only an earlier death displaces it.
     died_first = tte["died"] & (tte["death_hr"].fillna(np.inf)
                                 <= tte["ext_hr"].fillna(np.inf))
     success = tte["ext_hr"].notna() & ~died_first
@@ -2319,9 +2020,7 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
          int(tte["vfd_zero_for_death"].sum()))
     note("    of which zeroed LOST ON A VENTILATOR (discharged alive on IMV)",
          int(tte["vfd_zero_lost_on_vent"].sum()))
-    # The headline of that rule is how many it CHANGES, not how many it covers:
-    # a block with no qualifying liberation after T scored zero regardless. Only
-    # an observed liberation followed by a ventilated discharge actually moves.
+    # The headline of that rule is how many it CHANGES, not how many it covers.
     note("      of those, with an observed liberation -- the only ones whose "
          "value the rule changes",
          int((tte["vfd_zero_lost_on_vent"] & (tte["extubation_event"] == 1)).sum()))
@@ -2341,17 +2040,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
                     bolus_events: pd.DataFrame, t: dict, dirs: dict) -> None:
     """Select ONE episode by the declared rule and export its sub-hourly series.
 
-    F1 draws a single patient in detail. Baker et al. Sci Rep 2020;10:10718
-    Figure 1, which F1 is modelled on, is captioned only "Representative ICU
-    admission" and states NO selection rule -- the one thing F1 has to improve
-    on. So the criteria are declared in protocol.json, applied here, and the
-    episode is DRAWN AT RANDOM from those that qualify. Nothing about the choice
-    depends on anyone looking at a patient, which is also what lets the figure be
-    designed without patient data ever being displayed.
-
-    If the drawn episode reads badly, change the RULE and re-run. Picking a
-    different one from the eligible set by eye reintroduces exactly the bias the
-    rule exists to remove.
+    The criteria are declared in protocol.json `exemplar` and the episode is DRAWN
+    AT RANDOM from those qualifying, so no one looks at a patient to choose it. If
+    it reads badly, change the RULE rather than picking by eye.
     """
     spec = COV.get("exemplar")
     if spec is None:
@@ -2364,16 +2055,13 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     anchor_n = long["encounter_block"].nunique()
 
     # ---- ventilation shape, from the SAME window grid the states use ----------
-    # extubated = alive, admitted, and not on IMV, after having been on it. Read
-    # off imv_status so this figure and code/utils/states.R cannot disagree about
-    # what extubation is.
+    # extubated = alive, admitted, off IMV after being on it, read off imv_status
+    # so this and code/utils/states.R cannot disagree.
     w = long.sort_values(["encounter_block", "window_idx"])
     w = w.assign(_vent=(w["imv_status"].notna() & (w["imv_status"] == 1)))
     g = w.groupby("encounter_block", sort=False)
     ever_vent = g["_vent"].any()
-    # Block-level death, carried on `long` from resolve_death(): death_dttm where
-    # present, else a terminal discharge_category, which covers Expired AND
-    # Hospice so both forms of comfort care are caught.
+    # Block-level death, carried on `long` from resolve_death().
     died_block = g["died"].any()
     # first window that is alive-admitted and NOT ventilated, after ventilation
     def _extub_window(d):
@@ -2385,8 +2073,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         if not len(after):
             return pd.NA
         first = after[0]
-        # no reintubation inside the window: the trace ends at extubation, and a
-        # patient who goes back on the vent would make that ending a lie.
+        # no reintubation after it: the trace ends at extubation.
         if v[first:].any():
             return pd.NA
         return int(d["window_idx"].to_numpy()[first])
@@ -2417,10 +2104,8 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     asm["t_hr"] = ((asm["recorded_dttm"] - asm["anchor_dttm"]).dt.total_seconds()
                    / 3600.0)
     asm = asm[(asm["t_hr"] >= 0) & (asm["t_hr"] <= EXTENT_H)]
-    # RASS is universal; the pain instrument is site-specific, so take whichever
-    # of the declared ones this site actually charts. Hardcoding "NVPS" here gave
-    # a CPOT site a column of zeros, which no episode could clear, emptying the
-    # eligible pool with nothing naming the cause.
+    # The pain instrument is site-specific: hardcoding one empties the pool at
+    # another site, silently.
     pain_cats = sorted(COV.get("indication", {}).get("pain_instruments", {}))
     charted = [c for c in pain_cats
                if (asm["assessment_category"] == c).any()]
@@ -2430,8 +2115,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     for c in ["RASS"] + pain_cats:
         if c not in dens.columns:
             dens[c] = 0
-    # Sum rather than pick one: a site charting two scores should get credit for
-    # both, and at a single-instrument site the sum IS that instrument.
+    # Sum rather than pick one: at a single-instrument site the sum IS it.
     dens["PAIN"] = dens[charted].sum(axis=1) if charted else 0
     pain_label = "/".join(charted) if charted else "pain score"
 
@@ -2442,12 +2126,8 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     f = f.fillna({"cont_hours": 0, "gap_hours": 0, "n_bolus": 0,
                   "RASS": 0, "PAIN": 0, "died": False})
 
-    # ---- the funnel. Printed so a threshold that empties the pool is visible --
-    # immediately, and loosening it is a protocol change rather than a surprise.
-    # The declared deadline is APPLIED, not assumed. It happens to equal the
-    # window extent today, so the check is inert on this config -- but a site
-    # that sets it to 48 must get 48, and a threshold that is read by nothing is
-    # the failure mode tests/test_protocol.py exists to catch.
+    # ---- the funnel, printed so a threshold that empties the pool is visible ---
+    # The declared deadline is APPLIED, not assumed: inert only on this config.
     extub_hr_col = f["extub_window"].astype("Float64") * WINDOW_H
     tests = [
         (f"extubated by {spec['require_extubated_by_hours']}h, no reintubation",
@@ -2477,10 +2157,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     counts.append({"criterion": "ELIGIBLE", "n_passing_alone": n_eligible,
                    "n_passing_cumulative": n_eligible})
 
-    # MEASURED, not filtered on. A >= 6h interruption was briefly a criterion and
-    # was removed (SG, 2026-09-24): it cut the pool by 90% and would have made
-    # the exemplar unrepresentative of how fentanyl is actually delivered here.
-    # The number is reported because it is a finding in its own right.
+    # Measured, not filtered on: reported as a finding in its own right.
     for n_b in (2, 6, 10, 20):
         n_hit = int((f["n_bolus"] >= n_b).sum())
         print(f"    (not a criterion) >= {n_b:>2d} boluses: {n_hit:,} of "
@@ -2501,14 +2178,11 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
         return
 
     rng = np.random.default_rng(spec["draw_seed"])
-    # NOT str(): encounter_block is numeric at this site, and coercing the
-    # drawn key to text made every downstream .loc and == miss.
+    # NOT str(): coercing a numeric encounter_block to text makes every .loc miss.
     chosen = f.index[keep][rng.integers(n_eligible)]
     extub_window = int(f.loc[chosen, "extub_window"])
     extub_hr = float(extub_window * WINDOW_H)
-    # first_imv_episode_hours is computed from the raw records, so it locates
-    # extubation more precisely than the 4h grid can. Use it when the two agree;
-    # the assertion is what stops a silent disagreement becoming a wrong figure.
+    # first_imv_episode_hours is finer than the grid; used where the two agree.
     fine = long.loc[long["encounter_block"] == chosen, "first_imv_episode_hours"]
     fine = float(fine.iloc[0]) if len(fine) and pd.notna(fine.iloc[0]) else np.nan
     if np.isfinite(fine) and extub_hr <= fine <= extub_hr + WINDOW_H:
@@ -2539,8 +2213,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     series = series[(series["t_hr"] >= 0) & (series["t_hr"] <= EXTENT_H)]
     series = series.sort_values(["series", "t_hr"]).reset_index(drop=True)
 
-    # Asserted, not assumed. Same contract as the 100-episode raster in
-    # 04_delivery_states.R: relative hours only, no dates, no identifiers.
+    # Same contract as 04_delivery_states.R: relative hours, no dates, no ids.
     ident = {"encounter_block", "patient_id", "hospitalization_id", "anchor_dttm"}
     assert not (ident & set(series.columns)), "exemplar series carries an identifier"
     assert not any(pd.api.types.is_datetime64_any_dtype(series[c])
@@ -2558,8 +2231,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
                                 and k not in ("draw", "draw_seed")}},
 
                   fh, indent=2)
-    # The chosen id stays on the PHI side so the site can reproduce the figure;
-    # it never reaches the shareable tree, where only the rule and the N appear.
+    # The chosen id stays on the PHI side; the shareable tree carries rule and N.
     (out / "exemplar_id.txt").write_text(f"{chosen}\n")
     print(f"  exemplar series: {len(series):,} rows across "
           f"{series['series'].nunique()} series")
@@ -2569,19 +2241,10 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
                      bolus_events: pd.DataFrame, dirs: dict) -> None:
     """Export raw fentanyl rate-change and bolus events on a relative clock.
 
-    For code/05_titration.R, which asks how often an infusion uptitration is
-    accompanied by a bolus. Two things are deliberate here:
-
-    RAW EVENTS, NOT THE HOURLY GRID. The grid bins to whole hours, which would
-    move a rate change up to an hour away from the bolus that accompanied it and
-    make a 30-minute pairing window meaningless. These are the charted
-    timestamps. (Charting precision was measured 2026-09-24: only 15.7% of
-    dose_change/start records land exactly on :00, so titration events are
-    charted to roughly the nearest 5 minutes.)
-
-    NO DERIVATION. The threshold and the pairing window are analysis parameters,
-    so classifying events happens in the R script. Keeping raw events here means
-    a window sensitivity curve costs nothing and never needs a Phase 0 re-run.
+    For code/05_titration.R, which asks how often an uptitration is accompanied by
+    a bolus. RAW EVENTS, NOT THE HOURLY GRID: binning would move a rate change up
+    to an hour from the bolus beside it. NO DERIVATION either -- the threshold and
+    the pairing window are analysis parameters and live in the R script.
     """
     spec = COV.get("titration")
     if spec is None:
@@ -2605,20 +2268,10 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
                  .dt.total_seconds() / 3600.0).to_numpy(),
         "mcg": bolus_events["mcg"].astype(float).to_numpy(),
     })
-    # DETERMINISTIC TIE-BREAK, not merely a stable sort. 402 rate records (0.14%)
-    # share an exact (encounter_block, t_hr) with another record carrying a
-    # DIFFERENT rate, in 201 groups. A stable sort preserves upstream order for
-    # those, and upstream order is not reproducible across runs -- measured
-    # 2026-09-30, two runs of identical input gave 37,244 and 37,245 classified
-    # events, because whichever tied record lands second becomes `prev_rate` for
-    # the next one and one delta crossed the threshold.
-    #
-    # Ties resolve toward the HIGHER rate, the convention
-    # protocol.json.predominant_intensity.tie_break already sets for this
-    # project: a tie is never settled in the direction of less exposure. The
-    # charted data genuinely does not say which of two simultaneous records came
-    # last, so this is a declared rule rather than a recovery of the truth --
-    # see the open item in .claude/claude-todo.md.
+    # DETERMINISTIC TIE-BREAK, not merely a stable sort: records tied on
+    # (encounter_block, t_hr) with a DIFFERENT rate would keep upstream order, which
+    # is not reproducible. Ties go to the HIGHER rate, per protocol.json
+    # predominant_intensity.tie_break.
     rate.sort_values(["encounter_block", "t_hr", "rate", "action"],
                      kind="stable", inplace=True)
     bol.sort_values(["encounter_block", "t_hr", "mcg"], kind="stable", inplace=True)
@@ -2654,21 +2307,10 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
 def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
     """Export raw pain and sedation scores on a relative clock.
 
-    For code/05_titration.R's indication analysis, which asks whether a dose
-    change had a documented pain score or agitation near it.
-
-    NO THRESHOLDING, NO WINDOWING -- the same contract titration_export() holds
-    and for the same reason. The cut points and the window are analysis
-    parameters, so classifying happens in the R script. Keeping raw values here
-    means the 1-4h sensitivity sweep costs nothing and never needs a Phase 0
-    re-run, and a consortium change to a threshold is a config edit.
-
-    AN ABSENT INSTRUMENT IS REPORTED, NOT FATAL. CPOT is not charted at UCMC.
-    assessment_covariates() raises on a category matching no rows, which is
-    correct there and wrong here -- these instruments are optional and
-    site-specific. A zero-record line is printed loudly instead, because an
-    instrument that vanishes silently is how a site finds out much later that
-    it was never captured.
+    For code/05_titration.R's indication analysis. NO THRESHOLDING, NO WINDOWING,
+    as in titration_export(): the cut points and the window live in the R script.
+    An absent instrument is reported loudly, not fatal -- these are site-specific,
+    unlike the covariates assessment_covariates() raises on.
     """
     spec = COV.get("indication")
     if spec is None:
@@ -2742,8 +2384,7 @@ def main() -> None:
     hi = hospital_intervals(t, mapping)
     ends = hospital_endpoints(hi)
 
-    # Restrict before the waterfall: it is the expensive step and only the
-    # cohort's rows can affect the result.
+    # Restrict before the waterfall, the expensive step: only cohort rows matter.
     imv_ids = set(raw_anchor["hospitalization_id"])
     imv_blocks = set(mapping.loc[mapping["hospitalization_id"].isin(imv_ids), "encounter_block"])
     blocks = blocks[blocks["encounter_block"].isin(imv_blocks)]
@@ -2771,10 +2412,8 @@ def main() -> None:
                           on="encounter_block", how="left")
     bmi = bmi_admission(t, cohort)
 
-    # BEFORE the window grid, deliberately: this reads the period PRECEDING the
-    # anchor, so it cannot come from `long`. Merged onto the cohort so it reaches
-    # both trajectory_long (via time_invariant) and time_to_event (via the
-    # landmark subset), which is what code/07 reads.
+    # BEFORE the window grid: it reads the period PRECEDING the anchor, so it
+    # cannot come from `long`. On the cohort it reaches both tables.
     print("\n  Baseline SOFA (pre-intubation)")
     cohort = cohort.merge(baseline_sofa(t, mapping, cohort),
                           on="encounter_block", how="left")
@@ -2816,9 +2455,7 @@ def main() -> None:
                 "sofa_baseline", "sofa_baseline_n_components"]],
         on="encounter_block", how="left")
 
-    # died comes from resolve_death() on the cohort, so the mortality rule lives
-    # in ONE place and time_to_event cannot drift from the Phase 1 state
-    # description, which needs it to tell died from discharged.
+    # died comes from resolve_death(), so the mortality rule lives in ONE place.
     long = long.merge(cohort[["encounter_block", "died"]],
                       on="encounter_block", how="left")
 
@@ -2832,25 +2469,17 @@ def main() -> None:
     print("\nMissingness and LOCF")
     long, per_variable, per_pattern = apply_missingness(long)
 
-    # SOFA is scored only once every input has been carried forward. Scoring it
-    # earlier used raw bilirubin and oxygenation while the other four components
-    # were filled, which is what held 6-component coverage at 9.3%.
+    # SOFA is scored only once every input has been carried forward.
     print("\n  SOFA")
     long = pd.concat([long.reset_index(drop=True),
                       score_sofa(long).reset_index(drop=True)], axis=1)
     per_variable = pd.concat(
         [per_variable, _sofa_report_row(long),
          oxygenation_absence_reasons(long)], ignore_index=True)
-    # Emit the plateau as a COVARIATE before the internals are dropped (SG,
-    # 2026-09-09). A window where SpO2 was measured, every reading sat at or above
-    # the ceiling, and no PaO2 was drawn carries real information: the patient is
-    # oxygenating well and the P/F is right-censored HIGH, not unknown. Filling
-    # such a window with a median P/F imputes moderate hypoxaemia for exactly the
-    # patients doing best. This flag lets a model use the fact directly.
-    #
-    # Note the condition does NOT include "oxygenation is missing": it is a
-    # statement about what was measured in the window, so it stays true and
-    # interpretable even where LOCF later carried a value in.
+    # Emit the plateau as a COVARIATE before the internals are dropped: a window
+    # with SpO2 all at or above the ceiling and no PaO2 is right-censored HIGH, not
+    # unknown. The condition does NOT include "oxygenation is missing" -- it
+    # describes what was measured, and holds where LOCF later filled a value.
     long["spo2_plateau"] = (
         (long["_n_pao2"].fillna(0) == 0)
         & (long["_n_spo2"].fillna(0) > 0)
@@ -2885,9 +2514,8 @@ def main() -> None:
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
     icu.to_parquet(out / "care_intervals.parquet", index=False)
 
-    # Deliberately AFTER the analytic tables are on disk. F1 is a figure input,
-    # not a core table: a fault in the exemplar selection must not cost the whole
-    # Phase 0 rebuild, which is exactly what it did on 2026-09-24.
+    # Deliberately AFTER the analytic tables are on disk: a fault in selecting a
+    # figure input must not cost the whole rebuild.
     exemplar_export(cohort, long, grid, bolus_events, t, dirs)
     titration_export(cohort, t, mapping, bolus_events, dirs)
     assessment_export(cohort, t, dirs)

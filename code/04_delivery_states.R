@@ -1,18 +1,16 @@
 # ==============================================================================
 # 04_delivery_states.R  --  fentanyl delivery states: prevalence and transitions
 #
-# Purpose : The seven delivery states over the ventilation course -- prevalence per window, transitions window to window, and the figures that draw them. Run twice: delivery ROUTE and dose INTENSITY band.
+# Purpose : The seven delivery states over the ventilation course -- prevalence
+#           per window, transitions window to window, and the figures that draw
+#           them. Run twice: delivery ROUTE and dose INTENSITY band.
 # Author  : Shan Guleria
 # Created : 2026-09-05
-# Split   : 2026-09-23, out of 02_descriptive_trajectory.R -- one subject per
-#           script, so the figure work has somewhere to go.
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
 # Outputs : output/final_no_phi/04_states/ : the CSVs and figures listed in OWNED
 # ==============================================================================
 
-# Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
-# Do not use rm(list = ls()) -- it does not unload packages or reset options,
-# so it only gives the appearance of a clean slate.
+# Run this in a FRESH R session; rm(list = ls()) does not unload packages.
 
 # ---- 1. Packages -------------------------------------------------------------
 
@@ -40,9 +38,7 @@ EXTENT_H  <- COV$cohort$granular_extent_hours
 PANELS    <- unlist(COV$cohort$balanced_panel_hours)
 LANDMARK  <- COV$cohort$landmark_hours
 
-# Dose-band definition. Read from the config, never defaulted here: the cuts are
-# federation-critical and a local default is how a site keeps cutting at the old
-# values after the consortium moves them.
+# Dose-band cuts are federation-critical: read from the config, never defaulted here.
 DS_SPEC   <- COV$exposure$dose_states
 DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
 DOSE_LAB  <- unlist(DS_SPEC$labels)
@@ -52,9 +48,7 @@ stopifnot("protocol.json exposure.dose_states must declare cuts and labels" =
             identical(DS_SPEC$variable, "window_mcg"))
 SED_UNITS <- COV$exposure$sedatives$units
 
-# Read the drug list FROM the config rather than restating it. A hardcoded list
-# here is how a declared sedative becomes a no-op: adding dexmedetomidine to
-# protocol.json would have changed nothing.
+# Drug list comes from the config; a hardcoded one makes a declared sedative a no-op.
 SED_COLS <- unlist(COV$exposure$sedatives$columns)
 DRUGS <- c(fentanyl = "total_dose",
            setNames(SED_COLS, sub("_dose$", "", SED_COLS)))
@@ -65,15 +59,14 @@ SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Race is collapsed for DISPLAY only; the full CLIF granularity still reaches
-# pooling_categorical.csv. Map lives in protocol.json, not here.
+# Collapsed for display only; full CLIF granularity still reaches
+# pooling_categorical.csv.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 
 
 
 
 # ---- 3. Paths and provenance -------------------------------------------------
-# One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "04_states")   # shareable outputs, subdivided by script
@@ -84,8 +77,6 @@ message(sprintf("[04_delivery_states] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. Guards ---------------------------------------------------------------
-# Phase 0 (Python) wrote what this script reads. Refuse to analyse tables that a
-# different code version or a different config produced.
 
 manifest <- require_manifest(dirs, here())
 message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
@@ -100,12 +91,7 @@ OWNED <- list(phase = c(
   "dose_state_prevalence.png", "dose_state_alluvial.png",
   "provenance.json", "captions.md"))
 
-# Renumbered 03 -> 04 on 2026-09-24 to make room for the exemplar ahead of it.
-# The old folder is retired explicitly, or a site that pulls this update keeps a
-# 03_states/ nobody owns whose contents still look current. Built with paste0 so
-# a name-level find-and-replace cannot reach into it (lessons.md #13).
-# The copies of these outputs that 02 used to write into 02_descriptive/ are
-# retired by that script, which still owns that folder.
+# Retire the old 03_states/ explicitly; paste0 so a find-and-replace cannot reach it.
 RETIRED <- file.path("output", "final_no_phi", paste0("03_", "states"),
                      OWNED$phase)
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
@@ -137,8 +123,7 @@ stopifnot(
     max(long$window_start_hr) + WINDOW_H == EXTENT_H
 )
 
-# The Phase 1 denominator is VENTILATED, not alive_admitted. The two differ by
-# more than half the cohort by 72h.
+# The Phase 1 denominator is ventilated, not alive_admitted.
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 stopifnot(
   "a window cannot be ventilated without being alive and admitted" =
@@ -162,34 +147,15 @@ cat(sprintf("\nCohort: %s ventilation episodes; %s landmark-eligible at T=%dh\n"
 
 
 # ---- 12b. Delivery states and transitions ------------------------------------
-# A different description of the same 72h: not "what shape is the dose curve"
-# but "what state is the episode in, and where does it go next".
-#
-# Seven states. Four describe HOW fentanyl was delivered while the patient was
-# ventilated; three are terminal. Because they are defined by which route was
-# used rather than by a threshold on a continuum, there are no cut points to
-# defend -- which is the whole point after the Phase 3/4 finding that dose level
-# is continuous and its classes were a discretisation of it.
-#
-# WHOLE ANALYTIC COHORT, not the landmark set. The landmark conditions on being
-# ventilated at T, so inside [0, T] nobody dies, is discharged or is
-# permanently extubated -- the three terminal states would be empty by
-# construction, and the liberation pathway is exactly what makes this figure
-# worth drawing. 8,169 of 14,897 episodes leave before 72h, median at 24h.
-
-# TWO definitions, same machinery. The first describes HOW fentanyl was
-# delivered (route); the second HOW MUCH (intensity band on window_mcg). Lyons
-# et al. fit two multistate models on one cohort for the same reason -- AKI
-# stage, then AKI x IMV -- and called it triangulation. Everything below is
-# written once and run twice, so the two can never drift apart in their handling.
+# Seven states: four routes of delivery while ventilated, three terminal. The
+# denominator is the WHOLE analytic cohort, not the landmark set -- the landmark
+# conditions on being ventilated at T, so the terminal states would be empty.
 
 state_summary <- function(d, tag) {
-  # Denominator = the whole analytic cohort, terminal states included. The
-  # at-risk twin (ventilated only) is built further down from the same helper.
   prevalence <- prevalence_by_window(d)
   tp <- transition_pairs(d)
-  # Terminal states must absorb; transition_pairs() drops rows starting in one,
-  # so a terminal state appearing as an ORIGIN means the definition is wrong.
+  # Terminal states must absorb: a terminal state as an ORIGIN means the
+  # definition is wrong.
   stopifnot("an absorbing state must not originate a transition" =
               !any(tp$state %in% STATE_ABSORBING))
 
@@ -211,8 +177,8 @@ state_summary <- function(d, tag) {
 long  <- derive_states(long)                              # route definition
 route <- state_summary(long, "Delivery")
 
-# The intensity definition. derive_dose_states() overwrites `state`, so it runs
-# on a COPY -- `long` keeps the route states for the rest of the script.
+# derive_dose_states() overwrites `state`, so it runs on a copy; `long` keeps
+# the routes.
 dose <- state_summary(
   derive_dose_states(long, DOSE_CUTS, DOSE_LAB),
   sprintf("Intensity (0 / <=%s / <=%s / >%s mcg per %dh window)",
@@ -223,27 +189,12 @@ transition_matrix_tbl <- route$matrix
 
 
 # ---- 12c. At-risk prevalence -------------------------------------------------
-# The same states on the denominator the question actually asks about.
-#
-# state_prevalence divides by the whole analytic cohort, so every band shrinks
-# as patients are extubated, discharged or die -- by hour 68 more than half the
-# cohort has left (14,897 -> 6,728 still ventilated). That is the right picture
-# for liberation and the wrong one for delivery: a band falling because patients
-# went home reads identically to one falling because fentanyl was weaned.
-#
-# Conditioning on still being ventilated separates the two. Among ventilated
-# windows only the four ROUTE states can occur -- the three terminal states each
-# require !alive_admitted or !ventilated -- so this is a denominator change, not
-# a second definition, and droplevels() is what makes that explicit.
-#
-# BOTH ship. Neither is a corrected version of the other (SG, 2026-09-24).
+# The same states conditioned on still being ventilated: a denominator change, not a
+# second definition, which is what droplevels() makes explicit. Both views ship.
 
 at_risk <- long[long$ventilated, ]
 
-# The classification and the dose column are derived independently --
-# derive_states() reads inf_dose and bolus_dose, never total_dose -- so this is
-# a real cross-check on the route definition, not a tautology.
-# 01_build_cohort.py:712 sets total_dose = inf_dose + bolus_dose, both >= 0.
+# derive_states() reads inf_dose and bolus_dose, never total_dose: not a tautology.
 stopifnot(
   "a ventilated window cannot be in a terminal state" =
     !any(at_risk$state %in% c("extubated", STATE_ABSORBING)),
@@ -259,10 +210,8 @@ pv_ar <- reshape(state_prevalence_at_risk[, c("window_start_hr", "state", "pct")
 names(pv_ar) <- sub("^pct\\.", "", names(pv_ar))
 print(pv_ar[pv_ar$window_start_hr %in% c(0, 24, 48, 68), ], row.names = FALSE)
 
-# Cross-script check. 02_descriptive_cohort.R:221 builds dose_summary on the
-# identical subset (`window_idx == w & ventilated`), so the three exposed states
-# must sum to its pct_receiving_any in every window. Precedent for a later
-# script checking an earlier one's shareable CSV: tabled/landmark_cohort.R.
+# Cross-script check: 02 builds dose_summary on the identical subset, so the exposed
+# states must sum to its n_receiving in every window.
 ds_file <- file.path(dirs$out_final, "02_descriptive", "dose_summary.csv")
 if (file.exists(ds_file)) {
   ds <- read.csv(ds_file)
@@ -281,9 +230,7 @@ if (file.exists(ds_file)) {
     "every window must appear in both tables" = nrow(chk) == nrow(ds),
     "the at-risk denominator disagrees with dose_summary's all_ventilated n" =
       all(chk$n == chk$n_here),
-    # EXACT, not within a tolerance. This carried a 0.1pp allowance while
-    # dose_summary shipped only a 1 dp percentage; it now ships the numerator,
-    # so the two counts must agree outright.
+    # Exact: dose_summary ships the numerator, so the counts must agree outright.
     "exposed states do not sum to dose_summary's receiving count" =
       all(chk$n_exposed == chk$n_receiving))
   cat(sprintf("  cross-check vs 02_descriptive/dose_summary.csv: %d windows agree exactly\n",
@@ -294,31 +241,21 @@ if (file.exists(ds_file)) {
 
 
 # ---- 13. Figures -------------------------------------------------------------
-#
-# JOURNAL STYLE: no figure carries a title or a subtitle. A journal figure is a
-# panel -- axes, legend, data -- and the n, the denominator, the seed and the
-# sampling rule belong in the caption, which is manuscript text. Nothing is
-# discarded to achieve that: every draw call registers its caption here and the
-# set is written to captions.md beside the figures.
+# Journal style: no titles or subtitles on the panels. Every draw call registers its
+# caption, and the set is written to captions.md beside the figures.
 
 
 # --- Delivery-state figures ---------------------------------------------------
-# Alluvial: every episode is a ribbon, its width the number of episodes moving
-# between states. Ribbons entering a terminal state never leave it, so
-# liberation and death are visible as the flow drains out of the fentanyl states.
+# Alluvial: one ribbon per episode, its width the episodes moving between states.
 
-# Both palettes live in code/utils/figures.R. They were declared here and
-# again there, and the two copies had drifted on six of seven states before
-# 2026-09-24 -- the alluvial and the raster must agree on colour or a reader
-# cannot move between them.
+# Palettes live in code/utils/figures.R only; the alluvial and the raster must match.
 STATE_PAL <- STATE_COLOURS
 DOSE_PAL  <- dose_palette(DOSE_LAB)
 stopifnot("the dose palette must cover exactly the declared band levels" =
             identical(names(DOSE_PAL), dose_state_levels(DOSE_LAB)))
 
-# Alluvial at every second window keeps the ribbons legible; 18 axes is a smear.
-# The x axis MUST be discrete: with a continuous x, ggalluvial draws the strata
-# but no flows at all, because it cannot tell which axes are adjacent.
+# Every second window keeps the ribbons legible. The x axis must be discrete: with a
+# continuous x, ggalluvial draws the strata but no flows at all.
 draw_states <- function(res, pal, tag, title_flow, title_area, note_area) {
   d <- res$data
   alv <- d[d$window_idx %% 2 == 0,
@@ -348,10 +285,7 @@ draw_states <- function(res, pal, tag, title_flow, title_area, note_area) {
                        denom_label = "All episodes")
 }
 
-# The stacked-area panel, factored out so the whole-cohort figure and its
-# at-risk twin below are the same drawing on two denominators. A thin PAPER
-# stroke between bands is the surface gap that keeps adjacent fills separable
-# without adding a second encoding.
+# One drawing on two denominators: the whole-cohort figure and its at-risk twin.
 draw_prevalence_area <- function(prevalence, pal, file, title, note, ylab,
                                  denom_label) {
   wins <- risk_table_windows(prevalence$window_start_hr, WINDOW_H)
@@ -375,16 +309,9 @@ draw_prevalence_area <- function(prevalence, pal, file, title, note, ylab,
          width = 7.5, height = 4.4 + 0.20 * attr(p_tab, "n_rows") + 0.3, dpi = 200)
 }
 
-# Windows the risk table reports: window 0, then the windows ENDING at 24, 48
-# and 72 hours, so the columns are evenly spaced in elapsed time. Everywhere
-# else in this script a window is named by its START, so the one ending at 24h
-# starts at 20h -- the table carries its own header naming the END hour, which
-# is the quantity a reader wants. Window 0 has no 24h-spaced end of its own and
-# is reported as the baseline, labelled 0.
-#
-# Kept only where the grid actually carries them: at a site running a different
-# window_hours the start may not be a window start, and a column that silently
-# vanishes is worse than a shorter table.
+# Window 0, then the windows ENDING at 24, 48 and 72h. Everywhere else a window is
+# named by its START, so the one ending at 24h starts at 20h; the table header names
+# the end hour. Dropped where a site's window_hours puts them off the grid.
 risk_table_windows <- function(hrs, window_h, ends = c(24, 48, 72)) {
   starts <- ends - window_h
   keep   <- starts %in% hrs
@@ -412,18 +339,12 @@ draw_states(dose, DOSE_PAL, "dose_state_",
           DOSE_CUTS[1], DOSE_CUTS[2], DOSE_CUTS[2]))
 
 # --- At-risk prevalence -------------------------------------------------------
-# The twin of the figure above on the denominator the question asks about. The
-# numbers in the subtitle are read off the data, never typed: a hardcoded
-# denominator is one re-run away from describing a cohort that no longer exists.
 n_at_risk <- aggregate(n ~ window_start_hr, data = state_prevalence_at_risk, FUN = sum)
 last_hr   <- max(n_at_risk$window_start_hr)
 
 draw_prevalence_area(
   state_prevalence_at_risk, STATE_PAL, "state_prevalence_at_risk.png",
   "What the patients still on the ventilator are getting",
-  # Caption text, not panel text -- so it can run to full sentences. The
-  # denominators are read off the data, never typed: a hardcoded count is one
-  # re-run away from describing a cohort that no longer exists.
   sprintf(paste0("Denominator is ventilation episodes STILL VENTILATED in the ",
                  "window, not the whole cohort: %s at the start of ventilation ",
                  "falling to %s in the window ending at %dh. Bands are stacked ",
@@ -439,21 +360,13 @@ draw_prevalence_area(
   denom_label = "Still ventilated")
 
 # --- Per-patient raster -------------------------------------------------------
-# The one figure here that draws individual courses. Everything else is a
-# marginal; this is what makes "continuous, then bolus, then off" legible as a
-# sequence rather than as four curves that happen to move. Iyer et al. Figure 1B
-# is the precedent for the form -- not for the row ordering, which that paper
-# does not state, or for its ragged right edge, which we do not copy.
-#
-# Rows are a SIMPLE random sample. Not stratified on the exit: stratifying would
-# over-represent death and discharge relative to the cohort, and the panel is
-# meant to read as "what 100 episodes look like", not as a balanced design.
+# Individual courses, after Iyer et al. Figure 1B. Rows are a simple random sample,
+# not stratified on the exit, so the panel reads as the cohort does.
 
 N_RASTER    <- 100
 EXIT_STATES <- c("extubated", STATE_ABSORBING)
 
-# Re-seeded here rather than relied on from the top of the script: any RNG in
-# between would silently change which patients a reader sees.
+# Re-seeded here: any RNG in between would change which patients a reader sees.
 set.seed(COV$model$seed)
 blocks <- unique(long$encounter_block)
 stopifnot("not enough episodes to fill the raster" = length(blocks) >= N_RASTER)
@@ -462,16 +375,12 @@ picked <- sample(blocks, N_RASTER)
 r <- long[long$encounter_block %in% picked,
           c("encounter_block", "window_idx", "window_start_hr", "state")]
 
-# A ragged right edge would make the raster and the alluvial disagree about who
-# is still in the picture. The grid is already rectangular, because the terminal
-# states persist in the source data rather than being carried forward here --
-# assert that rather than trust it.
+# The grid is already rectangular -- terminal states persist in the source data.
 stopifnot("every sampled episode must span the full window grid" =
             all(table(r$encounter_block) == n_windows_expected))
 
-# Hierarchical row order: state at the last window, then time to the first exit
-# descending, then count of fentanyl-exposed windows. Every tie is broken, so
-# the panel is reproducible from the seed alone.
+# Row order: final state, time to first exit descending, then exposed windows;
+# ties all broken.
 key <- do.call(rbind, lapply(split(r, r$encounter_block), function(e) {
   exit <- which(e$state %in% EXIT_STATES)
   data.frame(encounter_block = e$encounter_block[1],
@@ -484,9 +393,6 @@ key$row_index <- seq_len(nrow(key))
 
 r <- merge(r, key[, c("encounter_block", "row_index")], by = "encounter_block")
 
-# De-identification asserted in code, not left to review. The plotted frame
-# carries an anonymous row index, hours RELATIVE to the first IMV episode, and a
-# state -- nothing that identifies or links a patient.
 raster <- r[, c("row_index", "window_start_hr", "state")]
 stopifnot(
   "the raster frame must carry no identifier" =
@@ -526,13 +432,8 @@ write_out <- function(x, name) {
   cat(sprintf("written: %s\n", name))
 }
 
-# Small cells in the shareable set. config.json declares
-# reporting.small_cell_min_den, and until 2026-09-24 this script read the value
-# and applied it to nothing -- a threshold that is declared but never consumed
-# reads as a policy and is not one. Reported per file rather than suppressed:
-# these tables are prevalence, so NA-ing a cell stops the column summing to 100,
-# and that trade is a disclosure decision, not a code decision. Whoever runs
-# this sees the count; at another site the counts will differ.
+# Reported, not suppressed: these tables are prevalence, so NA-ing a cell stops the
+# column summing to 100 -- a disclosure decision, not a code decision.
 report_small_cells <- function(x, name) {
   if (!all(c("n", "state", "window_start_hr") %in% names(x))) return(invisible(0L))
   small <- x[x$n > 0 & x$n < MIN_CELL, ]
@@ -566,18 +467,12 @@ write_json(prov, file.path(dirs$phase, "provenance.json"),
            auto_unbox = TRUE, pretty = TRUE)
 cat("written: provenance.json\n")
 
-# The figures carry no title or subtitle -- they are journal panels. What used
-# to sit on them is written here instead, so the n, the denominator, the seed
-# and the ordering rules survive in a form a manuscript can lift directly.
-# Every figure this script writes must appear; a panel whose provenance exists
-# only in the code is a panel nobody can caption later.
 write_captions(file.path(dirs$phase, "captions.md"), "04_delivery_states.R",
                grep("\\.png$", OWNED$phase, value = TRUE), prov)
 cat("written: captions.md\n")
 
 
 # ---- Provenance --------------------------------------------------------------
-# Which package versions produced these numbers?
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),

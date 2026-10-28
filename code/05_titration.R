@@ -1,23 +1,18 @@
 # ==============================================================================
 # 05_titration.R  --  bolus co-administration at an infusion rate change
 #
-# Purpose : When the fentanyl infusion rate is increased, how often is a bolus given within +/-30 minutes? A rate change alone approaches the new steady state over roughly four to five half-lives; a bolus at the moment of uptitration gets there in minutes.
+# Purpose : When the fentanyl infusion rate is increased, how often is a bolus
+#           given within +/-30 minutes?
 # Author  : Shan Guleria
 # Created : 2026-09-24
 # Inputs  : output/intermediate_phi/titration_{rate,bolus}_events.parquet, trajectory_long.parquet
 # Outputs : output/final_no_phi/05_titration/            reported directly
 #           output/final_no_phi/05_titration/diagnostics/ method checks
-#           both listed in OWNED, which also decides where each one is written
+#           OWNED decides which folder each file is written to
 #
-# DESCRIPTIVE ONLY. Associations between adherence and average rate, cumulative
-# dose or time to extubation are deliberately deferred (SG, 2026-09-24). The
-# per-encounter adherence this script writes is shaped so that work needs no
-# rebuild -- see section 8.
-#
-# RAW TIMESTAMPS, NEVER THE HOURLY GRID. The grid bins to whole hours, which
-# would move a rate change up to an hour from the bolus that accompanied it and
-# make a 30-minute window meaningless. Phase 0 exports the charted times for
-# exactly this reason.
+# Descriptive only; associations are deferred -- see protocol.json.
+# Raw charted timestamps, never the hourly grid: hour-binning would move a rate
+# change up to an hour from its bolus.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -34,8 +29,7 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "figures.R"))
-# pool_hist() and boot_group(), shared with 02 and 06 so the three cannot drift
-# in how they bin a distribution or bootstrap a clustered proportion.
+# pool_hist() and boot_group(), shared with 02 and 06 so neither can drift.
 source(here("code", "utils", "pooling.R"))
 
 
@@ -50,9 +44,7 @@ WINDOW_H <- COV$cohort$window_hours
 EXTENT_H <- COV$cohort$granular_extent_hours
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Read from the config, never defaulted here: the threshold and the window are
-# federation-critical, and a local default is how a site keeps pairing on the
-# old numbers after the consortium moves them.
+# Federation-critical: read from the config, never defaulted here.
 SPEC <- COV$titration
 stopifnot("protocol.json must declare a `titration` block" = !is.null(SPEC))
 MIN_DELTA <- as.numeric(SPEC$min_rate_change_mcg_hr)
@@ -62,21 +54,18 @@ VENT_ONLY <- isTRUE(SPEC$ventilated_only)
 ADH_LM_H  <- as.numeric(SPEC$adherence_landmark_hours)
 MIN_EV    <- as.numeric(SPEC$min_events_for_adherence)
 BOOT_REPS <- as.integer(SPEC$bootstrap_resamples)
-# Histogram bins. Absolute and config-declared, never local quantiles -- a
-# site-specific binning cannot be summed with anyone else's.
+# Absolute config-declared bins; site-local quantiles cannot be pooled.
 HSPEC <- COV$pooling$histograms$variables
 stopifnot("protocol.json must declare a `titration` block" = !is.null(SPEC),
           "protocol.json must declare pooling.histograms.variables" = !is.null(HSPEC),
           "the primary window must be one of the sensitivity widths" = WIN_MIN %in% WIN_SENS,
           "the threshold must be positive" = MIN_DELTA > 0,
           "bootstrap_resamples must be a positive whole number" = BOOT_REPS > 0)
-# This script owns the histograms the config assigns to it, and only those.
 HIST_MINE <- names(HSPEC)[vapply(HSPEC, function(s)
   identical(as.character(s$owner), "05"), logical(1))]
 
 EVENT_LEVELS <- c("initiation", "uptitration", "downtitration")
 
-# The indication question: was the dose change prompted by anything documented?
 IND <- COV$indication
 stopifnot("protocol.json must declare an `indication` block" = !is.null(IND))
 PAIN_THRESH <- unlist(IND$pain_instruments)        # NVPS 4, CPOT 3
@@ -95,10 +84,7 @@ stopifnot(
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "05_titration")
-# SG, 2026-10-27: method checks and sensitivity analyses go in their own folder
-# so what remains in the phase directory is only what we intend to REPORT. The
-# split is editorial, not technical -- every file here still ships, and the
-# pooling spec reaches into the subfolder by path.
+# Method checks and sensitivity analyses; everything here still ships.
 dirs$diagnostics <- phase_dir(dirs, file.path("05_titration", "diagnostics"))
 prov <- provenance(config)
 
@@ -116,22 +102,17 @@ OWNED <- list(
   out_phi = c("titration_adherence.parquet",
               "titration_events_classified.parquet",
               "indication_events.parquet"),
-  # REPORTED DIRECTLY. rate_change_magnitude.csv stays here by SG's decision on
-  # 2026-10-27 -- it describes the exposure, not the method.
+  # Reported directly.
   phase   = c("coadministration.csv", "indication.csv",
               "adherence_distribution.csv", "assessment_frequency.csv",
               "rate_change_magnitude.csv", "pooling_histograms.csv",
               "coadministration.png", "indication.png",
               "provenance.json", "captions.md"),
-  # METHOD CHECKS. Two window sweeps that establish the headline is not an
-  # artifact of the window, and two charting-resolution checks that establish the
-  # denominator is real. All four are cited in Methods, none is a result.
+  # Method checks, cited in Methods; none is a result.
   diagnostics = c("window_sensitivity.csv", "indication_window_sensitivity.csv",
                   "charting_precision.csv", "charting_agreement.csv",
                   "window_sensitivity.png"))
-# The four method checks and one figure moved down into diagnostics/ on
-# 2026-10-27; their copies in the phase directory are stale twins that
-# clear_owned_outputs no longer names.
+# Stale twins left in the phase directory from before the diagnostics/ split.
 RETIRED <- file.path("output", "final_no_phi", "05_titration",
                      c("window_sensitivity.csv", "indication_window_sensitivity.csv",
                        "charting_precision.csv", "charting_agreement.csv",
@@ -145,17 +126,14 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 rate <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_rate_events.parquet")))
 bol  <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_bolus_events.parquet")))
 
-# If every timestamp were a whole hour the grid would have leaked in, and a
-# 30-minute window would be meaningless. Asserted at export and again here.
+# Whole-hour timestamps throughout would mean the hourly grid leaked in.
 frac_sub <- mean(rate$t_hr %% 1 != 0)
 stopifnot(
   "rate events look hour-binned, not charted -- the grid has leaked in" = frac_sub > 0.5,
   "the clock must be relative hours" = is.numeric(rate$t_hr) && min(rate$t_hr) >= 0)
 
 asm <- as.data.frame(read_parquet(file.path(dirs$out_phi, "assessment_events.parquet")))
-# Scales are NOT comparable across instruments (NVPS 0-10, CPOT 0-8, RASS -5..+4)
-# and must never be pooled as raw values. Each is cut at its OWN declared
-# threshold; after the cut every instrument contributes the same yes/no.
+# Scales are NOT comparable (NVPS 0-10, CPOT 0-8, RASS -5..+4); each is cut at its OWN threshold.
 declared <- c(names(PAIN_THRESH), names(SED_THRESH))
 absent <- setdiff(declared, unique(asm$instrument))
 if (length(absent))
@@ -175,23 +153,12 @@ cat(sprintf("\n%s rate record(s), %s bolus record(s), %s episodes\n",
 
 
 # ---- 5b. Cohort strata -------------------------------------------------------
-# TWO COHORTS, ONE SET OF FILES. The descriptive epidemiology belongs to the
-# whole analytic cohort; the outcome analysis can only speak for the landmark
-# cohort, which is a SELECTED subset -- alive, admitted and still on IMV at T.
-# SG, 2026-10-27, asked for both without "creating too many outputs", so each of
-# the four reported tables gains a `cohort` column rather than a twin file.
-#
-# IT IS A KEY, NOT A LABEL. landmark is a SUBSET of all, so summing across the
-# two -- here or at the coordinating centre -- double-counts every landmark
-# event. config/pooling_spec.json carries `cohort` in `keys` for exactly this
-# reason, and the pooled summary reports the two side by side.
+# `cohort` is a KEY, not a label: landmark is a SUBSET of all and must never be summed into it.
 tte <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "time_to_event.parquet"),
   col_select = c("encounter_block", "landmark_eligible")))
 ELIG <- tte$encounter_block[tte$landmark_eligible]
-# NULL means no restriction. Spelling `all` as NULL rather than as the full id
-# list keeps the unrestricted pass byte-identical to what this script produced
-# before the column existed, which is how the change was verified.
+# NULL means no restriction, keeping the unrestricted pass byte-identical.
 COHORTS <- list(all = NULL, landmark = ELIG)
 
 keep_rows <- function(d, keep)
@@ -211,16 +178,7 @@ cat(sprintf("  landmark cohort: %s of %s episodes with a titration record\n",
 
 
 # ---- 6. Classify the events --------------------------------------------------
-# THE RATE DELTA DEFINES THE EVENT; THE ACTION LABEL VALIDATES IT. 86.7% of
-# fentanyl infusion records are `verify` or `going` -- re-chartings of an
-# unchanged rate. They contribute a delta of zero and drop out on their own, so
-# the label is not needed to exclude them. Defining events BY the label would
-# miss a real change charted under `verify` and invent one from a `dose_change`
-# charted at the same rate.
-#
-# `stop` and `not_administered` set the running rate to zero but are not events:
-# stopping an infusion is not titrating it. A later restart from zero is then
-# correctly an initiation.
+# The rate delta defines the event, not the action label; a stop is not an event.
 
 rate <- rate[order(rate$encounter_block, rate$t_hr), ]
 prev_rate  <- ave(rate$rate, rate$encounter_block, FUN = function(v) c(NA, v[-length(v)]))
@@ -229,9 +187,7 @@ rate$first_of_block <- is.na(prev_rate)
 
 is_stop <- rate$not_given | rate$action == "stop"
 rate$kind <- NA_character_
-# An initiation is a rise from a KNOWN zero. The first record of a block has no
-# predecessor, so a block that opens mid-infusion is not called an initiation --
-# we did not see it start.
+# An initiation rises from a KNOWN zero; a block opening mid-infusion is not one.
 rate$kind[!is_stop & !rate$first_of_block &
             prev_rate == 0 & rate$rate > 0]                    <- "initiation"
 rate$kind[!is_stop & !rate$first_of_block &
@@ -248,9 +204,7 @@ stopifnot(
     all(abs(ev$delta[ev$kind != "initiation"]) >= MIN_DELTA),
   "a stop is never an event" = !any(ev$not_given | ev$action == "stop"))
 
-# Restrict to ventilated windows: the paper describes ventilated patients and
-# every other figure uses that denominator. The unrestricted count is reported
-# alongside so the restriction is visible rather than silent.
+# Ventilated windows only; the unrestricted count prints alongside.
 ev$window_idx <- pmin(floor(ev$t_hr / WINDOW_H), EXTENT_H / WINDOW_H - 1)
 ev <- merge(ev, long[, c("encounter_block", "window_idx", "ventilated")],
             by = c("encounter_block", "window_idx"), all.x = TRUE)
@@ -263,7 +217,6 @@ cat(sprintf("  events: %s of %s in a ventilated window (%.1f%%)\n",
 
 
 # ---- 7. Pair each event with a bolus -----------------------------------------
-# Is there at least one fentanyl bolus within +/- w minutes of the event?
 
 paired_within <- function(events, boluses, minutes) {
   w <- minutes / 60
@@ -277,11 +230,7 @@ paired_within <- function(events, boluses, minutes) {
 ev$paired <- paired_within(ev, bol, WIN_MIN)
 ev$on_hour <- (ev$t_hr %% 1) == 0      # the charting-precision stratum
 
-# The unit of analysis is the EVENT, not the encounter: one episode contributes
-# several rate changes, so n_events far exceeds the number of patients and the
-# percentages are event-level. n_episodes travels beside it so a reader can see
-# the clustering rather than having to infer it -- and so nobody reads a
-# percentage of events as a percentage of patients.
+# Unit of analysis is the EVENT, not the encounter; n_episodes travels beside it.
 summarise_pairing <- function(d, by) {
   do.call(rbind, lapply(split(d, d[[by]], drop = TRUE), function(x) {
     if (!nrow(x)) return(NULL)
@@ -294,11 +243,8 @@ summarise_pairing <- function(d, by) {
   }))
 }
 
-# Interval and design effect for ONE clustered proportion. Events cluster
-# within episodes, so a binomial interval is far too narrow here; the deff is
-# what lets a coordinating centre widen the POOLED interval instead of assuming
-# independence across sites. The resampling universe is stated at every call --
-# the episodes contributing events to `d` and no others (lessons.md #26).
+# Interval and design effect for ONE clustered proportion; a binomial interval is far
+# too narrow. The resampling universe is passed, never inferred (lessons.md #26).
 boot_one <- function(d, outcome_col) {
   eps <- sort(unique(d$encounter_block))
   x <- data.frame(encounter_block = d$encounter_block, g = "all",
@@ -337,10 +283,8 @@ cat(sprintf("  percentages are EVENT-level; %s episodes contribute the %s increa
             format(length(unique(inc$encounter_block)), big.mark = ","),
             format(nrow(inc), big.mark = ",")))
 
-# The contrast that answers "is this deliberate?": pairing against window width,
-# for uptitrations AND downtitrations. If the uptitration curve rises faster at
-# short windows, pairing is intentional; if the two run parallel, the apparent
-# rate is just bolus frequency.
+# Pairing vs window width, increases AND the downtitration control: a gap already at
+# narrow widths is deliberate pairing, not bolus frequency.
 sens <- do.call(rbind, lapply(WIN_SENS, function(w) {
   p <- paired_within(ev, bol, w)
   do.call(rbind, lapply(EVENT_LEVELS, function(k) {
@@ -357,10 +301,7 @@ sw <- reshape(sens[, c("window_minutes", "group", "pct_paired")],
 names(sw) <- sub("^pct_paired\\.", "", names(sw))
 print(sw, row.names = FALSE)
 
-# The charting-precision stratum. 15.7% of dose_change/start records land exactly
-# on :00, and for those a true pairing could fall outside the window. If they
-# pair less at the primary width but catch up as it widens while off-the-hour
-# events do not, that gap is the artifact -- measured, not assumed.
+# Charting-precision stratum: for an event charted on :00 a true pairing can fall outside the window.
 prec <- do.call(rbind, lapply(WIN_SENS, function(w) {
   p <- paired_within(ev, bol, w)
   do.call(rbind, lapply(c(FALSE, TRUE), function(oh) {
@@ -379,8 +320,7 @@ pw <- reshape(prec[, c("window_minutes", "charted", "pct_paired")],
 names(pw) <- sub("^pct_paired\\.", "", names(pw))
 print(pw, row.names = FALSE)
 
-# Does a change at or above the threshold actually carry a dose_change/start
-# label? Agreement is a finding about the site's charting, not an input.
+# Agreement between the threshold-defined event and the charted action label.
 agree <- as.data.frame(table(action = ev$action, kind = ev$kind))
 agree <- agree[agree$Freq > 0, ]
 names(agree)[3] <- "n_events"
@@ -388,15 +328,11 @@ cat("\nCharted action on events at or above the threshold\n")
 print(reshape(agree, idvar = "action", timevar = "kind", direction = "wide"),
       row.names = FALSE)
 
-# The magnitude distribution, so the 25 mcg/hr threshold is checkable against
-# the site's own data rather than taken on trust.
+# The magnitude distribution, so the threshold is checkable against the site's data.
 d_all <- abs(rate$delta[!is.na(rate$delta) & rate$delta != 0 &
                           !is_stop & !rate$first_of_block])
-# `value` carries two different units, so the unit is a column rather than
-# being implied by the one it used to be named after (`mcg_per_hr`, which was a
-# percentage on the share rows). `n` is the shared denominator -- every row is
-# over the same set of non-zero rate changes -- and `n_at_or_above` is the
-# numerator the share rows need in order to pool.
+# `value` carries two units, so the unit is a column. `n` is the shared denominator
+# over all non-zero rate changes; `n_at_or_above` is what the share rows pool on.
 .thr <- c(5, 10, 25, 50, 100)
 mag <- data.frame(
   statistic = c("p10", "p25", "p50", "p75", "p90", "max"),
@@ -416,11 +352,8 @@ print(mag, row.names = FALSE)
 
 
 # ---- 8. Per-encounter adherence ----------------------------------------------
-# Patient-level, so the table stays PHI-side and only its distribution ships.
-# Emitted TWICE -- overall and within the first ADH_LM_H hours. The second is an
-# exposure measured strictly before outcome accrual, which is what a later
-# association against time-to-extubation needs: an episode-long exposure summary
-# against a time-to-event outcome is immortal-time bias.
+# Patient-level, so only the distribution ships. Emitted twice: overall, and within
+# the first ADH_LM_H hours, measured before outcome accrual (immortal-time bias).
 
 adherence <- function(d, tag) {
   inc <- d[d$kind != "downtitration", ]
@@ -431,8 +364,7 @@ adherence <- function(d, tag) {
   agg$scope <- tag
   agg
 }
-# adh itself stays UNRESTRICTED: the pooling histogram below is a whole-cohort
-# distribution and restricting it would silently change what that figure means.
+# adh stays UNRESTRICTED: the pooling histogram below is a whole-cohort distribution.
 adh <- rbind(adherence(ev, "overall"),
              adherence(ev[ev$t_hr <= ADH_LM_H, ], sprintf("first_%gh", ADH_LM_H)))
 
@@ -444,9 +376,7 @@ summarise_adherence <- function(a) do.call(rbind, lapply(split(a, a$scope), func
              median_adherence = round(median(e$adherence), 3),
              q1 = round(quantile(e$adherence, .25), 3),
              q3 = round(quantile(e$adherence, .75), 3),
-             # The NUMERATORS behind the two percentages. Their denominator is
-             # n_episodes_ge_min_events, NOT n_episodes -- without the counts a
-             # site's rate cannot be pooled, only re-derived from a 1 dp value.
+             # Denominator is n_episodes_ge_min_events, NOT n_episodes.
              n_never = sum(e$adherence == 0),
              n_always = sum(e$adherence == 1),
              pct_never = round(100 * mean(e$adherence == 0), 1),
@@ -466,10 +396,6 @@ print(adh_dist, row.names = FALSE)
 
 # ---- 8b. Pooling histograms --------------------------------------------------
 # A median has no closed form across sites; counts on FIXED absolute bins do.
-# Config: protocol.json pooling.histograms. This script emits the two
-# variables that block assigns to it, and asserts it emitted all of them -- a
-# declared variable nobody writes is the config-integrity failure CLAUDE.md
-# names first.
 hist_rows <- list()
 if ("rate_change_magnitude" %in% HIST_MINE) {
   hist_rows[["rate_change_magnitude"]] <-
@@ -489,32 +415,13 @@ cat(sprintf("\nPooling histograms: %s (%d bins total)\n",
 
 
 # ---- 8a. How often is a score documented at all? -----------------------------
-# THE REVIEWER'S FIRST OBJECTION, answered with a measurement rather than a
-# caveat: a low indicated fraction could mean pain was absent, or it could mean
-# nobody wrote a score down. indication.csv already separates those two with its
-# `of assessed` denominator; this table says how often a score exists in the
-# first place, per instrument, so the separation can be defended at every site.
-#
-# WHY IT HAS TO BE PER SITE. Assessment cadence is the biggest thing that differs
-# between sites and the thing the +/-1h window is tuned to. A site charting q4h
-# measures something different by the same name, and until 2026-10-27 the only
-# record of UCMC's cadence was PROSE IN protocol.json -- one site, one date, not
-# recomputed anywhere and impossible to pool. Now every site computes its own.
-#
-# DENOMINATOR IS VENTILATED WINDOWS, deliberately. missingness.csv counts the
-# same scores over ALIVE-ADMITTED windows, which at UCMC is 251,695 against
-# 184,854 ventilated -- 1.36x too big. Set against indication.csv's 82.8% that
-# looks like a contradiction and is really a denominator mismatch, so this table
-# uses the same restriction the indication analysis does.
+# Separates "no pain" from "no score charted". Denominator is VENTILATED windows, as in indication.csv.
 
 asm_w <- asm
 asm_w$window_idx <- floor(asm_w$t_hr / WINDOW_H)
 vent <- long[long$ventilated, c("encounter_block", "window_idx")]
 
-# THE DENOMINATOR RESTRICTS WITH THE NUMERATOR. For the landmark pass both the
-# records and the ventilated windows they are counted over come from the landmark
-# episodes -- restricting only the numerator would divide landmark records by the
-# whole cohort's windows and report a cadence roughly 2x too sparse.
+# The denominator restricts with the numerator: landmark windows for the landmark pass.
 build_asm_freq <- function(keep) {
   a <- keep_rows(asm_w, keep)
   v <- keep_rows(vent, keep)
@@ -524,8 +431,7 @@ build_asm_freq <- function(keep) {
   if (!nrow(a) || !n_vent_windows) return(NULL)
   out <- do.call(rbind, lapply(sort(unique(a$instrument)), function(ins) {
   d <- a[a$instrument == ins, ]
-  # Gaps are WITHIN an episode and between consecutive records. A gap across two
-  # episodes is not a charting interval, it is a discharge.
+  # Gaps are WITHIN an episode; one spanning two episodes is a discharge.
   gaps <- unlist(lapply(split(d$t_hr, d$encounter_block), function(t) {
     t <- sort(t); if (length(t) < 2L) numeric(0) else diff(t)
   }), use.names = FALSE)
@@ -562,24 +468,10 @@ print(asm_freq[, c("cohort", "instrument", "class", "n_records",
 
 
 # ---- 8b. Was the dose change indicated? --------------------------------------
-# The other half of the titration question. Coadministration above asks whether
-# a bolus ACCOMPANIED an increase; this asks whether anything documented
-# PROMPTED it -- a pain score at or above its instrument threshold, or agitation
-# at or above the RASS threshold.
-#
-# A LEVEL, NOT A CHANGE. An NVPS of 4 held across three consecutive readings
-# counts at every one of them; a rise from 0 to 3 counts at none. That is the
-# right reading of "was there an indication" -- a patient in pain is in pain
-# whether or not it is new -- but it is not what "change" means, and the caption
-# says LEVEL.
-#
-# HOURS, NOT MINUTES. Assessments are charted hourly to q4h while titrations are
-# charted to roughly the nearest 5 minutes, so the +/-30 min bolus window would
-# find almost nothing here and the nothing would be an artifact of cadence.
+# Was the increase PROMPTED by anything documented? A LEVEL, not a change, and in
+# HOURS not minutes -- assessments are charted hourly to q4h.
 
-# Times at which each class of instrument was ABOVE THRESHOLD, and at which it
-# was recorded at all. Split once per episode; the same shape paired_within()
-# uses for boluses.
+# Times above threshold, and times recorded at all; split per episode.
 qualifying_times <- function(a, thresholds) {
   hit <- rep(FALSE, nrow(a))
   for (nm in names(thresholds)) {
@@ -593,9 +485,7 @@ recorded_times <- function(a, thresholds) {
   split(a$t_hr[i], a$encounter_block[i])
 }
 
-# TRUE when the episode has at least one listed time within the window of the
-# event. `back_only` restricts to times at or before the event, which is the
-# literal causal reading -- an indication precedes its titration.
+# TRUE when the episode has a listed time in the window; `back_only` keeps times at or before it.
 near_any <- function(events, times, hours, back_only = FALSE) {
   vapply(seq_len(nrow(events)), function(i) {
     tt <- times[[as.character(events$encounter_block[i])]]
@@ -607,22 +497,15 @@ near_any <- function(events, times, hours, back_only = FALSE) {
 
 PAIN_HIT <- qualifying_times(asm, PAIN_THRESH); PAIN_ANY <- recorded_times(asm, PAIN_THRESH)
 SED_HIT  <- qualifying_times(asm, SED_THRESH);  SED_ANY  <- recorded_times(asm, SED_THRESH)
-# "either" is not a merge of the two lists -- it is the same functions over the
-# union of the threshold maps. Each instrument is still cut at its OWN value;
-# merging the split lists by name would drop any episode present in one and not
-# the other.
+# "either" re-runs over the UNION of the threshold maps; merging the split lists by name would drop episodes.
 BOTH_THRESH <- c(PAIN_THRESH, SED_THRESH)
 BOTH_HIT <- qualifying_times(asm, BOTH_THRESH); BOTH_ANY <- recorded_times(asm, BOTH_THRESH)
 
-# Boluses are events here too: SG asked for increases AND boluses.
 ev_sets <- list(increase = inc,
                 bolus    = data.frame(encounter_block = bol$encounter_block,
                                       t_hr = bol$t_hr))
 
-# TWO DENOMINATORS, the same distinction F3/F5 draw. Against ALL events the
-# indicated fraction conflates "no score was taken" with "a score was taken and
-# did not justify it"; against events WITH an assessment in the window it
-# separates documentation from indication. Neither alone answers the question.
+# Two denominators: all events conflates "no score taken" with "score taken, not justifying"; assessed events separate them.
 indication_row <- function(d, hours, event_type, class_name, hit, anyrec) {
   ind  <- near_any(d, hit, hours)
   asr  <- near_any(d, anyrec, hours)
@@ -652,16 +535,10 @@ for (w in IND_SWEEP_H) {
 ind_sens <- do.call(rbind, ind_rows)
 ind_sens$class <- factor(ind_sens$class, levels = c("pain", "sedation", "either"))
 
-# THE SWEEP STAYS WHOLE-COHORT. It is a method check -- it establishes that the
-# headline is not an artifact of the window width -- and that question is about
-# the measurement, not the population. Running it twice would double a
-# diagnostic nobody reports per cohort. The PRIMARY window below carries both.
+# The sweep stays whole-cohort: a method check about the measurement, not the population.
 IND_HIT <- list(pain = PAIN_HIT, sedation = SED_HIT, either = BOTH_HIT)
 
-# Bootstrap the PRIMARY window only. The sweep's 24 rows would say nothing
-# further about the clustering and would cost 24 x BOOT_REPS to learn it. The
-# interval is on pct_indicated_all, which is why the columns say so -- this row
-# carries four different percentages and a bare `ci_lo` would be ambiguous.
+# Bootstrap the PRIMARY window only; the interval is on pct_indicated_all, hence the prefix.
 ind <- by_cohort(function(keep) {
   es <- lapply(ev_sets, keep_rows, keep = keep)
   rows <- do.call(rbind, lapply(names(es), function(etype) {
@@ -682,9 +559,7 @@ ind <- by_cohort(function(keep) {
     b
   })))
 })
-# The whole-cohort rows must be the same numbers the sweep reports at the primary
-# window -- two code paths, one quantity, so they are compared rather than
-# assumed. This is what makes the `all` pass verifiably unchanged.
+# Two code paths, one quantity: these rows must match the sweep at the same window.
 local({
   a <- ind[ind$cohort == "all", ]
   b <- ind_sens[ind_sens$window_hours == IND_WIN_H, ]
@@ -694,8 +569,7 @@ local({
               isTRUE(all.equal(a, b, check.attributes = FALSE)))
 })
 
-# The accounting must close, and a wider window can only ADD qualifying scores.
-# A fall as the window widens means the join is wrong, not that practice changed.
+# A wider window can only ADD qualifying scores; a fall means the join is wrong.
 stopifnot(
   "indicated exceeds the event total" = all(ind_sens$n_indicated <= ind_sens$n_events),
   "assessed exceeds the event total"  = all(ind_sens$n_assessed <= ind_sens$n_events),
@@ -739,9 +613,7 @@ register_caption("coadministration.png",
             nrow(inc) / length(unique(inc$encounter_block)))))
 
 p_coad <- house(
-  # WHOLE COHORT. coad carries both cohorts since 2026-10-27 and plotting it
-  # unfiltered would draw two bars per group with no way to tell them apart.
-  # The landmark rows are reported in the table, not here.
+  # Whole cohort only: unfiltered this draws two indistinguishable bars per group.
   ggplot(coad[coad$cohort == "all" & coad$group %in% EVENT_LEVELS, ],
          aes(factor(group, levels = EVENT_LEVELS), pct_paired,
              fill = factor(group, levels = EVENT_LEVELS))) +
@@ -749,8 +621,7 @@ p_coad <- house(
     geom_text(aes(label = sprintf("%.1f%%\n%s events", pct_paired,
                                   format(n_events, big.mark = ","))),
               vjust = -0.25, size = 3, colour = INK) +
-    # No legend: the x axis already names each bar, so a legend would only
-    # repeat it. Identity is never carried by colour alone here.
+    # No legend: the x axis already names each bar, so colour carries no identity.
     scale_fill_manual(values = c(initiation = STATE_COLOURS[["continuous only"]],
                                  uptitration = STATE_COLOURS[["bolus only"]],
                                  downtitration = STATE_COLOURS[["discharged alive"]]),
@@ -758,9 +629,6 @@ p_coad <- house(
     scale_x_discrete(labels = c(initiation = "Initiation", uptitration = "Uptitration",
                                 downtitration = "Downtitration")) +
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.18))) +
-    # The denominator is EVENTS, not patients -- one episode contributes several
-    # rate changes. Naming it on the axis is where a reader is certain to look
-    # before quoting the number.
     labs(x = NULL, y = sprintf("%% of Events Paired with Bolus (+/-%g min)", WIN_MIN)))
 ggsave(file.path(dirs$phase, "coadministration.png"), p_coad,
        width = 7.5, height = 4.4, dpi = 200)
@@ -837,13 +705,8 @@ p_ind <- house(
                           name = NULL) +
     scale_x_continuous(breaks = IND_SWEEP_H) +
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
-    # ORDER IS REQUIRED, not cosmetic. This is the only figure in the live
-    # pipeline with two legends, and with both left at the default order = 0
-    # ggplot2 placed them in an order that VARIED BETWEEN R SESSIONS: the same
-    # data and the same code produced two different PNGs, the colour and
-    # linetype boxes swapping sides. Measured 2026-10-05 -- 5 sessions gave one
-    # byte-identical file with these two lines, two distinct files without them.
-    # A figure a site cannot reproduce by checksum is a federation problem.
+    # Order is REQUIRED: two legends both at the default order = 0 came out in a
+    # different order between R sessions, so the PNG was not reproducible.
     guides(colour = guide_legend(order = 1),
            linetype = guide_legend(order = 2)) +
     labs(x = "Window, +/- hours",
@@ -854,8 +717,7 @@ ggsave(file.path(dirs$phase, "indication.png"), p_ind,
 
 # ---- 10. Write ---------------------------------------------------------------
 
-# Destination comes from OWNED, so a file cannot be declared in one folder and
-# written to another -- the failure that a hand-passed path invites.
+# Destination comes from OWNED, so a file cannot be written outside its folder.
 write_out <- function(x, name) {
   key <- if (name %in% OWNED$diagnostics) "diagnostics" else "phase"
   stopifnot("write_out called for a file OWNED does not declare" =
@@ -894,14 +756,7 @@ write_out(ind_sens, "indication_window_sensitivity.csv")
 write_parquet(adh, file.path(dirs$out_phi, "titration_adherence.parquet"))
 cat("written: titration_adherence.parquet (PHI -- per encounter)\n")
 
-# The classified events themselves, for code/06_unit_variation.R. Handed off
-# rather than re-derived: the event definition (section 6) and the pairing window
-# are this script's, and a second implementation of "what counts as an
-# uptitration" is a drift hazard with no upside. 06 splits these events by unit
-# and by year; it must not redefine them.
-#
-# A relative clock, and nothing else -- the same contract Phase 0 holds for the
-# raw events this was built from.
+# Classified events for 06, which splits them and must not redefine them. Relative clock only.
 ev_out <- ev[, c("encounter_block", "t_hr", "kind", "paired", "on_hour")]
 stopifnot(
   "classified events carry a datetime" =
@@ -914,19 +769,8 @@ write_parquet(ev_out, file.path(dirs$out_phi, "titration_events_classified.parqu
 cat(sprintf("written: titration_events_classified.parquet (PHI -- %d events, %d episodes)\n",
             nrow(ev_out), length(unique(ev_out$encounter_block))))
 
-# The per-event indication flags, for code/06_unit_variation.R. Handed off
-# rather than re-derived, for the same reason the classified events are: the
-# thresholds and the window are this script's, and a second implementation of
-# "was this indicated" would drift from the first with nothing to catch it.
-#
-# The PRIMARY window only. The 1-4h sweep is this script's question; 06 asks a
-# per-unit question at one window, and shipping all four would invite a reader
-# to pick the flattering one.
-#
-# Boluses travel in the SAME file with event_type, and deliberately NOT inside
-# titration_events_classified.parquet: 06 selects increases from that file with
-# `kind != "downtitration"`, so a bolus row added there would be silently
-# counted as a rate increase.
+# Per-event indication flags for 06, at the PRIMARY window. Boluses carry event_type
+# and stay OUT of the classified-events file, which 06 filters by `kind`.
 ind_ev <- rbind(
   data.frame(encounter_block = inc$encounter_block, t_hr = inc$t_hr,
              event_type = "increase", kind = as.character(inc$kind),
@@ -946,18 +790,15 @@ stopifnot(
     min(ind_ev$t_hr) >= 0 && max(ind_ev$t_hr) <= EXTENT_H,
   "an event is neither an increase nor a bolus" =
     all(ind_ev$event_type %in% c("increase", "bolus")),
-  # any_indicated is the union of the two classes, so it can never be smaller.
   "any_indicated is not the union of pain and sedation" =
     all(ind_ev$any_indicated >= (ind_ev$pain_indicated | ind_ev$sedation_indicated)),
   "an indicated event was never assessed" =
     all(!ind_ev$any_indicated | ind_ev$any_assessed))
 
-# The handoff must reproduce the table this script just printed, or 06 and 05
-# would report different numbers for the same quantity.
+# The handoff must reproduce the table printed above.
 for (et in c("increase", "bolus")) {
   here <- 100 * mean(ind_ev$any_indicated[ind_ev$event_type == et])
-  # The handoff is the WHOLE cohort -- 06 splits it by unit, not by landmark
-  # membership -- so it is compared against the `all` rows.
+  # The handoff is the WHOLE cohort, so compare it against the `all` rows.
   there <- ind$pct_indicated_all[ind$cohort == "all" & ind$event_type == et
                                  & ind$class == "either"]
   stopifnot("the handoff disagrees with indication.csv" = abs(here - there) < 0.05)

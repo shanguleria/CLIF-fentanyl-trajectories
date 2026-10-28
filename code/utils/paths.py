@@ -46,10 +46,8 @@ def site_dirs(repo: Path) -> dict[str, Path]:
 def phase_dir(dirs: dict[str, Path], name: str) -> Path:
     """A per-script subfolder of the shareable output tree.
 
-    output/final_no_phi/ accumulates every phase's artifacts and became hard to
-    scan. Each script writes into its own subfolder named for the script that
-    produced it, while the phaseN_ file prefixes stay -- the folder says which
-    script, the prefix says which phase, and neither is inferred from the other.
+    The folder names the script that wrote the file; the phaseN_ file prefixes
+    stay, so the prefix still says which phase.
     """
     d = dirs["out_final"] / name
     d.mkdir(parents=True, exist_ok=True)
@@ -61,18 +59,13 @@ def phase_dir(dirs: dict[str, Path], name: str) -> Path:
 CODE_GLOBS = ("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
 # Protocol. MUST be byte-identical across sites or a pooled result is not
 # meaningful. config.json is deliberately NOT here: it carries site_name and
-# data_directory, so its digest is EXPECTED to differ between sites, and treating
-# it as a cross-site equality check would flag every site as divergent.
+# data_directory, so its digest is expected to differ between sites.
 PROTOCOL_FILES = ("protocol.json", "outlier_config.json")
 SITE_CONFIG = "config.json"
 
 
 def _repo() -> Path:
-    """This file is code/utils/paths.py, so the repo is two levels up.
-
-    Resolved here rather than passed in: provenance() has twelve callers across
-    both languages and none of them had a repo argument.
-    """
+    """This file is code/utils/paths.py, so the repo is two levels up."""
     return Path(__file__).resolve().parents[2]
 
 
@@ -83,12 +76,10 @@ def _sha(b: bytes) -> str:
 def code_digests(repo: Path | None = None) -> tuple[str, dict[str, str]]:
     """Content fingerprint of the code that produced a run: (overall, per file).
 
-    Content-based rather than git-based. `git describe` answers "which code?"
-    only where a checkout exists, carries a tag and is clean; it returns
-    "unknown" for a ZIP download and a bare "-dirty" for an uncommitted edit.
-    A digest works in all three cases and is comparable across sites by equality.
-
-    The overall digest hashes the (path, digest) PAIRS, so a rename moves it too.
+    Content-based rather than git-based: `git describe` returns "unknown" for a
+    ZIP download and a bare "-dirty" for an uncommitted edit, while a digest is
+    comparable across sites by equality. The overall digest hashes the
+    (path, digest) PAIRS, so a rename moves it too.
     """
     repo = repo or _repo()
     files = sorted({p for g in CODE_GLOBS for p in repo.glob(g)},
@@ -101,8 +92,7 @@ def code_digests(repo: Path | None = None) -> tuple[str, dict[str, str]]:
 def definition_versions(repo: Path | None = None) -> dict[str, str]:
     """The protocol version each config declares.
 
-    One field per file, not one overall: they are bumped independently --
-    protocol.json is at 0.6.0 while outlier_config.json is at 0.3.0 -- so a
+    One field per file, not one overall: they are bumped independently, so a
     single `definition_version` would be ambiguous about which it meant.
     """
     repo = repo or _repo()
@@ -146,9 +136,8 @@ def provenance(config: dict) -> dict:
 def config_digests(repo: Path) -> dict[str, str]:
     """SHA-256 of every file that governs what the outputs contain.
 
-    Used by require_manifest() for WITHIN-site staleness. provenance() splits the
-    same digests into protocol-vs-site for the CROSS-site check; both read this
-    one function, so the two views cannot disagree numerically.
+    require_manifest() uses these for WITHIN-site staleness; provenance() splits
+    the same digests into protocol-vs-site for the CROSS-site check.
     """
     out = {}
     for name in (SITE_CONFIG,) + PROTOCOL_FILES:
@@ -162,9 +151,8 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
                         retired: list[str] | None = None) -> int:
     """Delete this script's own outputs before it starts.
 
-    A crash then leaves nothing rather than a stale file that still looks valid.
-    The dangerous case is a crash between two writes, which leaves a MISMATCHED
-    pair from two different code versions.
+    A crash then leaves nothing rather than a MISMATCHED pair of files from two
+    different code versions, which still looks valid.
     """
     n = 0
     for key, names in owned.items():
@@ -180,14 +168,10 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
         if f.exists():
             f.unlink()
             n += 1
-    # And a renumbered SCRIPT leaves the whole directory behind. Unlinking the
-    # files empties it but leaves the folder standing in the shareable tree,
-    # where a reader finds a directory nothing writes and cannot tell whether it
-    # matters. Remove a retired directory once it is empty -- never one that
-    # still holds anything, which would delete a file nobody declared.
-    # NEVER a directory this run writes to. A script may retire old files that
-    # live in its OWN phase directory, which leaves that directory legitimately
-    # empty -- removing it then deletes the folder out from under the script.
+    # A renumbered SCRIPT leaves the whole directory behind, so remove a retired
+    # directory once it is empty -- never one that still holds anything, and
+    # never one this run writes to: a script may retire files in its OWN phase
+    # directory, leaving it legitimately empty.
     live = {Path(v).resolve() for v in dirs.values()}
     for d in {(dirs["out_final"].parent.parent / rel).parent for rel in retired or []}:
         if d.resolve() in live:
@@ -217,9 +201,8 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
             f"files that may still be on disk."
         )
     m = json.loads(f.read_text())
-    # REQUIRED, not .get(): a manifest without digests cannot be checked against
-    # the config on disk, and reading an absent block as {} made this guard pass
-    # vacuously -- the same shape of hole as a test that cannot fail.
+    # REQUIRED, not .get(): reading an absent block as {} makes this guard pass
+    # vacuously, a manifest without digests being uncheckable.
     stamped = m.get("config_digests")
     if not stamped:
         raise SystemExit(
@@ -234,10 +217,9 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
             + ", ".join(f"{k} {a} -> {b}" for k, (a, b) in drift.items())
             + ". Re-run code/01_build_cohort.py rather than analysing stale tables."
         )
-    # Code drift is RECORDED, never refused (SG, 2026-10-02). A site may have to
-    # edit _to_mcg_hr to run at all, and blocking there would wall it off while
-    # it follows this pipeline's own error message. The digest in each
-    # provenance.json is what the coordinating centre compares.
+    # Code drift is RECORDED, never refused: a site may have to edit _to_mcg_hr
+    # to run at all. The digest in each provenance.json is what the coordinating
+    # centre compares.
     was = m.get("code_digest")
     if was and was != code_digests(repo)[0]:
         print(f"  NOTE code changed since Phase 0 ran ({was} -> "

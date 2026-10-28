@@ -1,8 +1,7 @@
 """Is config/config.json usable? Answer in a second, not after a table read.
 
-Reports paths and settings only. It opens no CLIF table and prints no directory
-listing, so it stays clear of patient data entirely -- table presence is tested
-by filename.
+Reports paths and settings only: it opens no CLIF table and lists no directory,
+so table presence is tested by filename and no patient data is touched.
 
     python3 code/check_config.py
 """
@@ -19,26 +18,21 @@ CONFIG_PATH = REPO / "config" / "config.json"
 CLIFPY_REQUIRED = ("data_directory", "filetype", "timezone")
 
 
-# protocol.json names categories by string and every filter matches LITERALLY,
-# so a value that is not in the CLIF mCIDE matches zero rows forever. That is not
-# hypothetical: "CPOT" was declared here from 2026-09-30 to 2026-10-26 and is not
-# a permissible value -- the mCIDE spells it `cpot_total` -- so at a CPOT site the
-# pain half of the headline indication metric would have reported a clean, silent
-# zero behind a reassuring "not charted here" line. Checked against clifpy's own
-# packaged schema rather than a list copied into this file, because a copied list
-# is the next thing to drift.
+# protocol.json names categories by string and every filter matches LITERALLY, so
+# a value outside the CLIF mCIDE matches zero rows forever and reports a silent
+# zero (e.g. "CPOT" where the mCIDE spells it `cpot_total`). Checked against
+# clifpy's packaged schema rather than a list copied into this file, which would
+# be the next thing to drift.
 _SCHEMA_FOR_TABLE = {
     "assessments": ("patient_assessments_schema.yaml", "assessment_category"),
     "labs": ("labs_schema.yaml", "lab_category"),
     "vitals": ("vitals_schema.yaml", "vital_category"),
 }
 
-# med_category IS mCIDE-controlled -- 75 permissible values for continuous and
-# 165 for intermittent -- and the two lists are NOT the same. dexmedetomidine is
-# valid continuous and absent from intermittent, so which list a declared drug is
-# checked against depends on how this pipeline reads it. Getting that wrong is
-# the same silent failure as the CPOT typo: a filter on a non-permissible value
-# matches nothing, forever, without complaint.
+# med_category is mCIDE-controlled and the continuous and intermittent lists are
+# NOT the same (dexmedetomidine is valid continuous, absent from intermittent), so
+# each role is checked against the schema for the table this pipeline reads it
+# from.
 _MEDICATION_ROLES = {
     "opioid_infusion_categories": ("medication_admin_continuous_schema.yaml",
                                    "continuous infusions"),
@@ -68,8 +62,8 @@ def _permissible(schema_file: str, column: str) -> set[str] | None:
 def declared_categories(protocol: dict) -> list[tuple[str, str, str]]:
     """(table, category, where it was declared) for every category in protocol.json.
 
-    Iterates the config's own keys. A hardcoded list here would be the same bug
-    one level up: a newly declared instrument would simply not be checked.
+    Iterates the config's own keys: a hardcoded list would not check a newly
+    declared instrument.
     """
     found = []
     for block in ("time_invariant", "time_varying"):
@@ -164,8 +158,7 @@ def main() -> int:
         problems.append(f"data_directory does not exist: {data_dir}")
     elif tables:
         # is_dir() alone goes green on a parent holding only a versioned
-        # subdirectory -- which is the multi-hour failed run this exists to
-        # prevent. Names only; nothing is opened.
+        # subdirectory. Names only; nothing is opened.
         missing = [t for t in tables
                    if not (data_dir / f"clif_{t}.{filetype}").is_file()]
         if missing:

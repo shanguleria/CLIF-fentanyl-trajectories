@@ -1,27 +1,13 @@
 # The single-patient exemplar (F1) -- shared shape, gap handling, and a synthetic
-# patient to develop against.
-#
-# WHY A SYNTHETIC PATIENT EXISTS. F1 is the only figure in this project that
-# draws one identifiable clinical course in detail. Designing it normally means
-# rendering it and looking, which would mean looking at a real patient. So the
-# figure is built and iterated against a GENERATED patient that exercises every
-# visual feature the real one has -- step risers up and down, a true off-drug
-# gap, a staircase of near-simultaneous boluses, ordinal scores with a gap past
-# the LOCF cap, and extubation before the window ends. Only when the drawing is
-# settled does the real series go through the same code.
-#
-# The synthetic patient is not a test fixture in the usual sense -- this repo has
-# no R test harness (tests/ is eight Python files, and renv.lock pins no
-# testthat) -- it is the development surface, and it keeps the figure code
-# runnable at a site with no data at all.
+# patient to develop against. F1 is the only figure here that draws one
+# identifiable clinical course in detail, so it is iterated against a GENERATED
+# patient and only then run on the real series; that also keeps the figure code
+# runnable at a site with no data.
 
 # One long frame, whatever the source. `series` is a FACTOR with declared levels
-# so the panel order cannot be re-sorted alphabetically underneath us -- the same
-# failure that reordered every stacked area before 2026-09-24 (lessons.md #15).
-# "pain" is CANONICAL, not an instrument. A site charts NVPS (UCMC), cpot_total
-# or BPS, and 03_exemplar.R relabels whichever one it finds to this key before
-# the factor is applied -- so the panel geometry is written once and the
-# instrument's name and scale arrive from config.
+# so the panel order cannot re-sort alphabetically. "pain" is CANONICAL, not an
+# instrument: a site charts NVPS, cpot_total or BPS, and 03_exemplar.R relabels
+# whichever it finds to this key, so the scale arrives from config.
 EXEMPLAR_SERIES <- c("infusion", "bolus", "rass", "pain")
 
 EXEMPLAR_LABELS <- c(infusion = "Fentanyl infusion\n(mcg/hr)",
@@ -29,13 +15,10 @@ EXEMPLAR_LABELS <- c(infusion = "Fentanyl infusion\n(mcg/hr)",
                      rass     = "RASS",
                      pain     = "Pain score")
 
-# A step asserts the last value persisted. Across a gap longer than the LOCF cap
-# that assertion is false, so the step must BREAK rather than carry a score over
-# hours nobody documented. Baker et al. (Sci Rep 2020;10:10718, Fig 1) draw
-# missingness as nothing at all; this is the one place F1 deliberately departs.
-#
-# Implemented by inserting an NA immediately after the last observation before
-# each over-long gap: ggplot breaks a line or step on NA.
+# A step asserts the last value persisted, which is false across a gap longer
+# than the LOCF cap -- so an NA is inserted there and ggplot breaks the step.
+# Baker et al. (Sci Rep 2020;10:10718, Fig 1) draw missingness as nothing at all;
+# this is the one place F1 departs.
 break_on_gap <- function(d, cap_hours) {
   if (nrow(d) < 2) return(d)
   d <- d[order(d$t_hr), ]
@@ -49,10 +32,9 @@ break_on_gap <- function(d, cap_hours) {
   out[order(out$t_hr), ]
 }
 
-# A step function must be CLOSED at both ends, so that "off drug" reads as the
-# trace sitting at baseline rather than as the trace stopping. The infusion grid
-# is hourly and complete -- absence_means_zero, so a zero is a measurement, not a
-# gap -- and only the right-hand end needs carrying to the edge.
+# A step must be CLOSED at both ends, so "off drug" reads as baseline rather than
+# as the trace stopping. The hourly infusion grid is complete (absence means
+# zero), so only the right-hand end needs carrying to the edge.
 close_step <- function(d, extent_h) {
   if (!nrow(d)) return(d)
   d <- d[order(d$t_hr), ]
@@ -64,16 +46,12 @@ close_step <- function(d, extent_h) {
   d
 }
 
-# A generated patient. Deterministic given the seed: the same fake person every
-# run, so a change in the figure is a change in the CODE and never in the data.
-#
-# Every feature below is deliberate, and each is something the real figure must
-# survive. Change them only to make the development surface harder, never easier.
+# A generated patient, deterministic given the seed. Every feature exercises
+# something the real figure must survive; make them harder, never easier.
 synthetic_exemplar <- function(seed = 1L, extent_h = 72, window_h = 4) {
   set.seed(seed)
 
-  # Infusion: started late, escalated, weaned, stopped dead for 8h, restarted,
-  # weaned to zero before extubation. Hourly, complete, zeros are real.
+  # Infusion: late start, escalation, wean, 8h off, restart, wean to zero.
   rate <- rep(0, extent_h)
   rate[5:16]  <- 50     # started at hour 4
   rate[17:24] <- 100    # escalated
@@ -87,16 +65,13 @@ synthetic_exemplar <- function(seed = 1L, extent_h = 72, window_h = 4) {
   infusion <- data.frame(t_hr = seq(0, extent_h - 1), series = "infusion",
                          value = rate)
 
-  # Boluses, including a STAIRCASE of three inside forty minutes at the point of
-  # escalation. That overplotting is real signal about how hard a patient was
-  # being chased and must not be jittered away.
+  # A STAIRCASE of three boluses in forty minutes: real signal, never jittered.
   bolus <- data.frame(
     t_hr   = c(4.2, 16.1, 16.4, 16.7, 28.5, 39.0, 50.2),
     series = "bolus",
     value  = c(50, 100, 100, 50, 75, 50, 25))
 
-  # RASS: deep early, lightening as fentanyl is weaned, with a 12h documentation
-  # gap that exceeds the 4h cap and must break the step.
+  # RASS, with a 12h gap that exceeds the 4h cap and must break the step.
   rass <- data.frame(
     t_hr   = c(1, 4, 8, 12, 16, 20, 24, 28, 42, 46, 50, 54),
     series = "rass",
@@ -116,8 +91,7 @@ synthetic_exemplar <- function(seed = 1L, extent_h = 72, window_h = 4) {
                    n_eligible = NA_integer_, criteria = NULL))
 }
 
-# Everything I am allowed to know about the REAL exemplar. Counts and spans, no
-# values, no identifiers -- the figure itself is reviewed by a human, not here.
+# Counts and spans only -- no values, no identifiers.
 exemplar_diagnostics <- function(series, meta, cap_hours) {
   stopifnot("exemplar series must be a factor with the declared levels" =
               is.factor(series$series),

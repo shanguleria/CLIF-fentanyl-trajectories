@@ -1,23 +1,15 @@
-# Purpose : Figures for the pooled multi-site analysis. Run at the COORDINATING
-#           CENTRE over output/pooled/, after code/pool_sites.R.
-# Author  : Shan Guleria
-# Created : 2026-10-27
+# Purpose : Figures for the pooled multi-site analysis. Run at the coordinating
+#           centre over output/pooled/, after code/pool_sites.R.
 # Inputs  : output/pooled/*.csv
 # Outputs : output/pooled/figures/ : F2B, F3, F4 (+ F1 from pool_strobe.py)
 #
 #   Rscript code/pool_figures.R
 #
-# ANONYMISED BY DEFAULT. Sites become "Site 1, Site 2, ..." by the declared rule
-# in pooling_spec.json (alphabetical on site_name) and units become "S1-U1" and
-# so on, numbered ALPHABETICALLY BY THEIR REAL NAME -- never by their rate, which
-# would leak the ordering into the label. Real names stay in the CSVs, which SG
-# reads; these panels are what an audience sees. A unit code is not PHI, but it
-# is site-identifying, and Rush's names run ~45 characters and are unreadable on
-# a 160mm panel besides.
+# Anonymised by default: sites become "Site 1, ..." and units "S1-U1", numbered
+# alphabetically by real name so no label encodes a rate (see pooling_spec.json).
 #
-# JOURNAL STYLE: no title, no subtitle. The n, the denominator, the site count,
-# the suppression count and the reference-line definition go in captions.md,
-# which is manuscript text. Legend at the foot in a box. Type in near-black.
+# Journal style: no title or subtitle -- n, denominators, counts and the reference
+# line definition go in captions.md. Legend at the foot in a box, type near-black.
 
 suppressMessages({
   library(here); library(jsonlite); library(ggplot2)
@@ -51,18 +43,15 @@ cs_label <- function(v) {
 
 
 # ---- F2B. Pooled delivery-state prevalence ------------------------------------
-# Pools EXACTLY: n per (window, state) over a denominator fixed at every window,
-# so summing both and recomputing is the whole method. This is the panel that
-# replaces an alluvial, which cannot pool -- a ribbon is one patient's path and
-# the per-episode sequences never leave a site.
+# Pools exactly: n per (window, state) over a denominator fixed at every window.
+# Replaces an alluvial, which cannot pool -- a ribbon is one patient's path.
 
 sp <- rd("04_states__state_prevalence.csv")
 sp <- sp[sp$site == "POOLED", ]
 sp$state <- factor(sp$state, levels = names(STATE_COLOURS))
 stopifnot("a pooled prevalence state is outside the declared palette" =
             !any(is.na(sp$state)))
-# Rows sum to 100% within a window -- verified here rather than assumed, because
-# it is the property that makes the denominator self-contained.
+# Rows must sum to 100% within a window: checked rather than assumed.
 tot <- tapply(sp$pct, sp$window_start_hr, sum)
 stopifnot("pooled prevalence does not sum to 100% within a window" =
             all(abs(tot - 100) < 0.5))
@@ -102,9 +91,7 @@ ua <- ua[ua$unit_key == "location_name" & ua$site != "POOLED", ]
 METRIC <- list(
   indication = list(series = "any escalation", panel = "A",
     x = "% of escalations with a qualifying pain or agitation score within 1 h",
-    # A y-axis title has the PANEL HEIGHT to fit in, not its width. The long
-    # form truncated to "...within 30 m" on the funnel; the full definition is
-    # in the caption either way.
+    # Short form -- the long one truncates. Full definition is in the caption.
     y = "% with a qualifying score"),
   coadmin = list(series = "any increase", panel = "B",
     x = "% of rate increases with a fentanyl bolus within 30 min",
@@ -114,17 +101,13 @@ prep <- function(metric) {
   spec <- METRIC[[metric]]
   d <- ua[ua$metric == metric & ua$series == spec$series, ]
   n_all <- nrow(d)
-  # A suppressed unit cannot be drawn. It is COUNTED in the caption rather than
-  # vanishing: a panel that silently drops a unit misstates how many there are.
+  # A suppressed unit cannot be drawn, so it is counted in the caption instead.
   d <- d[!is.na(d$pct_paired) & !is.na(d$n_paired), ]
   list(d = d, n_suppressed = n_all - nrow(d), spec = spec)
 }
 
-# The reference line is the POOLED rate: summed numerator over summed
-# denominator across every unit drawn. It must share the denominator of the
-# points it is drawn against -- these are attributed events only, so the overall
-# rate from coadministration.csv (which includes unattributed events) is a
-# DIFFERENT quantity and would sit in the wrong place.
+# Reference line is the pooled rate over the units drawn, and must share their
+# denominator: attributed events only, unlike coadministration.csv's overall rate.
 pooled_rate <- function(d) 100 * sum(d$n_paired) / sum(d$n_events)
 
 draw_pair <- function(kind) {
@@ -134,8 +117,7 @@ draw_pair <- function(kind) {
     if (!nrow(d)) next
     d$grp <- cs_label(d$care_setting)
     d$site_lab <- site_label[d$site]
-    # Unit labels numbered alphabetically BY REAL NAME within site, so the label
-    # says nothing about the rate.
+    # Numbered alphabetically by real name within site, so no label encodes a rate.
     d <- d[order(d$site, d$unit), ]
     d$unit_lab <- mapply(function(s, i) sprintf("S%d-U%d", match(s, SITES), i),
                          d$site, ave(seq_len(nrow(d)), d$site, FUN = seq_along))
@@ -236,9 +218,8 @@ for (kind in c("caterpillar", "funnel")) {
   }
 }
 
-# Only the figures THIS script drew. F1 is rendered by the Python STROBE step
-# and registers its own caption there; write_captions asserts that every file it
-# is handed has one, which is the guard that caught the mismatch.
+# Only the figures this script drew; F1 registers its own caption in the Python
+# STROBE step.
 MINE <- grep("^(F2B|F3|F4)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
 write_captions(file.path(FIG, "captions.md"), "pool_figures.R", MINE,
                list(site_name = sprintf("%d pooled", K),   # write_captions prefixes "Site "

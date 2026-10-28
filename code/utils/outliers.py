@@ -171,11 +171,9 @@ def apply_med_converted(
 def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
     """Ceiling past which a dose proves the raw bounds did not run. Derived, not fixed.
 
-    The analysis unit is mcg/hr, and three charted units feed it. A bound only
-    constrains the arm it is written in, so the ceiling is the LARGEST value any
-    arm can still produce after conversion -- weight-based arms at the maximum
-    plausible weight. Taking the mcg/hr bound alone understates it, and the
-    assertion then fires on data the bounds did accept.
+    A bound constrains only the arm it is written in, so the ceiling is the
+    largest value any arm can produce after conversion to mcg/hr -- the
+    weight-based arms at the maximum plausible weight.
     """
     cfg = config or load_config()
     raw = cfg["med_dose_raw"]["fentanyl"]
@@ -187,11 +185,8 @@ def fentanyl_sanity_ceiling(config: dict | None = None) -> float:
         "mcg/kg/min": lambda hi: hi * 60.0 * w_max,
         "mcg/min": lambda hi: hi * 60.0,
     }
-    # `if u in per_arm` would SILENTLY DROP an arm this function does not know,
-    # understating the ceiling -- and the assertion downstream then fires on data
-    # the bounds legitimately accepted. A new charted unit must be added here as
-    # well as to _to_mcg_hr, so say so rather than quietly computing the wrong
-    # maximum.
+    # `if u in per_arm` alone would SILENTLY DROP an arm this function does not
+    # know, understating the ceiling, so an unknown unit raises instead.
     unknown = sorted(set(raw) - set(per_arm) - {u for u in raw if u.startswith("_")})
     if unknown:
         raise SystemExit(

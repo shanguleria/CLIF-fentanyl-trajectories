@@ -1,29 +1,16 @@
 # ==============================================================================
 # 03_exemplar.R  --  F1, one ventilation course in detail
 #
-# Purpose : A single patient's first 72h of ventilation at sub-hourly resolution -- fentanyl infusion rate, boluses, RASS and the site's pain score -- so that "continuous, then bolus, then off" reads as a person rather than as a marginal.
+# Purpose : A single patient's first 72h of ventilation at sub-hourly resolution
+#           -- fentanyl infusion rate, boluses, RASS and the site's pain score.
 # Author  : Shan Guleria
 # Created : 2026-09-24
 # Inputs  : output/intermediate_phi/exemplar_series.parquet + exemplar_meta.json
-#           (or a generated patient, see EXEMPLAR_SOURCE below)
 # Outputs : output/final_no_phi/03_exemplar/ : the files listed in OWNED
 #
-# Modelled on Baker et al. Sci Rep 2020;10:10718 Figure 1, with four deliberate
-# departures:
-#   * stacked facets on ONE shared x axis, never Baker's three overlaid y-axes
-#   * a rate and an amount never share a numeric axis, so boluses get their own
-#     panel rather than riding on the infusion scale
-#   * ordinal scores are points plus a step, never straight-line interpolation,
-#     which would assert the patient passed through intermediate values
-#   * the step BREAKS across a gap longer than the LOCF cap, rather than
-#     asserting a score persisted through hours nobody documented
-# And the one thing Baker's figure is weakest on, which this must improve:
-# "Representative ICU admission" states no selection rule. Ours is declared in
-# protocol.json, applied by code, and written into the caption.
-#
-# DEVELOPMENT. Set EXEMPLAR_SOURCE=synthetic to draw a generated patient into
-# output/dev_synthetic/ instead. The figure was designed that way on purpose --
-# see code/utils/exemplar.R.
+# Modelled on Baker et al. Sci Rep 2020;10:10718 Figure 1. The selection rule is
+# declared in protocol.json exemplar. EXEMPLAR_SOURCE=synthetic draws a generated
+# patient into output/dev_synthetic/ instead; see code/utils/exemplar.R.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
@@ -53,22 +40,15 @@ WINDOW_H <- COV$cohort$window_hours
 EXTENT_H <- COV$cohort$granular_extent_hours
 
 
-# The selection rule is PROTOCOL, not a local preference: two sites picking
-# exemplars by different rules produce F1s that cannot be compared. It therefore
-# lives in protocol.json, which is tracked, and never in config.json, which is
-# gitignored and site-local. Read, never defaulted.
+# The selection rule is protocol: tracked protocol.json, never site-local config.json.
 EX_SPEC <- COV$exemplar
 stopifnot("protocol.json must declare an `exemplar` block" = !is.null(EX_SPEC),
           "the exemplar draw must be the declared one" =
             identical(EX_SPEC$draw, "uniform_random_from_eligible"))
 
-# WHICH PAIN INSTRUMENT does this site chart? NVPS at UCMC; other CLIF sites
-# largely chart CPOT. All are declared in protocol.json indication.pain_instruments
-# and carried as site_optional covariates, so the panel must take the instrument,
-# its display name and its SCALE from config. A hardcoded 0-10 axis -- NVPS's
-# range -- would stretch a cpot_total trace (0-8) over a span it cannot reach and
-# label ticks at 9 and 10 that no value can ever occupy: a wrong figure with no
-# error anywhere.
+# The pain instrument varies by site (protocol.json indication.pain_instruments), so
+# instrument, display name and scale all come from config -- a hardcoded 0-10 axis
+# would stretch a 0-8 trace over ticks no value can occupy, with no error anywhere.
 PAIN_CATS <- names(COV$indication$pain_instruments)
 PAIN_VARS <- Filter(function(v)
   identical(COV$time_varying[[v]]$source$table, "assessments") &&
@@ -77,17 +57,13 @@ PAIN_VARS <- Filter(function(v)
 stopifnot("protocol.json declares no pain instrument as a covariate" =
             length(PAIN_VARS) >= 1)
 
-# The step-breaking threshold is the SAME number as the LOCF cap applied to the
-# score covariates in Phase 0 -- read from the same key, never restated here, or
-# the panel would assert a persistence the analytic table does not.
+# The step-breaking threshold is the Phase 0 LOCF cap itself, read from the same key.
 CAP_H <- as.numeric(COV$time_varying$rass$locf$cap_hours)
 for (.v in PAIN_VARS)
   stopifnot("rass and every pain instrument must share one LOCF cap" =
               identical(CAP_H, as.numeric(COV$time_varying[[.v]]$locf$cap_hours)))
 
-# Scales live in outlier_config analysis_unit_bounds, which is already the single
-# source of truth for what an assessment value may be. Reading the bound here
-# instead of restating it removes a duplicate that had already been written twice.
+# Axis scales come from outlier_config analysis_unit_bounds, never restated here.
 OUTLIERS <- fromJSON(here("config", "outlier_config.json"), simplifyVector = FALSE)
 
 SOURCE <- Sys.getenv("EXEMPLAR_SOURCE", "real")
@@ -102,19 +78,13 @@ prov <- provenance(config)
 
 OWNED <- list(phase = c("exemplar.png", "provenance.json", "captions.md"))
 
-# Renumbered 05 -> 03 on 2026-09-24, so the exemplar sits with the other
-# granularity exhibit (the raster, in 04) and ahead of the aggregates -- Baker's
-# Figure 1 is a proof-of-granularity exhibit BEFORE any aggregate. The old
-# folder is retired explicitly: a site that pulls this update would otherwise
-# keep a 05_exemplar/ nobody owns, full of files that look current. Built with
-# paste0 so a name-level find-and-replace cannot reach into it (lessons.md #13).
+# Retire the old 05_exemplar/ explicitly, or a site that pulls this keeps stale files
+# that look current. Built with paste0 so a find-and-replace cannot reach the name.
 RETIRED <- file.path("output", "final_no_phi", paste0("05_", "exemplar"),
                      c("exemplar.png", "provenance.json", "captions.md"))
 
 if (SOURCE == "synthetic") {
-  # Deliberately NOT under final_no_phi/: a generated figure must never be able
-  # to reach the coordinating-centre upload set. Covered by .gitignore's bare
-  # `output/`.
+  # Never under final_no_phi/: a generated figure must not reach the upload set.
   dirs$phase <- file.path(dirname(dirs$out_final), "dev_synthetic")
   dir.create(dirs$phase, recursive = TRUE, showWarnings = FALSE)
   message("[03_exemplar] SYNTHETIC source -- writing to output/dev_synthetic/")
@@ -144,9 +114,8 @@ if (SOURCE == "synthetic") {
          call. = FALSE)
   }
   series <- as.data.frame(read_parquet(f_series))
-  # Phase 0 exports the pain trace under its VARIABLE name (nvps / cpot_total /
-  # bps). Relabel to the canonical key before the factor, or the levels below
-  # would silently turn the whole trace into NA at any non-NVPS site.
+  # Phase 0 exports the trace under its variable name; relabel to `pain` before the
+  # factor, or the levels below turn the whole trace into NA at a non-NVPS site.
   .found <- intersect(PAIN_VARS, unique(as.character(series$series)))
   stopifnot("the exemplar export carries no declared pain instrument" =
               length(.found) >= 1)
@@ -160,9 +129,6 @@ if (SOURCE == "synthetic") {
 series <- ex$series
 meta   <- ex$meta
 
-# The de-identification is asserted here as well as at export, because this is
-# the script that turns the series into something a person looks at. Same
-# pattern as the 100-patient raster in 04_delivery_states.R.
 stopifnot(
   "the exemplar frame must carry no identifier" =
     !any(c("encounter_block", "patient_id", "hospitalization_id") %in% names(series)),
@@ -174,21 +140,9 @@ exemplar_diagnostics(series, meta, CAP_H)
 
 
 # ---- 5. Figure ---------------------------------------------------------------
-# ONE panel, three y scales -- fentanyl on the left, RASS and the pain score on two right
-# spines -- mirroring Baker et al. Figure 1 (glucose left, insulin and D50
-# right). SG, 2026-09-24, choosing compaction over the four stacked panels this
-# script drew first. What that trades away: the left axis now reads "mcg/hr
-# infused, mcg per bolus", so a rate and an amount share a numeric axis -- the
-# axis title names both rather than hiding it behind a unit fitting neither,
-# and the caption says so. Acceptable on a single-patient qualitative figure;
-# it would not be on an aggregate one.
-#
-# The assessments OVERLAY the fentanyl across the whole panel height, as Baker's
-# insulin and dextrose overlay his glucose (SG, 2026-09-24). An earlier version
-# reserved them a band in the upper panel to keep the traces apart; that is not
-# what Baker does and not what was asked for. Crossing traces are the cost, and
-# are why the series carry separate colours, separate marks and -- for the two
-# ordinal ones -- their own axis spines.
+# One panel, three y scales: fentanyl left, RASS and the pain score on two right
+# spines, with the ordinal traces overlaying the full panel height. The left axis
+# carries both a rate and an amount, so its title names both quantities.
 
 FMAX <- max(250, ceiling(max(series$value[series$series %in% c("infusion", "bolus")],
                              na.rm = TRUE) / 50) * 50)
@@ -199,15 +153,10 @@ if (FMAX > 250) {
 }
 TOP <- FMAX
 
-# Ordinal value -> panel height, and back for the axis ticks. One pair of
-# functions so a scale can never drift from the axis that reads it. Each ordinal
-# series is stretched over the FULL height, which is what makes the right-hand
-# axes readable at the same tick spacing as the left one.
+# Ordinal value -> panel height and back, one pair so scale and axis cannot drift.
 to_band   <- function(v, lo, hi) (v - lo) / (hi - lo) * TOP
 from_band <- function(y, lo, hi) lo + y / TOP * (hi - lo)
 PAIN_CAT <- COV$time_varying[[PAIN_VAR]]$source$category
-# Panel label, not a matcher. Falls back to the category so an instrument added
-# without a display name still draws.
 PAIN_LAB <- COV$indication$instrument_display_names[[PAIN_CAT]]
 if (is.null(PAIN_LAB)) PAIN_LAB <- PAIN_CAT
 RASS_LIM <- unlist(OUTLIERS$analysis_unit_bounds$patient_assessments$RASS)
@@ -219,30 +168,21 @@ SERIES_COL <- c(infusion = STATE_COLOURS[["continuous only"]],
                 bolus    = STATE_COLOURS[["bolus only"]],
                 rass     = STATE_COLOURS[["extubated"]],
                 pain     = STATE_COLOURS[["discharged alive"]])
-# Shape AND line style carry identity too, so the four series are never
-# colour-alone -- and the fentanyl step stays the only solid line, so it reads as
-# the primary quantity even where the ordinal traces cross it.
+# Shape and line style carry identity too, so no series is colour-alone.
 SERIES_SHP <- c(infusion = NA, bolus = 18, rass = 16, pain = 17)
-# Boluses are drawn markedly larger than the assessment points: they are the
-# thing the figure is least able to show any other way -- an instantaneous event
-# with no line to trace it -- so they have to carry on their own.
+# Boluses are drawn larger: an instantaneous event with no line to trace it.
 SERIES_SZ  <- c(infusion = 1.2, bolus = 3.0, rass = 1.2, pain = 1.2)
 SERIES_LTY <- c(infusion = "solid", bolus = "blank", rass = "13", pain = "42")
 SERIES_LAB <- c(infusion = "Fentanyl infusion (mcg/hr)",
                 bolus    = "Fentanyl bolus (mcg)",
                 rass     = "RASS", pain = PAIN_LAB)
 
-# The traces STOP at extubation rather than running on at zero. A zero infusion
-# line past extubation would assert the patient was ventilated and off fentanyl,
-# when they were not ventilated at all.
+# Traces stop at extubation; a zero line past it would assert continued ventilation.
 END_HR <- if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr)) {
   min(meta$extubation_hr, EXTENT_H)
 } else EXTENT_H
 series <- series[series$t_hr <= END_HR, ]
 
-# Extubation. After it the patient is no longer ventilated, which is why the
-# traces stop rather than continue at zero. Labelled once -- an unlabelled rule
-# is a puzzle, and a reference-line label is data, not narration.
 vent_rule <- if (!is.null(meta$extubation_hr) && !is.na(meta$extubation_hr)) {
   list(geom_vline(xintercept = meta$extubation_hr, colour = MUTED,
                   linetype = "22", linewidth = 0.4))
@@ -260,25 +200,18 @@ rass$y <- to_band(rass$value, RASS_LIM[1], RASS_LIM[2])
 pain$y <- to_band(pain$value, PAIN_LIM[1], PAIN_LIM[2])
 
 p <- ggplot(mapping = aes(t_hr)) +
-  # Square risers, closed to zero at both ends: time off the drug is the trace
-  # sitting at baseline, not the trace disappearing.
+  # Closed to zero at both ends: time off the drug is the trace at baseline.
   geom_step(data = inf, aes(y = value, colour = "infusion"),
             direction = "hv", linewidth = 0.55, linetype = SERIES_LTY[["infusion"]]) +
-  # Instantaneous, never carried forward. Dose is read off POSITION. Overlapping
-  # administrations are left overplotted -- that staircase is real signal about
-  # how hard the patient was being chased.
-  # A PAPER halo behind each bolus, so that at this size a run of
-  # near-simultaneous administrations still reads as separate marks rather than
-  # one blob. The staircase is real signal and must stay countable; the halo is
-  # the surface gap that keeps overlapping marks legible. Drawn as its own layer
-  # with no colour mapping, so it stays out of the legend.
+  # Instantaneous, never carried forward; overlaps are left overplotted. The PAPER halo
+  # is an unmapped layer, out of the legend, keeping near-simultaneous boluses
+  # countable.
   geom_point(data = bol, aes(y = value), colour = PAPER,
              shape = SERIES_SHP[["bolus"]], size = SERIES_SZ[["bolus"]] + 1.2,
              show.legend = FALSE) +
   geom_point(data = bol, aes(y = value, colour = "bolus"),
              shape = SERIES_SHP[["bolus"]], size = SERIES_SZ[["bolus"]]) +
-  # Points plus a step, never a straight line: interpolating an ordinal score
-  # asserts the patient passed through intermediate values nobody recorded.
+  # Points plus a step: interpolating an ordinal score asserts values nobody recorded.
   geom_step(data = rass, aes(y = y, colour = "rass"), direction = "hv",
             linewidth = 0.45, linetype = SERIES_LTY[["rass"]], na.rm = TRUE) +
   geom_point(data = rass, aes(y = y, colour = "rass"),
@@ -297,10 +230,8 @@ p <- ggplot(mapping = aes(t_hr)) +
     name = "Fentanyl: mcg/hr infused, mcg per bolus",
     sec.axis = sec_axis(~ from_band(., RASS_LIM[1], RASS_LIM[2]), name = "RASS",
                         breaks = seq(RASS_LIM[1], RASS_LIM[2], by = 1))) +
-  # ONE legend, its keys forced to the right glyphs. Mapping shape and linetype
-  # as aesthetics instead produced three legends side by side -- ggplot merges
-  # guides only when the scales agree key for key, and a shape scale carrying an
-  # NA for the line-only series never will.
+  # One legend, keys forced by override.aes: mapping shape and linetype as aesthetics
+  # gives three legends, because the scales cannot merge key for key.
   guides(colour = guide_legend(
     nrow = 2, byrow = TRUE,
     override.aes = list(linetype = unname(SERIES_LTY[names(SERIES_LAB)]),
@@ -310,10 +241,7 @@ p <- ggplot(mapping = aes(t_hr)) +
 
 if (length(vent_rule)) p <- p + vent_rule + vent_label
 
-# Three scales need three visible spines with tick marks, or a reader cannot
-# tell which axis a trace belongs to. The SPINE and TICKS take the series
-# colour -- they are marks, and a mark is what may carry identity -- while every
-# label reads black at the shared axis-text size.
+# Three scales need three visible spines; spine and ticks take the series colour.
 AXIS_PT <- 8.8   # theme_minimal(base_size = 12)'s axis.text size
 p <- house(p) +
   theme(panel.grid.major.x = element_blank(),
@@ -324,13 +252,10 @@ p <- house(p) +
                                             linewidth = 0.4),
         axis.ticks.y.right   = element_line(colour = SERIES_COL[["rass"]],
                                             linewidth = 0.4),
-        # theme_minimal() blanks ticks, so these are re-enabled by name; and they
-        # must be long enough to read AS hatches against their own spine rather
-        # than disappearing into it.
+        # theme_minimal() blanks ticks, so these are re-enabled by name.
         axis.ticks.length    = grid::unit(4.5, "pt"))
 
-# The third scale. Borrowed from a bare plot over the identical panel range, so
-# its ticks land where the pain score actually is.
+# The third scale, off a bare plot over the identical range so its ticks land right.
 donor <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) + geom_blank() +
   scale_y_continuous(limits = c(0, TOP), expand = expansion(mult = c(0.01, 0.02)),
                      breaks = to_band(seq(PAIN_LIM[1], PAIN_LIM[2], by = 1),
@@ -347,8 +272,7 @@ donor <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) + geom_blank() +
         axis.ticks.length = grid::unit(4.5, "pt"))
 
 if (SOURCE == "synthetic") {
-  # The one sanctioned exception to journal style. A generated figure mistaken
-  # for a result is the real hazard here, so it says so on its face.
+  # The one sanctioned exception to journal style: a generated figure says so.
   p <- p + labs(title = "SYNTHETIC -- GENERATED DATA, NOT A PATIENT") +
     theme(plot.title = element_text(colour = STATE_COLOURS[["died"]],
                                     face = "bold", size = 10))
@@ -394,14 +318,10 @@ register_caption("exemplar.png",
       sprintf(paste0("SELECTION: this episode was drawn at random, seeded at ",
                      "%s, from the %s episodes meeting pre-specified criteria ",
                      "(%s). It was not chosen by inspection. "),
-              # From the config, not the run metadata: draw_seed is not a
-              # criterion and was removed from that list, which left the
-              # caption reading "seeded at NULL".
+              # From the config, not the run metadata: draw_seed is not a criterion.
               format(EX_SPEC$draw_seed, scientific = FALSE),
               format(meta$n_eligible, big.mark = ","),
-              # vapply per element, never unlist(): unlist() on a list mixing
-              # numbers and logicals coerces TRUE to 1, so a declared rule read
-              # "require_survived_hospitalization = 1" in the caption.
+              # vapply, never unlist(): unlist() coerces TRUE to 1 in a mixed list.
               paste(vapply(names(crit), function(k) {
                 v <- crit[[k]]
                 sprintf("%s = %s", k,

@@ -1,18 +1,16 @@
 # ==============================================================================
 # 02_descriptive_cohort.R  --  cohort description: who, how long, how much fentanyl
 #
-# Purpose : Whole-cohort dose trajectory over the granular grid with balanced-panel overlays, the retention table that supplies the at-risk denominator, Table 1, and the federated-pooling exports.
+# Purpose : Dose trajectory over the granular grid with balanced-panel overlays,
+#           the retention table that supplies the at-risk denominator, Table 1,
+#           and the pooling exports.
 # Author  : Shan Guleria
 # Created : 2026-09-05
-# Split   : 2026-09-23, out of 02_descriptive_trajectory.R -- one subject per
-#           script, so the figure work has somewhere to go.
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
 # Outputs : output/final_no_phi/02_descriptive/ : the CSVs and figures listed in OWNED
 # ==============================================================================
 
-# Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
-# Do not use rm(list = ls()) -- it does not unload packages or reset options,
-# so it only gives the appearance of a clean slate.
+# Run this in a FRESH R session; rm(list = ls()) does not unload packages.
 
 # ---- 1. Packages -------------------------------------------------------------
 
@@ -40,15 +38,9 @@ EXTENT_H  <- COV$cohort$granular_extent_hours
 PANELS    <- unlist(COV$cohort$balanced_panel_hours)
 LANDMARK  <- COV$cohort$landmark_hours
 
-# The dose bands were read here only to cut the predominant-intensity stratum,
-# which was tabled on 2026-10-27. They are still read and validated in 04, where
-# the state figures that use them live; declaring them here as well would
-# be a second copy of a federation-critical constant with no consumer.
 SED_UNITS <- COV$exposure$sedatives$units
 
-# Read the drug list FROM the config rather than restating it. A hardcoded list
-# here is how a declared sedative becomes a no-op: adding dexmedetomidine to
-# protocol.json would have changed nothing.
+# Drug list comes from the config; a hardcoded one makes a declared sedative a no-op.
 SED_COLS <- unlist(COV$exposure$sedatives$columns)
 DRUGS <- c(fentanyl = "total_dose",
            setNames(SED_COLS, sub("_dose$", "", SED_COLS)))
@@ -59,22 +51,17 @@ SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Race is collapsed for DISPLAY; the full CLIF granularity reaches
-# pooling_categorical.csv at the `overall` stratum. Map lives in
-# protocol.json, not here.
+# Collapsed for display only; full CLIF granularity still reaches
+# pooling_categorical.csv.
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
 
-# Where a categorical ships in BOTH a full and a collapsed form, the full form
-# is published at `overall` only -- publishing both views over the same strata
-# made each suppressed cell recoverable by subtraction. See
-# protocol.json disclosure._MEASURED_2026_10_02.
+# Where a categorical ships in both a full and a collapsed form, the full form is
+# published at `overall` only: both views over the same strata subtract.
 FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
 stopifnot("protocol.json must declare disclosure.full_levels_strata_scope" =
             !is.null(FULL_SCOPE))
 
-# Histogram bins, so a coordinating centre can pool a median that has no closed
-# form. Absolute and config-declared, never local quantiles -- a site-specific
-# binning cannot be summed with anyone else's.
+# Absolute config-declared bins, never local quantiles -- those cannot be pooled.
 HSPEC <- COV$pooling$histograms$variables
 stopifnot("protocol.json must declare pooling.histograms.variables" =
             !is.null(HSPEC))
@@ -87,7 +74,6 @@ POOL_CAT <- list()
 
 
 # ---- 3. Paths and provenance -------------------------------------------------
-# One site, one output tree. site_dirs() creates them and labels the PHI ones.
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "02_descriptive")   # shareable outputs, subdivided by script
@@ -98,8 +84,6 @@ message(sprintf("[02_descriptive_cohort] site=%s  clif=%s  data=%s",
 
 
 # ---- 4. Guards ---------------------------------------------------------------
-# Phase 0 (Python) wrote what this script reads. Refuse to analyse tables that a
-# different code version or a different config produced.
 
 manifest <- require_manifest(dirs, here())
 message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
@@ -115,10 +99,7 @@ OWNED <- list(phase = c(
   "fentanyl_curves.png", "fentanyl_balanced_panels.png",
   "sedative_curves.png", "captions.md"))
 
-# A rename leaves a stale twin that clear_owned_outputs no longer names. Two
-# rounds: the 2026-09-07 figure renames, then 2026-09-23 when the "phase1_"
-# prefix went and 02 was split in two -- the delivery-state outputs moved to
-# 03_states/, so their old copies in this folder are retired here.
+# Renames leave stale twins that clear_owned_outputs no longer names; retire them here.
 RETIRED <- c(
   file.path("output", "final_no_phi",
             paste0("phase1_", c("dose_curves.png", "pct_receiving.png",
@@ -171,8 +152,7 @@ stopifnot(
     max(long$window_start_hr) + WINDOW_H == EXTENT_H
 )
 
-# The Phase 1 denominator is VENTILATED, not alive_admitted. The two differ by
-# more than half the cohort by 72h.
+# The Phase 1 denominator is ventilated, not alive_admitted.
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 stopifnot(
   "a window cannot be ventilated without being alive and admitted" =
@@ -196,8 +176,6 @@ cat(sprintf("\nCohort: %s ventilation episodes; %s landmark-eligible at T=%dh\n"
 
 
 # ---- 6. Retention ------------------------------------------------------------
-# at-risk = STILL VENTILATED. alive_admitted is carried beside it so the gap is
-# visible rather than implicit.
 
 retention <- do.call(rbind, lapply(sort(unique(long$window_idx)), function(w) {
   x <- long[long$window_idx == w, ]
@@ -213,21 +191,15 @@ print(retention, row.names = FALSE)
 
 
 # ---- 7. Dose summaries -------------------------------------------------------
-# Three curves, not one: weaning-to-zero among the still-ventilated and dropout
-# of low-dose patients move the overall median in opposite directions.
-
 
 summarise_dose <- function(v, drug, denom, w, hr) {
   v <- v[!is.na(v)]
   if (!length(v)) return(NULL)
   q <- unname(quantile(v, c(0.25, 0.5, 0.75)))
-  # n_receiving is the NUMERATOR behind pct_receiving_any. Without it the
-  # proportion cannot be pooled exactly across sites, only reconstructed as
-  # n * pct/100 with the rounding error of a 1 dp percentage.
+  # n_receiving is the numerator behind pct_receiving_any, so the proportion
+  # pools exactly.
   k <- sum(v > 0)
-  # Under receivers_only the subset is already filtered to v > 0, so the
-  # percentage is structurally 100 and carries no information. NA rather than a
-  # constant, which invites being pooled as though it meant something.
+  # receivers_only is already filtered to v > 0, so the percentage is structurally 100.
   receivers <- identical(denom, "receivers_only")
   data.frame(drug = drug, unit = UNITS[[drug]], denominator = denom,
              window_idx = w, window_start_hr = hr, n = length(v),
@@ -248,9 +220,6 @@ dose_summary <- do.call(rbind, lapply(names(DRUGS), function(drug) {
   }))
 }))
 
-# Per-window pooling rows. Doses under both denominators, and every continuous
-# time-varying covariate over the ventilated set, so a coordinating centre can
-# pool any of them without a second run.
 TV_POOL <- c(sofa_total = "SOFA", nee = "Norepinephrine equivalent (mcg/kg/min)",
              oxygenation = "P/F ratio", lactate = "Lactate (mmol/L)")
 
@@ -284,9 +253,8 @@ print(dose_summary[dose_summary$drug == "fentanyl" &
 
 
 # ---- 9. Balanced panels ------------------------------------------------------
-# The all-ventilated curve answers a different question at every timepoint,
-# because its denominator keeps changing. A frozen denominator makes movement
-# mean within-patient change. Each panel spans only the window it is balanced for.
+# Frozen denominator: movement means within-patient change. Each panel spans
+# only its own window.
 
 still_vent_at <- function(h) {
   w <- h / WINDOW_H - 1
@@ -351,24 +319,12 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
 
 
 # ---- 12. Baseline characteristics --------------------------------------------
-# Strata are MUTUALLY EXCLUSIVE (eligible vs not) so the p-value is meaningful;
-# a whole-cohort column against its own subset would not be. This doubles as the
-# included-versus-excluded disclosure.
-# Shape is gtsummary-like: __bold__ parent labels, indented sub-levels, N in the
-# strata headers. Rendering to HTML is a separate step.
+# gtsummary-like shape: __bold__ parent labels, indented sub-levels, N in the headers.
 
 base <- long[long$window_idx == 0, ]
 
-# STRATIFIED ON COHORT MEMBERSHIP (SG, 2026-10-27), replacing predominant
-# fentanyl intensity, which is tabled at protocol.json
-# _tabled_predominant_intensity with its reasoning intact. The study became a
-# question about the landmark cohort, and the Table 1 a reader needs is the one
-# that shows whether that cohort is a selected population.
-#
-# THREE COLUMNS, AND THE THIRD IS WHAT MAKES THE TEST LEGAL. Overall is the whole
-# analytic cohort; Landmark is the subset carried into the outcome analysis; Not
-# landmark is the complement. A p-value between Overall and Landmark would
-# compare a group with itself. See table1._why_the_complement_column.
+# Overall, Landmark (the outcome subset) and its complement. The complement is what
+# makes the test legal. See protocol.json table1._why_the_complement_column.
 T1 <- COV$table1
 stopifnot("protocol.json must declare table1" = !is.null(T1),
           "Table 1 must be stratified on cohort membership" =
@@ -376,9 +332,7 @@ stopifnot("protocol.json must declare table1" = !is.null(T1),
           "table1.strata must name exactly two mutually exclusive groups" =
             length(unlist(T1$strata)) == 2)
 STRATA <- unlist(T1$strata)
-# The declared test NAMES the operation and labels the column, so a protocol that
-# changes the test changes both. Hardcoding either would make test_continuous a
-# policy declaration nothing honours -- which is what the test suite caught.
+# The declared test names the operation and labels the column; never hardcode either.
 T1_TESTS <- list(wilcoxon = list(label = "difference (Wilcoxon)",
                                  fn = function(v, g) stats::wilcox.test(v ~ g, exact = FALSE)$p.value),
                  `chi-square` = list(label = "heterogeneity (chi-square)",
@@ -404,9 +358,7 @@ fmt_p <- function(p) {
   if (p < 0.001) "<0.001" else sprintf("%.3f", p)
 }
 
-# `digits` is per-measure, not per-table: a norepinephrine equivalent needs two
-# places to show anything at all, a P/F ratio and an integer index are false
-# precision at one. Default 1 keeps every unspecified row as it was.
+# `digits` is per-measure, not per-table; default 1 leaves an unspecified row as it was.
 fmt_iqr <- function(v, digits = 1) {
   v <- v[!is.na(v)]
   if (!length(v)) return("--")
@@ -417,14 +369,6 @@ fmt_iqr <- function(v, digits = 1) {
 fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
                                   100 * k / max(n, 1))
 
-# Table 1 rows are display strings. Each one also deposits raw n/mean/sd/sum/
-# sum_sq into POOL, because a median cannot be pooled across sites and a display
-# string cannot be pooled at all.
-
-# TWO MUTUALLY EXCLUSIVE GROUPS, so the test is a rank-sum DIFFERENCE. Until
-# 2026-10-27 the strata were ordered dose bands and this was a Spearman trend
-# test; run across two unordered groups that returns the same number wearing a
-# label that claims a gradient, which is why the row names its own test.
 row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
   for (st in c("overall", STRATA)) {
     x <- if (st == "overall") v else v[grp == st]
@@ -441,8 +385,7 @@ row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
 
 row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
   raw <- ifelse(is.na(v), "Missing", as.character(v))
-  # A categorical with no collapsed twin is the ONLY view of itself, so it still
-  # ships per stratum; the overall-only rule applies where two views overlap.
+  # With no collapsed twin this is the only view of itself, so it ships per stratum.
   if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<-
     pool_cat(label, raw, grp, MIN_CELL,
              strata_scope = if (is.null(collapse)) "all" else FULL_SCOPE)
@@ -491,21 +434,11 @@ baseline <- rbind(
             paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
     base[[DRUGS[[d]]]], UNITS[[d]]))),
   row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours")
-  # The two rows that reported properties of the predominant-intensity
-  # stratification -- at-risk hours and modal share -- went with it on
-  # 2026-10-27. They described that label's artifacts and say nothing about
-  # cohort membership, which is observed rather than assigned.
 )
-# Continuous rows carry a rank-sum DIFFERENCE, categorical rows a heterogeneity
-# chi-square. Naming the test per row is the only way a reader can tell which
-# question a given p-value answered.
 names(baseline) <- c("Characteristic", COLS, "p-value", "test")
 
 stopifnot(
   "the strata must partition the cohort" = sum(table(grp)) == nrow(base),
-  # Not a data finding either way: every block is landmark-eligible or not, so an
-  # empty column means `elig` did not arrive, not that a site has no such
-  # patients. Catching it here beats a Table 1 of NaNs.
   "every stratum must be non-empty -- check that time_to_event.parquet loaded" =
     all(table(grp) > 0),
   "the Landmark column must match the landmark cohort exactly" =
@@ -519,18 +452,15 @@ print(baseline, row.names = FALSE)
 
 
 # ---- 12b. Pooling histograms -------------------------------------------------
-# A median has no closed form across sites, and for a variable that is skewed
-# or sits on a point mass at zero the mean is not an acceptable substitute
-# either. Counts on FIXED absolute bins do pool. Config:
-# protocol.json pooling.histograms.
+# Counts on fixed absolute bins pool where a median does not. See protocol.json
+# pooling.histograms.
 pool_histograms <- do.call(rbind, lapply(HIST_MINE, function(v) {
   spec <- HSPEC[[v]]
   col <- sub("^trajectory_long\\.", "", as.character(spec$source))
   stopifnot("a declared histogram names a column trajectory_long does not carry" =
               col %in% names(long))
   x <- if (identical(as.character(spec$restrict), "one row per episode")) {
-    # One value per EPISODE. Taken off the window grid unfiltered it would
-    # repeat 18 times and weight a long stay eighteen-fold.
+    # One value per episode: off the window grid unfiltered it would weight long stays.
     long[[col]][!duplicated(long$encounter_block)]
   } else {
     long[[col]][long$ventilated]
@@ -546,8 +476,6 @@ cat(sprintf("\nPooling histograms: %d variables, %d bins total\n",
 
 # ---- 13. Figures -------------------------------------------------------------
 
-# FENTANYL IS THE STUDY. It gets the primary figures; propofol, midazolam and
-# dexmedetomidine are companions and share one secondary figure.
 FENT_U <- UNITS[["fentanyl"]]
 DOSE_COLS <- c("All ventilated, zeros included" = "#14427e",
                "Receivers only" = "#4a8bd8")
@@ -557,9 +485,8 @@ curves$series <- ifelse(curves$denominator == "all_ventilated",
                         "All ventilated, zeros included", "Receivers only")
 
 # --- Primary figure: fentanyl, all three dose curves -------------------------
-# Two stacked FACETS rather than a secondary axis: a dose and a proportion are
-# different quantities, and sec_axis applies ONE transform to every facet, which
-# draws the proportion against the wrong scale wherever the scales are free.
+# Stacked facets, not sec_axis: sec_axis applies one transform to every facet and
+# would draw the proportion against the wrong scale under free scales.
 f <- curves[curves$drug == "fentanyl", ]
 f_pct <- f[f$denominator == "all_ventilated", ]
 
@@ -602,11 +529,8 @@ ggsave(file.path(dirs$phase, "fentanyl_curves.png"), p_fent,
        width = 7.5, height = 7.6, dpi = 200)
 
 # --- Primary figure: fentanyl balanced panels --------------------------------
-# On the MEAN, not the median. Over half of ventilated windows are exactly zero,
-# so the median sits on the floor from h24 and every panel collapses onto the
-# same line -- it stops discriminating exactly where the cohort starts shrinking
-# fastest. The mean uses the zeros without being pinned by them, and a
-# proportion has no floor at all.
+# Mean as well as median: most ventilated windows are exactly zero, so the
+# median floors.
 bp <- balanced_panels
 bp$curve <- sprintf("Ventilated >=%dh (n=%s)", bp$panel_hours,
                     trimws(format(bp$panel_n, big.mark = ",")))
@@ -648,16 +572,11 @@ ggsave(file.path(dirs$phase, "fentanyl_balanced_panels.png"), p_panels,
        width = 7.5, height = 9.2, dpi = 200)
 
 # --- Secondary figure: the companion sedatives -------------------------------
-# Separate units per drug, so free_y and a label carrying the unit.
 sed <- curves[curves$drug %in% SEDATIVES, ]
-# Facet order follows the config, not the alphabet, so the panels stay put when
-# a drug is added.
+# Facet order follows the config, not the alphabet.
 sed$facet <- factor(sprintf("%s (%s)", sed$drug, sed$unit),
                     levels = sprintf("%s (%s)", SEDATIVES, UNITS[SEDATIVES]))
 
-# Prevalence per drug, so the caption states which of these are actually used
-# here rather than naming one by hand. Computed locally: the zero-fraction table
-# this used to read is gone, being exactly recoverable from dose_summary.
 prev <- vapply(SEDATIVES, function(d) {
   v <- long[[DRUGS[[d]]]][long$ventilated]
   100 * mean(v > 0, na.rm = TRUE)
@@ -666,8 +585,6 @@ prev_txt <- paste(sprintf("%s %.1f%%", SEDATIVES, prev), collapse = ", ")
 # Wrap by hand: ggplot does not wrap a subtitle, it clips it at the canvas edge.
 prev_txt <- paste(strwrap(prev_txt, width = 66), collapse = "\n")
 
-# Mean beside median for the same reason as the fentanyl panels: a median over a
-# mostly-zero column reports the floor, not the dose.
 sed_long <- rbind(
   data.frame(sed[, c("window_start_hr", "series", "facet")],
              value = sed$median, statistic = "median"),
@@ -723,7 +640,6 @@ cat("written: provenance.json\n")
 
 
 # ---- Provenance --------------------------------------------------------------
-# Which package versions produced these numbers?
 
 writeLines(
   c(paste("Run at:", format(Sys.time(), tz = config$timezone, usetz = TRUE)),

@@ -1,16 +1,15 @@
 """Confirm that several sites ran the same analysis.
 
-Run at the COORDINATING CENTRE over the site bundles -- it needs nothing
-from a site beyond the `output/final_no_phi/` upload they already send, since
-every directory in there carries a provenance.json.
+Run at the coordinating centre over the site bundles: it needs nothing beyond
+the `output/final_no_phi/` upload, every directory of which carries a
+provenance.json.
 
     python code/check_provenance.py multisite/ucmc multisite/rush multisite/nu
 
 Protocol divergence (protocol.json, outlier_config.json, definition_version)
-makes a pooled result meaningless and exits non-zero. Code divergence is
-reported but does NOT fail: a site may have had to extend _to_mcg_hr with a
-locally charted dose unit to run at all. The per-file digests name what changed
-so it can be judged rather than guessed.
+exits non-zero. Code divergence is reported but does NOT fail: a site may have
+had to extend _to_mcg_hr with a locally charted dose unit to run at all. The
+per-file digests name what changed.
 """
 from __future__ import annotations
 
@@ -44,8 +43,8 @@ def blocks(paths: list[str]) -> list[dict]:
 def one_per_site(bs: list[dict]) -> dict[str, dict]:
     """Collapse to one block per site, and report any site disagreeing with itself.
 
-    A site whose own blocks differ ran two code versions in one upload -- which is
-    exactly what a mid-pipeline edit produces, and it has to be visible.
+    A site whose own blocks differ uploaded two code versions in one bundle,
+    which is what a mid-pipeline edit produces.
     """
     by_site: dict[str, list[dict]] = {}
     for b in bs:
@@ -76,8 +75,8 @@ def main(paths: list[str]) -> int:
     sites = one_per_site(bs)
     print(f"\n{len(bs)} provenance block(s) from {len(sites)} site(s)\n")
 
-    # Widths from the content, never a constant that happens to fit today: a
-    # 16-char digest in a 14-char column runs into its neighbour.
+    # Widths from the content: a 16-char digest in a 14-char column runs into
+    # its neighbour.
     head = ("site", "code_digest", "code_version", "protocol", "definitions")
     rows = [(site, b.get("code_digest", "-"), b.get("code_version", "-"),
              fmt(b.get("protocol_digests", "-")),
