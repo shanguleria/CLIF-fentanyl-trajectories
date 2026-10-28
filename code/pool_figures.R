@@ -309,9 +309,135 @@ if (file.exists(file.path(POOL, cf_f))) {
   }
 }
 
+
+# ---- F6. Pooled distribution of the two exposures -----------------------------
+# Bars are the POOLED bins -- sum of counts over sum of denominators, never an
+# average of the sites' percentages. Site outlines sit behind them so between-site
+# spread is visible without a second figure.
+ed_f <- "07_outcome_model__exposure_distribution.csv"
+if (file.exists(file.path(POOL, ed_f))) {
+  ed <- rd(ed_f)
+  for (nm in c("bin_lo", "bin_hi", "n", "n_total", "pct")) ed[[nm]] <- as.numeric(ed[[nm]])
+  ed$term_label <- sub("^P", "P(", paste0(ed$exposure, ")"))
+  pooled_ed <- ed[ed$site == "POOLED", , drop = FALSE]
+  sites_ed  <- ed[ed$site != "POOLED", , drop = FALSE]
+  sites_ed$label <- site_label[sites_ed$site]
+
+  if (nrow(pooled_ed)) {
+    p_f6 <- ggplot() +
+      geom_rect(data = pooled_ed,
+                aes(xmin = bin_lo, xmax = bin_hi, ymin = 0, ymax = pct),
+                fill = PREDICTION_COLOURS[["adjusted"]], alpha = 0.55,
+                colour = NA) +
+      geom_step(data = sites_ed, aes(x = bin_lo, y = pct, group = label),
+                colour = INK, linewidth = 0.35, direction = "hv") +
+      facet_wrap(~ term_label, ncol = 1) +
+      scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2),
+                         labels = function(x) sprintf("%.0f%%", 100 * x)) +
+      labs(x = "Share of an admission's fentanyl increases meeting the condition",
+           y = "% of admissions")
+    p_f6 <- house(p_f6) + theme(legend.position = "none")
+    ggsave(file.path(FIG, "F6_exposure_histogram_pooled.png"), p_f6,
+           width = 7.0, height = 5.4, dpi = 300, bg = PAPER)
+    register_caption(
+      "F6_exposure_histogram_pooled.png",
+      "How often is a fentanyl increase paired with a bolus, or justified by a score, across sites?",
+      sprintf(paste0(
+        "Distribution of the two per-admission exposures over the first 72h, ",
+        "each the share of INCREASE events (initiation union up-titration) ",
+        "meeting its condition. FILLED BARS ARE THE POOLED DISTRIBUTION -- sum ",
+        "of counts over sum of denominators across %d site(s), never an average ",
+        "of the sites' percentages. THIN STEPS ARE THE INDIVIDUAL SITES, drawn ",
+        "so between-site spread is visible here rather than in a second figure; ",
+        "they are unlabelled because the pooled shape is the subject. Bin width ",
+        "%.2f on the share scale. Pooled denominators: %s. BOTH DISTRIBUTIONS ",
+        "ARE EXPECTED TO BE DOMINATED BY ZERO; the shared denominator is small, ",
+        "so a proportion on two or three events can only take a few values and ",
+        "the comb is the small-denominator limitation, not a rendering ",
+        "artifact. Sites are anonymised by the declared rule."),
+        K, unique(pooled_ed$bin_hi - pooled_ed$bin_lo)[1],
+        paste(sprintf("%s n = %s", unique(pooled_ed$term_label),
+                      formatC(vapply(unique(pooled_ed$term_label), function(t)
+                        max(pooled_ed$n_total[pooled_ed$term_label == t]), numeric(1)),
+                        format = "d", big.mark = ",")), collapse = "; ")))
+    cat("  F6_exposure_histogram_pooled.png\n")
+  }
+}
+
+
+# ---- F7. Adjusted predicted VFD-28, one column per site -----------------------
+# NOT POOLED, and deliberately so: the curve is standardised over each site's own
+# covariate distribution, so three curves are not three estimates of one quantity
+# (pooling_spec.json adjusted_prediction._why). Shown side by side instead.
+ap_f <- "07_outcome_model__adjusted_prediction.csv"
+if (file.exists(file.path(POOL, ap_f))) {
+  ap <- rd(ap_f)
+  ap <- ap[ap$site != "POOLED", , drop = FALSE]
+  for (nm in grep("mean_vfd_28|pct_vfd_zero|exposure_pct", names(ap), value = TRUE))
+    ap[[nm]] <- as.numeric(ap[[nm]])
+  if (nrow(ap)) {
+    ap$label <- factor(site_label[ap$site], levels = unname(site_label[SITES]))
+    long <- rbind(
+      data.frame(label = ap$label, x = ap$exposure_pct, y = ap$mean_vfd_28,
+                 lo = ap$mean_vfd_28_lo, hi = ap$mean_vfd_28_hi,
+                 metric = "Adjusted mean VFD-28, days", stringsAsFactors = FALSE),
+      data.frame(label = ap$label, x = ap$exposure_pct, y = ap$pct_vfd_zero,
+                 lo = ap$pct_vfd_zero_lo, hi = ap$pct_vfd_zero_hi,
+                 metric = "Adjusted % with VFD-28 = 0", stringsAsFactors = FALSE))
+    long$metric <- factor(long$metric,
+                          levels = c("Adjusted mean VFD-28, days",
+                                     "Adjusted % with VFD-28 = 0"))
+    p_f7 <- ggplot(long, aes(x = x)) +
+      geom_ribbon(aes(ymin = lo, ymax = hi),
+                  fill = PREDICTION_COLOURS[["adjusted"]], alpha = 0.16) +
+      geom_line(aes(y = y), colour = PREDICTION_COLOURS[["adjusted"]],
+                linewidth = 0.7) +
+      geom_point(aes(y = y), colour = PREDICTION_COLOURS[["adjusted"]], size = 1.7) +
+      facet_grid(metric ~ label, scales = "free_y", switch = "y") +
+      scale_x_continuous(breaks = sort(unique(long$x))) +
+      labs(x = "Increases with a documented indication, % of an admission's increases",
+           y = NULL)
+    p_f7 <- house(p_f7) +
+      theme(legend.position = "none", strip.placement = "outside",
+            panel.spacing.x = unit(0.9, "lines"))
+    ggsave(file.path(FIG, "F7_adjusted_prediction_by_site.png"), p_f7,
+           # Floor the width at the x-axis TITLE's own length: the per-column
+           # formula alone gives 4.6in at k = 1 and clips the title.
+           width = max(6.6, 2.4 + 2.1 * length(unique(ap$label))),
+           height = 5.6, dpi = 300,
+           bg = PAPER)
+    register_caption(
+      "F7_adjusted_prediction_by_site.png",
+      "Does documenting an indication for a fentanyl increase track ventilator-free days, at each site?",
+      sprintf(paste0(
+        "One column per site, %d in all. Top row: adjusted mean VFD-28 in days. ",
+        "Bottom row: the adjusted share of admissions with VFD-28 exactly zero. ",
+        "Each is that site's PRIMARY proportional-odds model STANDARDISED over ",
+        "ITS OWN observed covariate distribution, with the band-to-days mapping ",
+        "it measured locally. DELIBERATELY NOT POOLED: standardising over ",
+        "different covariate distributions means three curves are not three ",
+        "estimates of one quantity, so combining them would average over three ",
+        "different populations while looking like a meta-analysis. What DOES ",
+        "pool is the exposure coefficient, by inverse variance, in F5. A pooled ",
+        "curve would have to be drawn FROM that pooled coefficient against a ",
+        "chosen reference covariate distribution, which is a protocol decision ",
+        "and is not done here. Y SCALES ARE FREE BETWEEN ROWS AND SHARED WITHIN ",
+        "A ROW, so the columns are comparable to each other but the two rows are ",
+        "not. Bands are bootstrap percentile intervals at each site's declared ",
+        "seed. Site n: %s. Sites are anonymised by the declared rule. AN ",
+        "ASSOCIATION, NOT AN EFFECT -- confounding by indication is unaddressed."),
+        length(unique(ap$label)),
+        paste(sprintf("%s n = %s", as.character(unique(ap$label)),
+                      formatC(vapply(unique(ap$label), function(l)
+                        max(as.numeric(ap$n_admissions[ap$label == l])), numeric(1)),
+                        format = "d", big.mark = ",")), collapse = "; ")))
+    cat("  F7_adjusted_prediction_by_site.png\n")
+  }
+}
+
 # Only the figures this script drew; F1 registers its own caption in the Python
 # STROBE step.
-MINE <- grep("^(F2B|F3|F4|F5)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
+MINE <- grep("^(F2B|F3|F4|F5|F6|F7)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
 write_captions(file.path(FIG, "captions.md"), "pool_figures.R", MINE,
                list(site_name = sprintf("%d pooled", K),   # write_captions prefixes "Site "
                     clif_version = PROV$definition_versions$`protocol.json`,
