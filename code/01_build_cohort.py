@@ -2083,16 +2083,41 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     iv_all = _imv_intervals(resp, cohort, horizon_h)
     span = iv_all[(iv_all["t_start_hr"] <= T) & (iv_all["t_end_hr"] > T)]
     eligible = set(span.loc[span["is_imv"], "encounter_block"])
-    # An interval covering T is clipped to followup_end, so covering T already
-    # implies alive and admitted at T. Asserted rather than assumed.
+    # THE TWO RULES DIFFER IN BOTH DIRECTIONS, and I asserted otherwise once.
+    # The first version of this code asserted `eligible <= grid_eligible` -- that
+    # the state-at-T rule is a strict subset of the any-record-in-the-window rule
+    # -- and the assertion fired on the first run. It is false, because the two
+    # differ for opposite reasons:
+    #
+    #   OLD not NEW : an IMV record inside [T-window, T) followed by extubation
+    #                 before T. Charted as ventilated in the window, not
+    #                 ventilated at T. These are the blocks SG's change excludes.
+    #   NEW not OLD : NO record charted inside [T-window, T) at all, so
+    #                 imv_status is null rather than 1, while the waterfall
+    #                 carries a real earlier IMV record forward to T. These are
+    #                 genuinely ventilated at T and the grid rule was dropping
+    #                 them for a CHARTING GAP -- exactly what the waterfall exists
+    #                 to repair.
+    #
+    # Both counts are printed so the trade is visible rather than asserted.
     grid = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
     grid_eligible = set(grid.loc[grid["imv_status"] == 1, "encounter_block"])
-    assert eligible <= grid_eligible, (
-        "a block is on IMV at T by the interval series but was not even charted "
-        "as ventilated in the window ending at T -- the two series disagree")
     note("eligible on the OLD rule (any IMV record in the window)", len(grid_eligible))
-    note("  of those, NOT on IMV at T -- now excluded",
+    note("  OLD only -- charted in the window, extubated before T",
          len(grid_eligible - eligible))
+    note("  NEW only -- nothing charted in the window, waterfall carries IMV to T",
+         len(eligible - grid_eligible))
+
+    # What DOES have to hold: being on IMV at T means follow-up extends past T,
+    # because every interval is clipped to followup_end_dttm. If the grid
+    # disagrees about ADMISSION the two series are inconsistent about something
+    # the waterfall cannot explain away.
+    admitted = set(long.loc[(long["window_start_hr"] == T - WINDOW_H)
+                            & long["alive_admitted"], "encounter_block"])
+    assert eligible <= admitted, (
+        f"{len(eligible - admitted)} block(s) are on IMV at T but the window grid "
+        f"says they were not alive and admitted then; intervals are clipped to "
+        f"followup_end_dttm so this cannot happen")
 
     flow(f"LANDMARK COHORT -- time_to_event (on IMV at T={T}h)", len(eligible),
          f"extubated, died or discharged before T={T}h")
