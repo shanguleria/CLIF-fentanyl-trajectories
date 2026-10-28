@@ -218,9 +218,100 @@ for (kind in c("caterpillar", "funnel")) {
   }
 }
 
+
+# ---- F5. Forest plot of the exposure odds ratios ------------------------------
+# Per-site estimates and the inverse-variance pool, on the PRIMARY model. The
+# sensitivities are in the CSV; six models on one panel is unreadable.
+cf_f <- "07_outcome_model__model_coefficients.csv"
+if (file.exists(file.path(POOL, cf_f))) {
+  cf <- rd(cf_f)
+  cf <- cf[cf$model == "primary" &
+             toupper(as.character(cf$is_exposure)) == "TRUE", , drop = FALSE]
+  cf <- cf[is.finite(suppressWarnings(as.numeric(cf$odds_ratio))), , drop = FALSE]
+
+  if (nrow(cf)) {
+    for (nm in c("odds_ratio", "or_ci_lo", "or_ci_hi", "std_error"))
+      cf[[nm]] <- suppressWarnings(as.numeric(cf[[nm]]))
+    cf$is_pool <- cf$site == "POOLED"
+    # n on the row label, the way the per-unit figures do it: a reader cannot
+    # take a denominator off a square.
+    nfmt <- function(x) formatC(as.numeric(x), format = "d", big.mark = ",")
+    cf$label <- ifelse(cf$is_pool,
+                       sprintf("Pooled (n = %s)", nfmt(cf$n_admissions)),
+                       sprintf("%s (n = %s)", site_label[cf$site], nfmt(cf$n_admissions)))
+    # POOLED last, then sites in the declared alphabetical order, and the y axis
+    # reversed so Site 1 reads at the top.
+    lab_of <- function(s) unique(cf$label[cf$site == s])
+    lev <- c(lab_of("POOLED"), rev(unlist(lapply(SITES, lab_of))))
+    cf$label <- factor(cf$label, levels = lev)
+    # Point area proportional to inverse-variance weight, the forest convention.
+    cf$wt <- ifelse(cf$is_pool, NA, 1 / cf$std_error^2)
+    cf$wt_rel <- cf$wt / max(cf$wt, na.rm = TRUE)
+
+    # "Pbolus_per10pp" -> "P(bolus)": the unit is on the x axis, so repeating
+    # per10pp in every strip adds ink without information.
+    cf$term_label <- sub("^P", "P(", sub("_per[0-9]+pp$", ")", cf$term))
+    het <- cf[cf$is_pool, c("term", "term_label", "k_sites", "Q", "Q_df", "Q_p", "I2_pct",
+                            "tau2", "heterogeneity_role")]
+    rng <- range(c(cf$or_ci_lo, cf$or_ci_hi), na.rm = TRUE)
+
+    p_f5 <- ggplot(cf, aes(x = odds_ratio, y = label)) +
+      geom_vline(xintercept = 1, colour = MUTED, linewidth = 0.4) +
+      geom_errorbar(aes(xmin = or_ci_lo, xmax = or_ci_hi), orientation = "y",
+                    width = 0.18, linewidth = 0.5, colour = INK) +
+      geom_point(aes(size = wt_rel, shape = is_pool), colour = INK, fill = INK) +
+      scale_shape_manual(values = c(`FALSE` = 22, `TRUE` = 23), guide = "none") +
+      scale_size_area(max_size = 4.2, guide = "none", na.value = 3.6) +
+      scale_x_continuous(trans = "log10",
+                         breaks = scales::breaks_log(5),
+                         labels = function(x) formatC(x, format = "fg", digits = 3)) +
+      facet_wrap(~ term_label, ncol = 1, scales = "free_y") +
+      labs(x = sprintf("Odds of a better VFD-28 band, per %d percentage points (log scale)",
+                       round(100 * fromJSON(here("config", "protocol.json"),
+                                            simplifyVector = FALSE)$model$outcome_model$exposure_scale_per)),
+           y = NULL)
+    p_f5 <- house(p_f5) + theme(panel.grid.major.y = element_blank(),
+                                panel.grid.major.x = element_line(colour = GRIDLINE,
+                                                                  linewidth = 0.4))
+    ggsave(file.path(FIG, "F5_exposure_forest_pooled.png"), p_f5,
+           width = 7.0, height = 1.4 + nrow(het) * (0.34 * length(lev) + 0.55),
+           dpi = 300,
+           bg = PAPER)
+    register_caption(
+      "F5_exposure_forest_pooled.png",
+      "Does documenting an indication for a fentanyl increase track ventilator-free days, across sites?",
+      sprintf(paste0(
+        "Per-admission titration exposures against VFD-28, one panel per ",
+        "exposure, from the PRIMARY proportional-odds model at each of %d ",
+        "site(s). SQUARES ARE SITES, area proportional to inverse-variance ",
+        "weight; the DIAMOND is the pooled estimate. Bars are 95%% intervals. ",
+        "An odds ratio above 1 is higher odds of landing in a BETTER VFD-28 ",
+        "band, read against the band ordering and not against intuition. ",
+        "POOLED BY INVERSE VARIANCE ON THE LOG-ODDS, which is the scale that ",
+        "pools -- odds ratios are never averaged. The pooled estimand is the ",
+        "WITHIN-SITE, ICU-adjusted association: unit fixed effects are ",
+        "site-local and are not shipped, so this is not a between-site ",
+        "contrast. %s SITES ARE ANONYMISED as Site 1..n by alphabetical ",
+        "site_name, the declared and reproducible rule; real names appear only ",
+        "on a title page. Sensitivity models are in ",
+        "07_outcome_model__model_coefficients.csv and are not drawn here. AN ",
+        "ASSOCIATION, NOT AN EFFECT -- confounding by indication is ",
+        "unaddressed."),
+        as.integer(max(het$k_sites, na.rm = TRUE)),
+        paste(sprintf("%s: Q = %.2f on %d df (p = %s), I-squared = %.0f%%, tau-squared = %.4f%s.",
+                      het$term_label, het$Q, as.integer(het$Q_df), format(het$Q_p),
+                      het$I2_pct, het$tau2,
+                      ifelse(het$heterogeneity_role == "descriptive_only",
+                             sprintf(" -- DESCRIPTIVE ONLY, k is below heterogeneity_min_k = %d, so the fixed-effect estimate is primary",
+                                     as.integer(SPEC$heterogeneity_min_k)), "")),
+              collapse = " ")))
+    cat("  F5_exposure_forest_pooled.png\n")
+  }
+}
+
 # Only the figures this script drew; F1 registers its own caption in the Python
 # STROBE step.
-MINE <- grep("^(F2B|F3|F4)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
+MINE <- grep("^(F2B|F3|F4|F5)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
 write_captions(file.path(FIG, "captions.md"), "pool_figures.R", MINE,
                list(site_name = sprintf("%d pooled", K),   # write_captions prefixes "Site "
                     clif_version = PROV$definition_versions$`protocol.json`,

@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.5.0",
+    "definition_version": "0.6.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -674,23 +674,28 @@
             "_grain": "admission; one row per model per term",
             "_numerator": "n/a -- this is a regression coefficient, not a count",
             "_denominator": "n_admissions, the complete-case count for that model",
-            "_caveat": "ONLY ROWS WITH poolable = TRUE MAY BE COMBINED. The ICU fixed effects are blanked at the site: location_name is site-local free text, so an `icuMICU` coefficient names nothing at another site. The thresholds are not shipped at all -- they depend on each site's covariate distribution and are not the same quantity across sites. The pooled estimand is therefore the WITHIN-SITE, ICU-ADJUSTED association. With k below heterogeneity_min_k the fixed-effect estimate is primary and tau-squared is descriptive only. A model with converged = FALSE in model_diagnostics.csv MUST BE EXCLUDED."
+            "_caveat": "ONLY ROWS WITH poolable = TRUE MAY BE COMBINED. The ICU fixed effects are blanked at the site: location_name is site-local free text, so an `icuMICU` coefficient names nothing at another site. The thresholds are not shipped at all -- they depend on each site's covariate distribution and are not the same quantity across sites. The pooled estimand is therefore the WITHIN-SITE, ICU-ADJUSTED association. With k below heterogeneity_min_k the fixed-effect estimate is primary and tau-squared is descriptive only. A model with converged = FALSE in model_diagnostics.csv MUST BE EXCLUDED.",
+            "not_poolable": [
+                "n_units"
+            ],
+            "_not_poolable_why": "n_units counts the ICU fixed effects FITTED AT THAT SITE. location_name is site-local free text, so the units are not shared and a sum would count (site, unit) pairs while reading as a number of units -- and the pooled estimand is the WITHIN-SITE, ICU-adjusted association, which makes each site's unit count a property of that site rather than of the pool. n_admissions does sum, because an admission means the same thing everywhere."
         },
         "07_outcome_model/model_covariance.csv": {
-            "method": "per_site_only",
+            "method": "covariance_meta",
             "grain": "admission",
             "keys": [
                 "model",
                 "term_row",
                 "term_col"
             ],
-            "_why": "The 2x2 covariance between the two exposure coefficients, so the centre can test them jointly rather than one at a time. Per-site because a covariance does not pool by addition; it is consumed alongside model_coefficients.csv.",
+            "_why": "The 2x2 between the two exposures, so the centre can test them JOINTLY rather than one at a time -- shipping standard errors alone forecloses that. POOLED WITH THE SAME WEIGHTS the coefficients used: under site independence Cov(b1_bar, b2_bar) = sum_i(w1_i*w2_i*Cov_i) / (sum w1 * sum w2). The diagonal must reproduce the pooled variances, which pool_covariance_meta asserts rather than assumes. REQUIRES paired_with to have been pooled first, because the weights come from there; pool_sites.R fails loudly if it has not.",
             "_order": 11,
             "_title": "Exposure coefficient covariance",
             "_grain": "admission",
             "_numerator": "n/a",
             "_denominator": "n_admissions",
-            "_caveat": "Shipped so a joint test is possible later; not pooled itself."
+            "_caveat": "Only cells whose BOTH terms pooled are produced -- a term dropped at one site has no weight there. k_sites names how many sites backed each cell and may be lower than for the coefficients.",
+            "paired_with": "07_outcome_model/model_coefficients.csv"
         },
         "07_outcome_model/exposure_distribution.csv": {
             "method": "sum_bins",
@@ -765,7 +770,11 @@
             "_grain": "admission",
             "_numerator": "admissions in that level",
             "_denominator": "admissions in the analysis set",
-            "_caveat": "The bottom level is exactly 0 and holds about half the cohort. It means two different things -- died, or never liberated -- and the split between them is in time_to_event, not here."
+            "_caveat": "The bottom level is exactly 0 and holds about half the cohort. It means two different things -- died, or never liberated -- and the split between them is in time_to_event, not here.",
+            "weighted_means": {
+                "mean_vfd_28": "n_admissions"
+            },
+            "_weighted_means_why": "mean_vfd_28 is the band's observed mean VFD-28, the value the adjusted expectation maps each band through (protocol.json band_values). It pools EXACTLY as sum(n_i * mean_i) / sum(n_i), because mean * n reconstructs the sum -- this is not an average of averages. The pooled mapping is what a centre-side curve would have to use; each site's own adjusted_prediction.csv keeps its own, which is why that file is heterogeneity_source."
         },
         "07_outcome_model/vfd_day_distribution.csv": {
             "method": "sum_counts",
@@ -904,15 +913,17 @@
         "bin_label",
         "bin_lo",
         "charted",
+        "is_exposure",
         "kind",
         "panel_hours",
         "reason",
+        "scale_note",
         "statistic",
         "unit",
         "window_minutes",
         "window_start_hr"
     ],
-    "_label_columns_why": "Carried from the first site into the POOLED row, never summed. window_start_hr is the hour a window starts, not a quantity -- summing it across sites produces a number with no meaning, and NA-ing it makes the pooled row unreadable. Found by the idempotence test. `denominator` was in this list and had to come out: it is a NUMERIC denominator in pooling_categorical and a STRING stratum label in dose_summary and balanced_panels. Being in both lists produced a duplicated column. Where it labels, it is a key.",
+    "_label_columns_why": "Columns CARRIED onto the POOLED row rather than summed or blanked. A non-numeric label that is not listed here is silently set to NA, and the undeclared-numeric guard in pool_sum_counts cannot catch it because it only inspects numeric columns -- which is exactly how is_exposure came back NA on the pooled coefficient rows and dropped them from the forest plot's own filter. If a POOLED row loses a label it should have kept, add it here.",
     "not_poolable_columns": [
         "ci_hi",
         "ci_lo",

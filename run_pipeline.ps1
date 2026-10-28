@@ -58,6 +58,8 @@ foreach ($s in $steps) {
 # ran; and once a check caught a real defect in a shipped file, the only thing
 # that could regenerate that file was the run the check was blocking.
 Write-Host "== Verifying the shareable outputs =="
+& Rscript tests/test_coefficient_meta.R
+if ($LASTEXITCODE -ne 0) { Write-Error "the inverse-variance pool failed its known-answer tests." }
 & $py tests/test_pooling.py
 if ($LASTEXITCODE -ne 0) {
   Write-Error "the federated-pooling exports did not pass their checks. Do NOT upload output/final_no_phi/ until this is resolved."

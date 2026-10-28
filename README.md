@@ -659,6 +659,8 @@ CLIF-fentanyl-trajectories/
 │   ├── test_paths.py             # the PHI boundary, and paths.R == paths.py
 │   ├── test_waterfall_cache.py   # the cache key covers every input
 │   ├── test_pooling.py           # pooling exports are exactly poolable
+│   ├── test_coefficient_meta.R   # the inverse-variance pool, against hand
+│   │                             #   computation -- metafor is not a dependency
 │   └── test_doses.py             # every charted dose unit converts correctly
 ├── multisite/                    # gitignored -- OTHER SITES' bundles as received,
 │   ├── ucmc/                     #   one dir per site, each an unmodified copy of
@@ -666,7 +668,9 @@ CLIF-fentanyl-trajectories/
 │   └── northwestern/             #   check_provenance.py and pool_sites.R
 ├── output/
 │   ├── pooled/                   # pool_sites.R output: one CSV per input file
-│   │                             #   with a POOLED row + heterogeneity.csv
+│   │                             #   with a POOLED row + heterogeneity.csv,
+│   │                             #   pooled_summary.md, and figures/ from
+│   │                             #   pool_figures.R (sites anonymised)
 │   ├── intermediate_phi/         # ALL patient-level artifacts
 │   │                             #   .parquet = pipeline input, .csv = review copy
 │   ├── final_no_phi/             # THE UPLOAD SET. PHI-free; one dir per script,

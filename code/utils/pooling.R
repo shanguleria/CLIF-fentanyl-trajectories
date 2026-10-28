@@ -368,3 +368,143 @@ selection_table <- function(stats, sizes, rows = NULL) {
 
   do.call(rbind, c(body, pct, n))
 }
+# Key builder, local so these functions carry no hidden globals: a generalised
+# function that reads an enclosing MIN_K or LABEL_COLS gives a silently wrong
+# answer when called from anywhere else (lessons.md #26).
+meta_key <- function(d, keys) {
+  do.call(paste, c(lapply(keys, function(k) as.character(d[[k]])), sep = "\r"))
+}
+
+# Inverse-variance fixed-effect meta-analysis of the exposure coefficients.
+# ON THE LOG-ODDS, never the odds ratio: exp() does not commute with a weighted
+# mean. Only `poolable` rows combine -- ICU fixed effects are blanked at the site
+# and thresholds are not shipped, so the pooled estimand is the within-site,
+# ICU-adjusted association. See pooling_spec.json coefficient_meta._why.
+pool_coefficient_meta <- function(d, keys, spec, rel, min_k,
+                                  label_cols = character(0),
+                                  not_poolable = character(0),
+                                  key_fn = meta_key) {
+  bcol <- spec[["coefficient"]]; scol <- spec[["standard_error"]]
+  stopifnot("coefficient_meta needs coefficient and standard_error declared" =
+              !is.null(bcol) && !is.null(scol))
+  if (!all(c(bcol, scol) %in% names(d))) return(NULL)
+
+  ok <- rep(TRUE, nrow(d))
+  if ("poolable" %in% names(d)) ok <- toupper(as.character(d$poolable)) == "TRUE"
+  b  <- suppressWarnings(as.numeric(d[[bcol]]))
+  se <- suppressWarnings(as.numeric(d[[scol]]))
+  ok <- ok & is.finite(b) & is.finite(se) & se > 0
+  if (!any(ok)) return(NULL)
+  dd <- d[ok, , drop = FALSE]; b <- b[ok]; se <- se[ok]
+
+  k <- key_fn(dd, keys)
+  split_by <- split(seq_along(b), k)
+  rows <- lapply(names(split_by), function(g) {
+    i <- split_by[[g]]
+    w <- 1 / se[i]^2
+    sw <- sum(w)
+    est <- sum(w * b[i]) / sw
+    sep <- sqrt(1 / sw)
+    # Cochran's Q and DerSimonian-Laird tau^2. DESCRIPTIVE ONLY below
+    # heterogeneity_min_k: Q has almost no power at small k, so the fixed-effect
+    # estimate stays primary and the role is stated in its own column rather than
+    # left to a reader comparing k against a number in another file.
+    Q <- sum(w * (b[i] - est)^2)
+    df <- length(i) - 1L
+    I2 <- if (df > 0 && Q > df) 100 * (Q - df) / Q else 0
+    C <- sw - sum(w^2) / sw
+    tau2 <- if (df > 0 && C > 0) max(0, (Q - df) / C) else 0
+    kd <- dd[i[1], intersect(c(keys, label_cols), names(dd)), drop = FALSE]
+    data.frame(
+      kd, site = "POOLED",
+      estimate = round(est, 6), std_error = round(sep, 6),
+      z = round(est / sep, 4),
+      p_value = signif(2 * stats::pnorm(-abs(est / sep)), 4),
+      odds_ratio = round(exp(est), 4),
+      ci_lo = round(est - 1.959964 * sep, 6),
+      ci_hi = round(est + 1.959964 * sep, 6),
+      or_ci_lo = round(exp(est - 1.959964 * sep), 4),
+      or_ci_hi = round(exp(est + 1.959964 * sep), 4),
+      n_admissions = if ("n_admissions" %in% names(dd))
+        sum(suppressWarnings(as.numeric(dd$n_admissions[i])), na.rm = TRUE) else NA_real_,
+      k_sites = length(i), Q = round(Q, 4), Q_df = df,
+      Q_p = if (df > 0) signif(stats::pchisq(Q, df, lower.tail = FALSE), 4) else NA_real_,
+      I2_pct = round(I2, 1), tau2 = round(tau2, 6),
+      heterogeneity_role = if (length(i) < min_k) "descriptive_only" else "reportable",
+      stringsAsFactors = FALSE)
+  })
+  out <- do.call(rbind, rows)
+
+  blanked <- setdiff(names(dd), c(names(out), "site"))
+  numeric_blanked <- blanked[vapply(blanked, function(nm) is.numeric(dd[[nm]]), logical(1))]
+  undeclared <- setdiff(numeric_blanked, c(not_poolable, unlist(spec[["not_poolable"]])))
+  if (length(undeclared))
+    stop(rel, ": numeric column(s) ", paste(undeclared, collapse = ", "),
+         " would be blanked on the POOLED row but are not declared in ",
+         "not_poolable_columns.", call. = FALSE)
+  for (nm in blanked) out[[nm]] <- NA
+
+  # The covariance pool must use the SAME weights, so they travel with the result
+  # rather than being recomputed and silently drifting.
+  attr(out, "weights") <- stats::setNames(
+    lapply(names(split_by), function(g) {
+      i <- split_by[[g]]
+      stats::setNames(1 / se[i]^2, as.character(dd$site[i]))
+    }),
+    vapply(names(split_by), function(g) {
+      i <- split_by[[g]][1]
+      paste(dd$model[i], dd$term[i], sep = "\r")
+    }, character(1)))
+  cat(sprintf("  %s: pooled %d term(s) over %d site(s)%s\n", rel, nrow(out),
+              length(unique(dd$site)),
+              if (length(unique(dd$site)) < min_k)
+                sprintf("; below heterogeneity_min_k = %d, tau^2 descriptive only", min_k)
+              else ""))
+  out
+}
+
+# The 2x2 between the two exposures, pooled so the centre can test them jointly.
+# Under site independence, with the SAME weights the estimates used:
+#   Cov(b1_bar, b2_bar) = sum_i(w1_i * w2_i * Cov_i) / (sum w1 * sum w2)
+# The diagonal must reproduce the pooled variances, which is asserted below.
+pool_covariance_meta <- function(d, spec, rel, coef_pooled) {
+  need <- c("model", "term_row", "term_col", "covariance")
+  if (!all(need %in% names(d))) return(NULL)
+  if (is.null(coef_pooled) || !nrow(coef_pooled)) return(NULL)
+  wmap <- attr(coef_pooled, "weights")
+  if (is.null(wmap)) return(NULL)
+  keyed <- paste(coef_pooled$model, coef_pooled$term, sep = "\r")
+
+  rows <- list()
+  for (m in unique(d$model)) {
+    dm <- d[d$model == m, , drop = FALSE]
+    for (a in unique(dm$term_row)) for (bb in unique(dm$term_col)) {
+      sel <- dm[dm$term_row == a & dm$term_col == bb, , drop = FALSE]
+      wa <- wmap[[paste(m, a, sep = "\r")]]; wb <- wmap[[paste(m, bb, sep = "\r")]]
+      if (is.null(wa) || is.null(wb)) next
+      s_use <- intersect(intersect(names(wa), names(wb)), as.character(sel$site))
+      if (!length(s_use)) next
+      num <- sum(vapply(s_use, function(s) {
+        cv <- suppressWarnings(as.numeric(sel$covariance[as.character(sel$site) == s][1]))
+        if (!is.finite(cv)) 0 else wa[[s]] * wb[[s]] * cv
+      }, numeric(1)))
+      den <- sum(wa[s_use]) * sum(wb[s_use])
+      rows[[length(rows) + 1L]] <- data.frame(
+        model = m, term_row = a, term_col = bb, site = "POOLED",
+        covariance = round(num / den, 12), k_sites = length(s_use),
+        stringsAsFactors = FALSE)
+    }
+  }
+  if (!length(rows)) return(NULL)
+  out <- do.call(rbind, rows)
+  diagr <- out[out$term_row == out$term_col, , drop = FALSE]
+  for (i in seq_len(nrow(diagr))) {
+    j <- which(keyed == paste(diagr$model[i], diagr$term_row[i], sep = "\r"))
+    if (!length(j)) next
+    stopifnot("the pooled covariance diagonal disagrees with the pooled standard error" =
+                abs(sqrt(diagr$covariance[i]) - coef_pooled$std_error[j[1]]) < 1e-5)
+  }
+  for (nm in setdiff(names(d), c(names(out), "site"))) out[[nm]] <- NA
+  cat(sprintf("  %s: pooled %d covariance cell(s)\n", rel, nrow(out)))
+  out
+}

@@ -88,6 +88,12 @@ done
 # Failing HERE is the useful place to fail -- the outputs exist and are wrong,
 # so the actionable instruction is "do not upload", which is what it says.
 echo "== Verifying the shareable outputs =="
+# Centre-side maths, run here for the same reason tests/test_pooling.py is:
+# a site that never pools still catches drift in the engine it ships.
+if ! Rscript tests/test_coefficient_meta.R; then
+  echo "ERROR: the inverse-variance pool failed its known-answer tests." >&2
+  exit 1
+fi
 if ! "$PY" tests/test_pooling.py; then
   echo "ERROR: the federated-pooling exports did not pass their checks." >&2
   echo "       Do NOT upload output/final_no_phi/ until this is resolved." >&2

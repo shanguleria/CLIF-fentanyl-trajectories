@@ -210,6 +210,25 @@ pool_sum_counts <- function(d, keys, spec, rel) {
     }, integer(1))), na.rm = TRUE)
     out[[pc]] <- round(recomputed, dec)
   }
+  # DECLARED weighted means. A mean does not pool from means -- but mean * n IS
+  # the sum, so where the file ships the weight beside the mean the pooled value
+  # is exact rather than an average of averages. Declared per file in
+  # weighted_means as {column: weight_column}; never inferred.
+  for (mc in names(spec[["weighted_means"]])) {
+    wc <- spec[["weighted_means"]][[mc]]
+    if (!all(c(mc, wc) %in% names(d))) next
+    x <- suppressWarnings(as.numeric(d[[mc]]))
+    w <- suppressWarnings(as.numeric(d[[wc]]))
+    use <- is.finite(x) & is.finite(w) & w > 0
+    num <- tapply(ifelse(use, x * w, NA_real_), k, sum_keep_na)
+    den <- tapply(ifelse(use, w, NA_real_), k, sum_keep_na)
+    dec <- max(c(0L, vapply(as.character(d[[mc]]), function(v) {
+      v <- sub("^.*\\.", "", v[grepl("\\.", v)])
+      if (!length(v)) 0L else nchar(sub("0+$", "", v))
+    }, integer(1))), na.rm = TRUE)
+    out[[mc]] <- round(as.vector(num[rownames(out)] / den[rownames(out)]), dec)
+  }
+
   # Numeric columns neither summed, labels nor recomputed percents become NA.
   blanked <- setdiff(names(d), c(names(out), "site"))
   numeric_blanked <- blanked[vapply(blanked, function(nm)
@@ -299,6 +318,7 @@ write_out <- function(rel, d) {
 }
 
 cat("\nPooling\n")
+COEF_POOLS <- list()
 for (rel in claimed) {
   spec <- FILES[[rel]]
   method <- spec[["method"]]
@@ -312,10 +332,44 @@ for (rel in claimed) {
     sufficient_stats = pool_sufficient(d, keys, unlist(spec[["stats"]])),
     sum_bins = pool_bins(d, keys, rel),
     count_matrix = pool_sum_counts(d, keys, spec, rel),
-    # Everything else falls through to NULL: per-site rows, no POOLED row -- correct
-    # for side_by_side, per_site_only and heterogeneity_source. coefficient_meta
-    # lands here deliberately (protocol.json model.outcome_model._pooling_why).
+    coefficient_meta = {
+      r <- pool_coefficient_meta(d, keys, spec, rel, min_k = MIN_K,
+                                 label_cols = LABEL_COLS,
+                                 not_poolable = NOT_POOLABLE, key_fn = key_of)
+      # The covariance pool needs these weights; stash under the file name the
+      # covariance entry declares in paired_with, so the link is by declaration
+      # and not by position in the loop.
+      # `<-`, NOT `<<-`: this loop body runs in the global environment, and `<<-`
+      # begins its search in the PARENT of the current scope -- so it would skip
+      # COEF_POOLS entirely and fail with "object not found".
+      COEF_POOLS[[rel]] <- r
+      r
+    },
+    covariance_meta = {
+      paired <- spec[["paired_with"]]
+      stopifnot("covariance_meta needs paired_with declared" = !is.null(paired))
+      cp <- COEF_POOLS[[paired]]
+      if (is.null(cp)) {
+        stop(rel, ": its paired_with file ", paired, " has not been pooled yet, so ",
+             "the inverse-variance weights are unavailable. The coefficient entry ",
+             "must come FIRST in pooling_spec.json's files object -- that ordering ",
+             "is load-bearing and this is the guard that says so.", call. = FALSE)
+      }
+      pool_covariance_meta(d, spec, rel, cp)
+    },
+    # Everything else falls through to NULL: per-site rows, no POOLED row --
+    # correct for side_by_side, per_site_only and heterogeneity_source.
     NULL)
+
+  # POOLED rows come back in whatever order the key split produced, which is
+  # ALPHABETICAL and therefore wrong for any key that is not: the ordinal bands
+  # came out (0,7] | (14,21] | (21,25] | (7,14] | 0, putting (14,21] before
+  # (7,14]. Reorder to the first-appearance order of the site rows, which is the
+  # order the sites declared. Applies to every method, not just sum_counts.
+  if (!is.null(pooled) && all(keys %in% names(pooled))) {
+    want <- unique(key_of(d, keys))
+    pooled <- pooled[order(match(key_of(pooled, keys), want)), , drop = FALSE]
+  }
 
   out <- if (is.null(pooled)) d else {
     common <- union(names(d), names(pooled))
@@ -391,6 +445,25 @@ write_summary <- function() {
            sprintf("- **Denominator:** %s", e[["_denominator"]]), "")
     if (!is.null(e[["_caveat"]]))
       L <- c(L, sprintf("> %s", e[["_caveat"]]), "")
+
+    # A coefficient file has no numerator, so the percents loop below writes
+    # nothing for it -- and the pooled odds ratio is the headline result of the
+    # whole study. Emit the exposure rows explicitly.
+    if (identical(e[["method"]], "coefficient_meta") && "is_exposure" %in% names(d)) {
+      ex <- d[toupper(as.character(d$is_exposure)) == "TRUE" &
+                d$model == "primary", , drop = FALSE]
+      if (nrow(ex)) {
+        ex$`OR (95% CI)` <- sprintf("%s (%s to %s)", ex$odds_ratio,
+                                    ex$or_ci_lo, ex$or_ci_hi)
+        ex <- ex[order(match(ex$term, unique(ex$term)),
+                       match(ex$site, c(sites, "POOLED"))), , drop = FALSE]
+        L <- c(L, "**Primary model.** Pooled by inverse variance on the log odds;",
+               "sensitivity models are in the CSV.", "",
+               md_table(ex, c("term", "site", "OR (95% CI)", "p_value",
+                              "n_admissions", "k_sites", "I2_pct",
+                              "heterogeneity_role")), "")
+      }
+    }
 
     for (pc in names(e[["percents"]])) {
       num <- e[["percents"]][[pc]]
