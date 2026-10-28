@@ -1953,9 +1953,14 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     BEFORE the qualifying filter, not after. Extending afterwards would credit a
     patient liberated at hour 640 and sent home at 660 with the 12 remaining
     hours, when the whole liberation is 32h and qualifies for nothing.
+
+    TWO DIFFERENT WINDOWS, and conflating them is how the ceiling broke. A spell
+    QUALIFIES on its full length anywhere in [0, horizon]; it ACCRUES only over
+    [landmark_hours, horizon]. See the comment on accrued_h.
     """
     horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
     succ_h = float(COV["outcomes"]["successful_extubation_hours"])
+    landmark_h = float(COV["cohort"]["landmark_hours"])
 
     # Takes the intervals rather than the raw series: _imv_intervals() merges the
     # whole waterfalled respiratory_support, which is millions of rows, and the
@@ -1988,10 +1993,27 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     # A liberation shorter than succ_h is a FAILED extubation and contributes
     # nothing -- SG: "extubated and reintubated within 48h, that is zero VFDs as
     # the extubation was unsuccessful". Several qualifying ones each count.
-    qual = free[free["dur_h"] >= succ_h]
+    qual = free[free["dur_h"] >= succ_h].copy()
+
+    # ACCRUAL STARTS AT THE LANDMARK, even though the clock starts at intubation.
+    # SG, 2026-10-27: "max VFDs allowed by our definition is 25." Without this the
+    # observed maximum was 27.3d, and the ceiling was the visible symptom of a
+    # real problem: free time inside the first 72h sits INSIDE THE EXPOSURE
+    # WINDOW. A patient off the ventilator for 51 of the first 72 hours had far
+    # less opportunity to receive a fentanyl titration, so exposure and outcome
+    # would be mechanically coupled -- exactly what the landmark design exists to
+    # prevent.
+    #
+    # The spell still has to QUALIFY on its full length: a 60h liberation is a
+    # successful extubation whether or not part of it predates the landmark. Only
+    # the hours CREDITED are clipped. MEASURED at UCMC: 154 blocks (2.29%) change,
+    # 15 lose more than a day, the largest loss is 2.32d, and the maximum becomes
+    # exactly 25.00d with nothing above it. Median and mean move by <= 0.01d.
+    qual["accrued_h"] = (qual["t_end_hr"].clip(upper=horizon_h)
+                         - qual["t_start_hr"].clip(lower=landmark_h)).clip(lower=0)
 
     out = pd.DataFrame(index=idx.index)
-    out["vfd_hours"] = (qual.groupby("encounter_block")["dur_h"].sum()
+    out["vfd_hours"] = (qual.groupby("encounter_block")["accrued_h"].sum()
                             .reindex(idx.index).fillna(0.0))
     out.loc[died_in, "vfd_hours"] = 0.0
     out["vfd_28"] = (out["vfd_hours"] / 24.0).round(2)

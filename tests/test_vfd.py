@@ -78,29 +78,55 @@ def test_the_clock_starts_at_imv_onset_and_stops_at_the_horizon():
     assert max(got.values()) <= B.COV["outcomes"]["vfd"]["horizon_days"]
 
 
-def test_the_25_day_ceiling_holds_only_for_continuous_early_ventilation():
-    """A CORRECTION, pinned so it cannot be undone. The protocol first claimed
-    VFD-28 from hour 0 equals VFD from the landmark with a 25-day horizon,
-    because every landmark patient is ventilated AT 72h. The premise is true and
-    the inference is false: a patient intubated briefly, liberated for 48h or
-    more, then reintubated and still ventilated at 72h is landmark-eligible and
-    genuinely earned those days. MEASURED at UCMC: 180 of 6,728 landmark blocks
-    (2.68%) accrue free hours before T, 124 exceed 25 days, max 27.3."""
-    # Ventilated without interruption to 72h: the ceiling does bind.
+def test_the_ceiling_is_25_days_because_accrual_starts_at_the_landmark():
+    """THE CEILING IS 25, AND THIS TEST HAS BEEN WRONG ONCE ALREADY.
+
+    An earlier version asserted the opposite -- that a liberation inside the
+    first 72h should be credited, making the ceiling 28. SG overruled it on
+    2026-10-27: "max VFDs allowed by our definition is 25." The ceiling was only
+    the visible symptom. The real problem is that free time inside the first 72h
+    sits INSIDE THE EXPOSURE WINDOW: a patient off the ventilator for 51 of the
+    first 72 hours had far less opportunity to receive a fentanyl titration, so
+    exposure and outcome would be mechanically coupled -- which is precisely what
+    the landmark design exists to prevent.
+
+    MEASURED at UCMC before the clamp: 124 blocks exceeded 25 days and the
+    maximum was 27.32. After: zero and 25.00.
+    """
+    # Ventilated without interruption to 72h, then free: the ceiling binds.
     got = _vfd({"b": (900, [(0, "IMV"), (72, "Room Air")])})
     assert got["b"] == days(HORIZON_H - 72) == pytest.approx(25.0)
 
-    # Intubated 4h, liberated 68h (>= 48h, so it qualifies), reintubated at 72h
-    # and ventilated thereafter. Landmark-eligible, and ABOVE the claimed ceiling
-    # is impossible here -- but the 68h is real and must be counted.
-    got = _vfd({"b": (900, [(0, "IMV"), (4, "Room Air"), (72, "IMV")])})
-    assert got["b"] == days(68), (
-        "a qualifying liberation inside the first 72h must count -- Methods says "
-        "VFD-28 FROM INTUBATION, not VFD-25 from the landmark")
-
-    # And the ceiling is genuinely 28, not 25: free from hour 4 onward.
+    # Free from hour 4 onward. The clock starts at intubation, so this is 668h of
+    # calendar time off the ventilator -- but only the 600h after the landmark
+    # accrue. Before the clamp this returned 27.83.
     got = _vfd({"b": (900, [(0, "IMV"), (4, "Room Air")])})
-    assert got["b"] > 25.0 and got["b"] == days(HORIZON_H - 4)
+    assert got["b"] == pytest.approx(25.0), "nothing may exceed the 25-day ceiling"
+
+    # Intubated 4h, liberated 68h, reintubated at 72h and ventilated thereafter.
+    # The liberation was real and was successful, but all of it predates the
+    # landmark, so it accrues nothing.
+    got = _vfd({"b": (900, [(0, "IMV"), (4, "Room Air"), (72, "IMV")])})
+    assert got["b"] == 0.0, (
+        "a liberation wholly inside the exposure window must accrue nothing")
+
+
+def test_a_spell_qualifies_on_its_full_length_but_accrues_only_after_T():
+    """TWO DIFFERENT WINDOWS. A spell QUALIFIES on its full length anywhere in
+    [0, horizon]; it ACCRUES only over [T, horizon]. Testing the 48h threshold on
+    the clipped length instead would make a successful extubation stop being one
+    because of where the landmark happens to fall -- and at UCMC the grid puts
+    160 spells across that boundary."""
+    # Liberated at hour 40, reintubated at hour 100. The spell is 60h, so it is a
+    # successful extubation; 28 of those hours fall after T and are credited.
+    got = _vfd({"b": (900, [(0, "IMV"), (40, "Room Air"), (100, "IMV")])})
+    assert got["b"] == days(28), (
+        "the spell is 60h and qualifies; only its post-landmark hours accrue")
+
+    # Same shape, but the spell is 40h -- a failed extubation. It accrues nothing
+    # even though 12h of it fall after the landmark.
+    got = _vfd({"b": (900, [(0, "IMV"), (60, "Room Air"), (100, "IMV")])})
+    assert got["b"] == 0.0, "a failed extubation accrues nothing on either side of T"
 
 
 # ------------------------------------------------------- what counts as earned
