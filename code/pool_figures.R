@@ -1,7 +1,9 @@
 # Purpose : Figures for the pooled multi-site analysis. Run at the coordinating
 #           centre over output/pooled/, after code/pool_sites.R.
 # Inputs  : output/pooled/*.csv
-# Outputs : output/pooled/figures/ : F2B, F3, F4 (+ F1 from pool_strobe.py)
+# Outputs : output/pooled/figures/ : named descriptively, NOT F-numbered --
+#           manuscript numbering changes and the abstract takes one figure,
+#           so numbering here only invited a collision
 #
 #   Rscript code/pool_figures.R
 #
@@ -19,6 +21,13 @@ source(here("code", "utils", "figures.R"))
 POOL <- here("output", "pooled")
 FIG  <- file.path(POOL, "figures")
 dir.create(FIG, recursive = TRUE, showWarnings = FALSE)
+# Every PNG here is drawn by this script, so clear them first: a renamed
+# figure otherwise leaves its old name behind to be read as a current one.
+old_pngs <- list.files(FIG, pattern = "\\.png$", full.names = TRUE)
+if (length(old_pngs)) {
+  invisible(file.remove(old_pngs))
+  cat(sprintf("  cleared %d figure(s) from a previous run\n", length(old_pngs)))
+}
 if (!file.exists(file.path(POOL, "pooled_provenance.json")))
   stop("run code/pool_sites.R first -- ", POOL, " has no pooled_provenance.json",
        call. = FALSE)
@@ -42,7 +51,7 @@ cs_label <- function(v) {
 }
 
 
-# ---- F2B. Pooled delivery-state prevalence ------------------------------------
+# ---- Pooled delivery-state prevalence ------------------------------------
 # Pools exactly: n per (window, state) over a denominator fixed at every window.
 # Replaces an alluvial, which cannot pool -- a ribbon is one patient's path.
 
@@ -67,7 +76,7 @@ p_prev <- house(
     labs(x = "Hours since the first IMV episode",
          y = "% of ventilation episodes"))
 n_pooled <- max(tapply(sp$n, sp$window_start_hr, sum))
-register_caption("F2B_state_prevalence_pooled.png",
+register_caption("state_prevalence_pooled.png",
   "Delivery-state prevalence over the first 72 hours, pooled",
   sprintf(paste0("%s ventilation episodes across %d sites. Numerator: episodes ",
                  "in that state in the window. Denominator: all anchor episodes, ",
@@ -78,12 +87,12 @@ register_caption("F2B_state_prevalence_pooled.png",
                  "ribbon is one patient's path and the per-episode sequences do ",
                  "not leave a site."),
           format(n_pooled, big.mark = ","), K))
-ggsave(file.path(FIG, "F2B_state_prevalence_pooled.png"), p_prev,
+ggsave(file.path(FIG, "state_prevalence_pooled.png"), p_prev,
        width = 8.4, height = 5.0, dpi = 200)
-cat("  F2B_state_prevalence_pooled.png\n")
+cat("  state_prevalence_pooled.png\n")
 
 
-# ---- F3 / F4. Unit variation, both metrics ------------------------------------
+# ---- Unit variation, both metrics: caterpillar and funnel ------------------------------------
 
 ua <- rd("06_unit_variation__unit_adherence.csv")
 ua <- ua[ua$unit_key == "location_name" & ua$site != "POOLED", ]
@@ -180,15 +189,13 @@ draw_pair <- function(kind) {
 
 for (kind in c("caterpillar", "funnel")) {
   res <- draw_pair(kind)
-  fnum <- if (kind == "caterpillar") "F3" else "F4"
   for (metric in names(res$plots)) {
     spec <- METRIC[[metric]]; cc <- res$caps[[metric]]
-    fn <- sprintf("%s%s_%s_%s.png", fnum, spec$panel, metric, kind)
+    fn <- sprintf("%s_%s_pooled.png", metric, kind)
     ggsave(file.path(FIG, fn), res$plots[[metric]]$p,
            width = 8.4, height = res$plots[[metric]]$h, dpi = 200)
     register_caption(fn,
-      sprintf("%s %s. %s by unit, %d units across %d sites",
-              fnum, spec$panel,
+      sprintf("%s by unit, %d units across %d sites",
               if (metric == "indication") "Documented indication" else
                 "Bolus co-administration",
               cc$n_units, K),
@@ -219,7 +226,7 @@ for (kind in c("caterpillar", "funnel")) {
 }
 
 
-# ---- F5. Forest plot of the exposure odds ratios ------------------------------
+# ---- Forest plot of the exposure odds ratios ------------------------------
 # Per-site estimates and the inverse-variance pool, on the PRIMARY model. The
 # sensitivities are in the CSV; six models on one panel is unreadable.
 cf_f <- "07_outcome_model__model_coefficients.csv"
@@ -273,12 +280,12 @@ if (file.exists(file.path(POOL, cf_f))) {
     p_f5 <- house(p_f5) + theme(panel.grid.major.y = element_blank(),
                                 panel.grid.major.x = element_line(colour = GRIDLINE,
                                                                   linewidth = 0.4))
-    ggsave(file.path(FIG, "F5_exposure_forest_pooled.png"), p_f5,
+    ggsave(file.path(FIG, "exposure_forest_pooled.png"), p_f5,
            width = 7.0, height = 1.4 + nrow(het) * (0.34 * length(lev) + 0.55),
            dpi = 300,
            bg = PAPER)
     register_caption(
-      "F5_exposure_forest_pooled.png",
+      "exposure_forest_pooled.png",
       "Does documenting an indication for a fentanyl increase track ventilator-free days, across sites?",
       sprintf(paste0(
         "Per-admission titration exposures against VFD-28, one panel per ",
@@ -305,12 +312,12 @@ if (file.exists(file.path(POOL, cf_f))) {
                              sprintf(" -- DESCRIPTIVE ONLY, k is below heterogeneity_min_k = %d, so the fixed-effect estimate is primary",
                                      as.integer(SPEC$heterogeneity_min_k)), "")),
               collapse = " ")))
-    cat("  F5_exposure_forest_pooled.png\n")
+    cat("  exposure_forest_pooled.png\n")
   }
 }
 
 
-# ---- F6. Pooled distribution of the two exposures -----------------------------
+# ---- Pooled distribution of the two exposures -----------------------------
 # Bars are the POOLED bins -- sum of counts over sum of denominators, never an
 # average of the sites' percentages. Site outlines sit behind them so between-site
 # spread is visible without a second figure.
@@ -337,10 +344,10 @@ if (file.exists(file.path(POOL, ed_f))) {
       labs(x = "Share of an admission's fentanyl increases meeting the condition",
            y = "% of admissions")
     p_f6 <- house(p_f6) + theme(legend.position = "none")
-    ggsave(file.path(FIG, "F6_exposure_histogram_pooled.png"), p_f6,
+    ggsave(file.path(FIG, "exposure_histogram_pooled.png"), p_f6,
            width = 7.0, height = 5.4, dpi = 300, bg = PAPER)
     register_caption(
-      "F6_exposure_histogram_pooled.png",
+      "exposure_histogram_pooled.png",
       "How often is a fentanyl increase paired with a bolus, or justified by a score, across sites?",
       sprintf(paste0(
         "Distribution of the two per-admission exposures over the first 72h, ",
@@ -360,12 +367,12 @@ if (file.exists(file.path(POOL, ed_f))) {
                       formatC(vapply(unique(pooled_ed$term_label), function(t)
                         max(pooled_ed$n_total[pooled_ed$term_label == t]), numeric(1)),
                         format = "d", big.mark = ",")), collapse = "; ")))
-    cat("  F6_exposure_histogram_pooled.png\n")
+    cat("  exposure_histogram_pooled.png\n")
   }
 }
 
 
-# ---- F7. Adjusted predicted VFD-28, one column per site -----------------------
+# ---- Adjusted predicted VFD-28, one column per site -----------------------
 # NOT POOLED, and deliberately so: the curve is standardised over each site's own
 # covariate distribution, so three curves are not three estimates of one quantity
 # (pooling_spec.json adjusted_prediction._why). Shown side by side instead.
@@ -400,14 +407,14 @@ if (file.exists(file.path(POOL, ap_f))) {
     p_f7 <- house(p_f7) +
       theme(legend.position = "none", strip.placement = "outside",
             panel.spacing.x = unit(0.9, "lines"))
-    ggsave(file.path(FIG, "F7_adjusted_prediction_by_site.png"), p_f7,
+    ggsave(file.path(FIG, "adjusted_prediction_by_site.png"), p_f7,
            # Floor the width at the x-axis TITLE's own length: the per-column
            # formula alone gives 4.6in at k = 1 and clips the title.
            width = max(6.6, 2.4 + 2.1 * length(unique(ap$label))),
            height = 5.6, dpi = 300,
            bg = PAPER)
     register_caption(
-      "F7_adjusted_prediction_by_site.png",
+      "adjusted_prediction_by_site.png",
       "Does documenting an indication for a fentanyl increase track ventilator-free days, at each site?",
       sprintf(paste0(
         "One column per site, %d in all. Top row: adjusted mean VFD-28 in days. ",
@@ -418,7 +425,8 @@ if (file.exists(file.path(POOL, ap_f))) {
         "different covariate distributions means three curves are not three ",
         "estimates of one quantity, so combining them would average over three ",
         "different populations while looking like a meta-analysis. What DOES ",
-        "pool is the exposure coefficient, by inverse variance, in F5. A pooled ",
+        "pool is the exposure coefficient, by inverse variance, in ",
+        "exposure_forest_pooled.png. A pooled ",
         "curve would have to be drawn FROM that pooled coefficient against a ",
         "chosen reference covariate distribution, which is a protocol decision ",
         "and is not done here. Y SCALES ARE FREE BETWEEN ROWS AND SHARED WITHIN ",
@@ -431,17 +439,17 @@ if (file.exists(file.path(POOL, ap_f))) {
                       formatC(vapply(unique(ap$label), function(l)
                         max(as.numeric(ap$n_admissions[ap$label == l])), numeric(1)),
                         format = "d", big.mark = ",")), collapse = "; ")))
-    cat("  F7_adjusted_prediction_by_site.png\n")
+    cat("  adjusted_prediction_by_site.png\n")
   }
 }
 
 
-# ---- F8. Per-unit exposure caterpillars, mirroring F3 -------------------------
+# ---- Per-unit exposure caterpillars, mirroring the unit-variation pattern -------------------------
 # The site-side figure draws violins from one row per admission; that stays
 # PHI-side, so exposure_by_unit.csv ships n / n_at_zero / median / q1 / q3 / mean
 # / sd instead. A caterpillar is what those columns support.
 #
-# THE POINT IS THE MEAN, not the median, which F3 would otherwise suggest: about
+# THE POINT IS THE MEAN, not the median the unit-variation caterpillars would
 # half of each exposure is exactly zero, so most units have median = q1 = 0 and a
 # caterpillar of medians is a column on the floor. The mean also POOLS EXACTLY
 # from n and mean, so the reference line is the same quantity as the points.
@@ -478,8 +486,7 @@ if (file.exists(file.path(POOL, eu_f))) {
     pal <- grDevices::hcl.colors(length(unique(d$grp)), "Dark 3")
     names(pal) <- sort(unique(d$grp))
 
-    panel <- if (ex == "Pindicated") "A" else "B"
-    fn <- sprintf("F8%s_%s_by_unit_pooled.png", panel, tolower(ex))
+    fn <- sprintf("exposure_by_unit_%s.png", tolower(ex))
     p <- house(
       ggplot(d, aes(100 * mean, unit_lab, colour = grp)) +
         geom_vline(xintercept = ref, colour = INK, linetype = "22",
@@ -514,7 +521,8 @@ if (file.exists(file.path(POOL, eu_f))) {
         "exactly from n and mean, so the dashed reference line -- the pooled ",
         "mean over the units drawn, %.1f%% -- is the same quantity as the ",
         "points. BARS ARE THE INTERQUARTILE RANGE, which is the SPREAD OF ",
-        "ADMISSIONS WITHIN THE UNIT and NOT a confidence interval: unlike F3, ",
+        "ADMISSIONS WITHIN THE UNIT and NOT a confidence interval: unlike the ",
+        "unit-variation caterpillars, whose bars ARE bootstrap intervals, ",
         "overlap here says nothing about precision. Units are coloured by the ",
         "mCIDE location_category, which means the same thing at every site ",
         "where location_name is site-local free text. THE SHARE AT EXACTLY ZERO ",
@@ -533,9 +541,9 @@ if (file.exists(file.path(POOL, eu_f))) {
   }
 }
 
-# Only the figures this script drew; F1 registers its own caption in the Python
-# STROBE step.
-MINE <- grep("^(F2B|F3|F4|F5|F6|F7|F8)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
+# FIG is cleared at the start and everything in it is drawn above, so no name
+# pattern is needed -- and none can go stale the next time a figure is renamed.
+MINE <- list.files(FIG, pattern = "\\.png$")
 write_captions(file.path(FIG, "captions.md"), "pool_figures.R", MINE,
                list(site_name = sprintf("%d pooled", K),   # write_captions prefixes "Site "
                     clif_version = PROV$definition_versions$`protocol.json`,
