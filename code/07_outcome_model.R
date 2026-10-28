@@ -77,8 +77,38 @@ EXPOSURES  <- unlist(SPEC$exposures)
 COVARIATES <- unlist(SPEC$covariates)
 MIN_UNIT_N <- as.integer(SPEC$min_admissions_per_unit)
 SENS_MIN   <- as.integer(SPEC$sensitivity_min_increase_events)
+
+# THE EXPOSURE REPORTING UNIT. Both exposures are shares on [0, 1], so an
+# unscaled coefficient is a 0% -> 100% contrast: an admission where every
+# increase was documented against one where none was. With half the cohort at
+# exactly zero that contrast describes almost nobody, and a per-percentage-point
+# figure is too small to read and too easy to mistake for the per-unit one.
+# SG set 10 percentage points as the clinically plausible step, 2026-10-27.
+#
+# The MODEL terms carry the scaling and say so in their names; the descriptive
+# tables and all three figures keep the natural share scale, because a share is
+# what was measured. Naming them apart is what stops a coefficient being read
+# against the wrong unit -- see protocol.json _exposure_scale_why.
+EXP_SCALE <- as.numeric(SPEC$exposure_scale_per)
+stopifnot(
+  "protocol.json must declare model.outcome_model.exposure_scale_per" =
+    length(EXP_SCALE) == 1 && is.finite(EXP_SCALE),
+  "the exposure scale must be a positive fraction of the [0,1] share" =
+    EXP_SCALE > 0 && EXP_SCALE <= 1)
+EXP_SCALE_PP <- round(EXP_SCALE * 100)
+MODEL_EXPOSURES <- sprintf("%s_per%dpp", EXPOSURES, EXP_SCALE_PP)
 LANDMARK_H <- COV$cohort$landmark_hours
 MIN_CELL   <- COV$reporting$small_cell_min_den
+
+# The ICU-only sensitivity restricts on the mCIDE location_category, which means
+# the same thing at every site. Checked against the categories the study already
+# declares it attributes, so this cannot name a category no care interval carries.
+ICU_CAT <- tolower(as.character(SPEC$sensitivity_icu_only_location_category))
+ATTR_CATS <- tolower(unlist(COV$unit_variation$attributed_location_categories))
+stopifnot(
+  "protocol.json must declare sensitivity_icu_only_location_category" =
+    length(ICU_CAT) == 1 && nzchar(ICU_CAT),
+  "the ICU-only category must be one the study attributes" = ICU_CAT %in% ATTR_CATS)
 
 # The ordinal cut points. Declared, never chosen here: two sites cutting VFD-28
 # at different days are not estimating the same parameter.
@@ -211,16 +241,39 @@ flow("With >= 1 UPTITRATION (not initiation alone)", nrow(d),
 # partly determined by the exposure and would make a baseline covariate
 # post-exposure. See protocol.json model.outcome_model._icu_attribution_why.
 icu <- icu[icu$t_start_hr <= 0 & icu$t_end_hr > 0, ]
-icu <- icu[!duplicated(icu$encounter_block), c("encounter_block", "location_name")]
+# location_category travels with location_name. It is the mCIDE-controlled key --
+# `icu` or `ed` per unit_variation.attributed_location_categories -- and it is
+# what the ICU-only sensitivity restricts on. care_setting cannot serve: it
+# resolves an ICU row to its location_type SUBTYPE (general_icu, burn_icu, ...),
+# so it answers "which ICU", never "is this an ICU".
+icu <- icu[!duplicated(icu$encounter_block),
+           c("encounter_block", "location_name", "location_category")]
 d <- merge(d, icu, by = "encounter_block", all.x = TRUE)
-d$location_name[is.na(d$location_name)] <- "unattributed"
 
 # `unattributed` is a real group -- no attributed care location covers hour 0 --
 # and is kept as its own level rather than dropped or merged, because merging it
-# into a ward it was not in would be a fabrication.
+# into a ward it was not in would be a fabrication. It is labelled on BOTH keys,
+# so the ICU-only restriction excludes it explicitly rather than by an NA
+# comparison that would silently return NA and drop the row anyway.
 d$location_name[is.na(d$location_name)] <- "unattributed"
+d$location_category[is.na(d$location_category)] <- "unattributed"
 d$icu <- factor(d$location_name)
 cat(sprintf("  ICU levels before collapsing: %d\n", nlevels(d$icu)))
+
+# COMPOSITION BY CARE CATEGORY, printed every run. The fixed effects are named
+# "ICU" throughout and at UCMC the largest level is the ED, so this is the line
+# that stops that being forgotten -- and it is what the ICU-only sensitivity
+# restricts on, so its denominator should never be a surprise.
+comp <- as.data.frame(table(location_category = tolower(d$location_category)),
+                      stringsAsFactors = FALSE)
+comp$pct <- round(100 * comp$Freq / nrow(d), 1)
+cat("  Care category at hour 0:\n")
+for (i in seq_len(nrow(comp))) {
+  cat(sprintf("    %-14s %6s  %5.1f%%%s\n", comp$location_category[i],
+              format(comp$Freq[i], big.mark = ","), comp$pct[i],
+              if (identical(comp$location_category[i], ICU_CAT))
+                "   <- the ICU-only sensitivity" else ""))
+}
 # THE COLLAPSE HAPPENS PER MODEL FRAME, not here. Each model drops a different
 # set of incomplete cases, so a level that clears the threshold on 2,897
 # admissions can fall to one on the 2,472 that are complete -- which is exactly
@@ -254,8 +307,25 @@ vfd_tab$pct <- round(100 * vfd_tab$n_admissions / nrow(d), 1)
 cat("\nVFD-28 as an ordinal outcome\n")
 print(vfd_tab, row.names = FALSE)
 
-# Complete case, declared rather than left to clm()'s default.
-NEED <- c("Pbolus", "Pindicated", "age", "sex", "cci", "sofa_baseline", "icu")
+# THE MODEL-SCALE EXPOSURES. Dividing the column -- rather than rescaling the
+# coefficient afterwards -- is what makes the estimate, its standard error, its
+# interval and the variance-covariance block all land on the same scale without
+# five hand conversions. It matters most for model_covariance.csv, which is the
+# pooling payload: a variance scales by the SQUARE of the factor while an
+# estimate scales linearly, so a hand conversion that treats them alike corrupts
+# an inverse-variance pool silently instead of failing.
+for (i in seq_along(EXPOSURES)) {
+  d[[MODEL_EXPOSURES[i]]] <- d[[EXPOSURES[i]]] / EXP_SCALE
+}
+stopifnot("the scaled exposures must reach the model frame" =
+            all(MODEL_EXPOSURES %in% names(d)))
+cat(sprintf("\nExposure reporting unit: one OR per %d percentage points (%s)\n",
+            EXP_SCALE_PP, paste(MODEL_EXPOSURES, collapse = ", ")))
+
+# Complete case, declared rather than left to clm()'s default. Derived from the
+# config rather than restated: a hardcoded list here would make adding a
+# covariate to protocol.json a silent no-op for the completeness check.
+NEED <- c(EXPOSURES, COVARIATES)
 d$.complete <- stats::complete.cases(d[, NEED])
 flow("Complete on every model covariate", sum(d$.complete),
      "missing a covariate -- sofa_baseline is the binding one")
@@ -303,7 +373,21 @@ by_unit <- do.call(rbind, lapply(EXPOSURES, function(v) {
   do.call(rbind, lapply(levels(d$icu), function(u) {
     x <- d[[v]][d$icu == u]
     if (!length(x)) return(NULL)
-    data.frame(exposure = v, location_name = u, n_admissions = length(x),
+    # location_category SHIPS BESIDE THE NAME. location_name is site-local free
+    # text, so a coordinating centre reading another site's bundle cannot tell
+    # an ICU from an ED from a ward -- which is exactly the distinction the
+    # ICU-only sensitivity turns on, and the reason the ED's 42% share went
+    # unnoticed here until it was looked for. The category is mCIDE-controlled
+    # and means the same thing everywhere.
+    cat_u <- unique(tolower(d$location_category[d$icu == u]))
+    stopifnot("a location_name maps to more than one location_category" =
+                length(cat_u) == 1)
+    data.frame(exposure = v, location_name = u, location_category = cat_u,
+               n_admissions = length(x),
+               # The POINT MASS, as a count so it pools. The figure labels this
+               # share per unit, and a number shown in a panel that no shipped
+               # file carries cannot be checked or combined by the centre.
+               n_at_zero = sum(x == 0),
                median = round(median(x), 3),
                q1 = round(quantile(x, .25, names = FALSE), 3),
                q3 = round(quantile(x, .75, names = FALSE), 3),
@@ -315,7 +399,7 @@ suppressed <- by_unit$n_admissions < MIN_CELL
 if (any(suppressed)) {
   cat(sprintf("  suppressing %d unit-exposure cell(s) below reporting floor %d\n",
               sum(suppressed), MIN_CELL))
-  by_unit[suppressed, c("median", "q1", "q3", "mean", "sd")] <- NA
+  by_unit[suppressed, c("n_at_zero", "median", "q1", "q3", "mean", "sd")] <- NA
 }
 
 # Collinearity: the question SG asked before the model was written. Pearson for
@@ -394,8 +478,35 @@ register_caption("exposure_by_unit.png",
   sprintf(paste0("Per-admission exposure by the ICU the patient was INTUBATED IN ",
                  "(the attributed care location containing hour 0, not the modal ",
                  "unit over the exposure window, which would be partly determined ",
-                 "by the exposure). Violin shows the full within-unit ",
-                 "distribution, box the median and IQR; n under each label. ",
+                 "by the exposure). ONE POINT PER ADMISSION, jittered ",
+                 "HORIZONTALLY ONLY so that a value of exactly zero is drawn AT ",
+                 "zero -- both exposures have a point mass on that bound, and ",
+                 "vertical jitter would read as documentation that did not ",
+                 "happen. Diamond is the median; the percentage above each unit ",
+                 "is the share of its admissions at exactly zero. POINTS ARE ",
+                 "SINA-POSITIONED, offset by the LOCAL density on the same ",
+                 "width normalisation as the violin outline, so every admission ",
+                 "sits inside the envelope; uniform jitter ignores the envelope ",
+                 "and sprays points past the waist above the zero spike. The ",
+                 "density is drawn at the DEFAULT bandwidth -- smoothing it ",
+                 "further made the panel tidier and misleading, rendering a unit ",
+                 "with 61%% of admissions at exactly zero as an almost uniform ",
+                 "distribution. NO BOX: with half of this variable at one value ",
+                 "the median and Q1 coincide on the floor for most units. The ",
+                 "zero share is LABELLED rather than drawn because neither a ",
+                 "violin nor overlapping dots distinguish 50%% from 80%%, and ",
+                 "it ships as n_at_zero beside n_admissions so the label can be ",
+                 "recomputed. A UNIT NEEDS AT LEAST %d ADMISSIONS TO APPEAR ",
+                 "HERE AT ALL and is otherwise absent from the panel: below ",
+                 "that the point, the median and the zero share are all the ",
+                 "same one or two patients' exposure against a named unit. Such ",
+                 "units still ship in exposure_by_unit.csv with their n and ",
+                 "their statistics blanked, so the count is auditable even ",
+                 "though the unit is not drawn. HORIZONTAL ",
+                 "BANDS ARE REAL: the median admission contributes 4 increase ",
+                 "events, so attainable shares form a sparse rational grid and ",
+                 "the banding is the small-denominator limitation, not a ",
+                 "rendering artifact. n under each label. ",
                  "UNITS ARE SHOWN AS CHARTED HERE -- the collapsing of units ",
                  "below %d admissions into 'other' happens inside each MODEL, on ",
                  "the frame actually fitted, because complete-case filtering ",
@@ -403,21 +514,116 @@ register_caption("exposure_by_unit.png",
                  "FIRST: if it dwarfs the between-unit differences, unit is not ",
                  "where the variation lives. Units carry their real names here; ",
                  "audience-facing versions anonymise them."),
-          MIN_UNIT_N))
+          MIN_CELL, MIN_UNIT_N))
+
+# ONE POINT PER ADMISSION, NOT A BOX. Both exposures have a point mass at exactly
+# zero -- Pindicated is 0 for 49.5% of admissions -- so median and Q1 coincide on
+# the floor for most units and the box degenerates to a line on the axis. A box
+# that cannot show the thing holding half the data is the wrong mark here.
+#
+# JITTER IS HORIZONTAL ONLY (height = 0). These are proportions bounded at 0 with
+# the mass sitting ON that bound; vertical jitter would move true zeros up to a
+# few percent and read as "a little documentation" where there was none. The
+# scatter below jitters both axes on purpose -- it is a collinearity check, not a
+# level -- and the two must not be made to match.
+#
+# The horizontal banding this produces is REAL AND WORTH SEEING: the median
+# admission has 4 increase events, so attainable values are a sparse rational
+# grid (0, 1/4, 1/3, 1/2, 1...). The bands ARE the small-denominator problem the
+# header names as the main threat to this analysis.
+# VIOLIN PLUS ONE POINT PER ADMISSION, in the r-charts violin+dotplot idiom SG
+# asked for: filled envelope, ink outline, every admission drawn inside it.
+#
+# THE POINTS ARE SINA-POSITIONED, NOT JITTERED, and that is what makes the
+# combination work here. A width-normalised violin is at its widest where the
+# density peaks -- for these exposures that is the spike at zero -- so above the
+# spike the envelope narrows to a waist. Uniform jitter ignores the envelope and
+# sprays points outside it (tried, rendered, rejected). Offsetting each point by
+# the LOCAL density, scaled the way geom_violin(scale = "width") scales the
+# outline, fills the violin exactly.
+#
+# Hand-rolled rather than taking ggforce::geom_sina: the pinned stack IS the
+# cross-site reproducibility guarantee, and one figure does not justify adding
+# to it. Eight lines, and the scaling is the same expression the violin uses.
+#
+# ADJUST IS LEFT AT THE DEFAULT 1. Smoothing it to 2 made the panel prettier and
+# WRONG -- it smeared the atom at zero across the whole range, so N08S, which has
+# 61% of its admissions at exactly zero, rendered as an almost uniform
+# distribution. Rendered, compared, discarded.
+#
+# The median diamond and the "% at 0" label stay: a violin cannot show a point
+# mass legibly either, and the share at zero is the dominant feature of both
+# exposures.
+long_ex$n_unit <- unit_n$n[match(long_ex$icu, unit_n$icu)]
+
+# Everything drawn is computed on units at or above the disclosure threshold.
+# At a unit with one admission the point, the median and the zero share are all
+# that single patient's value against a named unit -- what
+# reporting.small_cell_min_den exists to stop. The unit keeps its place on the
+# axis with its n, so the reader sees it was suppressed and not dropped.
+# SG, 2026-10-28: a unit needs at least MIN_CELL admissions to appear in the
+# figure at all. Earlier these kept an empty axis slot so the reader could see
+# they were suppressed; SG's call is that a named column with nothing in it is
+# noise, not disclosure. droplevels is what actually removes the slot -- without
+# it the factor level survives and ggplot keeps drawing the gap.
+# The unit still SHIPS in exposure_by_unit.csv with its n and its statistics
+# blanked, so nothing is hidden from the coordinating centre; it is only absent
+# from the panel. (At UCMC this is ER COMER, n = 1 -- Comer Children's ER, 10
+# intervals across 10 episodes in the whole care-intervals table.)
+pts <- droplevels(long_ex[long_ex$n_unit >= MIN_CELL, ])
+
+VIOLIN_W <- 0.90
+sina_offset <- function(v) {
+  if (length(v) < 2) return(rep(0, length(v)))
+  de <- stats::density(v, adjust = 1, from = min(v), to = max(v))
+  w <- stats::approx(de$x, de$y, xout = v, rule = 2)$y
+  w <- w / max(w, na.rm = TRUE)          # the scale = "width" normalisation
+  stats::runif(length(v), -1, 1) * w * (VIOLIN_W / 2) * 0.95
+}
+pts$xoff <- stats::ave(pts$value, interaction(pts$exposure, pts$icu_lab, drop = TRUE),
+                       FUN = sina_offset)
+pts$xnum <- as.numeric(pts$icu_lab) + pts$xoff
+
+# Derived FROM by_unit rather than recomputed from the frame: the panel and the
+# shipped CSV then cannot disagree, and the suppression is applied in one place.
+agg <- by_unit[by_unit$n_admissions >= MIN_CELL, ]
+agg$icu_lab <- factor(agg$location_name, levels = unit_n$icu,
+                      labels = levels(long_ex$icu_lab))
+# Re-level onto the units the panel actually draws, or the diamonds and labels
+# are positioned against a level set the x axis no longer has.
+agg$icu_lab <- factor(as.character(agg$icu_lab), levels = levels(pts$icu_lab))
+agg$exposure <- factor(agg$exposure, levels = EXPOSURES,
+                       labels = unname(EXP_LAB[EXPOSURES]))
+agg$med <- agg$median
+# INTEGER-FIRST, and the reason is not pedantry: 46/80 is 0.575, which is not
+# exactly representable, so 100 * (n/d) gives 57.4999... and prints "57%" while
+# a reader recomputing (100*n)/d from the shipped counts gets 57.5 and prints
+# "58%". A panel number that cannot be reproduced from the CSV beside it is the
+# traceability failure, however small the number.
+agg$p0  <- (100 * agg$n_at_zero) / agg$n_admissions
 
 p_unit <- house(
-  ggplot(long_ex, aes(icu_lab, value, fill = exposure)) +
-    geom_violin(scale = "width", width = 0.85, colour = NA, alpha = 0.55) +
-    geom_boxplot(width = 0.16, outlier.shape = NA, colour = INK,
-                 fill = PAPER, linewidth = 0.3) +
+  ggplot(pts, aes(icu_lab, value)) +
+    geom_violin(data = pts, aes(fill = exposure), scale = "width",
+                width = VIOLIN_W, adjust = 1, trim = TRUE,
+                colour = INK, linewidth = 0.35, alpha = 0.70) +
+    geom_point(data = pts, aes(x = xnum), size = 0.45, alpha = 0.22,
+               shape = 16, colour = INK) +
+    geom_point(data = agg, aes(y = med, fill = exposure), shape = 23,
+               size = 2.0, colour = INK, stroke = 0.4) +
+    geom_text(data = agg, aes(y = 1.10, label = sprintf("%.0f%% at 0", p0)),
+              size = 2.3, colour = INK) +
     facet_wrap(~exposure, ncol = 1) +
     scale_fill_manual(values = unname(EXP_COL[EXPOSURES]), guide = "none") +
-    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.25),
+    # Headroom to 1.14 for the "% at 0" row. NOT cosmetic: ggplot DROPS data
+    # outside scale limits, so with limits = c(0, 1) every label silently
+    # vanishes and the panel looks fine without them.
+    scale_y_continuous(limits = c(0, 1.14), breaks = seq(0, 1, 0.25),
                        labels = scales::percent_format(1)) +
     labs(x = NULL, y = "Share of increase events") +
     theme(axis.text.x = element_text(size = 8, colour = INK)))
 ggsave(file.path(dirs$phase, "exposure_by_unit.png"), p_unit,
-       width = 9.0, height = 6.0, dpi = 200)
+       width = 9.0, height = 6.2, dpi = 200)
 
 # Scatter: the collinearity check, drawn. Jittered because both axes are
 # proportions on a small denominator and hundreds of admissions sit on the exact
@@ -456,8 +662,10 @@ ggsave(file.path(dirs$phase, "exposure_scatter.png"), p_sc,
 # at or below a level, and we negate nothing, so read the sign against the
 # ordering of vfd_ord and not against intuition.
 
-FORM_PRIMARY <- stats::as.formula(
-  "vfd_ord ~ Pbolus + Pindicated + age + sex + cci + sofa_baseline + icu")
+# Built from the config, not restated. The exposure terms are the SCALED ones, so
+# the shipped coefficient names say which unit they are in.
+FORM_PRIMARY <- stats::as.formula(paste(
+  "vfd_ord ~", paste(c(MODEL_EXPOSURES, COVARIATES), collapse = " + ")))
 FORM_COVERAGE <- stats::update(FORM_PRIMARY, . ~ . + sofa_baseline_n_components)
 
 # A fixed effect needs enough admissions to be identified. Rare units collapse to
@@ -527,6 +735,20 @@ MODELS <- list(
           sprintf("sensitivity_min_%d_events", SENS_MIN),
           sprintf(paste0("restricted to >= %d increase events -- SG's check on ",
                          "the small denominator"), SENS_MIN)),
+  # ICU-ONLY. The fixed effects are called "ICU" everywhere, but the largest
+  # level is the Emergency Department and a tenth of admissions are
+  # unattributed. The ED documents indication at less than half the ICU rate
+  # while dosing almost identically (2026-09-30), so the biggest contrast in
+  # Pindicated between levels is a CHARTING difference. The fixed effect absorbs
+  # that level shift already; this asks whether the exposure association
+  # survives removing the setting entirely. A sensitivity, not the primary --
+  # intubation in the ED is a real clinical course.
+  fit_one(d[tolower(d$location_category) == ICU_CAT, ], FORM_PRIMARY,
+          "sensitivity_icu_only",
+          sprintf(paste0("restricted to admissions whose care location at hour ",
+                         "0 has location_category == '%s' -- excludes the ED ",
+                         "and unattributed, where documented indication is ",
+                         "measurably sparser than dosing"), ICU_CAT)),
   # PARTIAL PROPORTIONAL ODDS. Added after the PO test was repaired and turned
   # out to FAIL for age (p = 1.3e-08), cci (p = 9.9e-05) and sex (p = 0.028)
   # while HOLDING for both exposures and for sofa_baseline. A single odds ratio
@@ -536,7 +758,11 @@ MODELS <- list(
   # adjustment terms rather than the estimands, and the exposure coefficient is
   # what travels to the pool. If the exposure ORs move materially between this
   # and the primary, the primary is the one to doubt.
-  fit_one(d, stats::as.formula("vfd_ord ~ Pbolus + Pindicated + sofa_baseline + icu"),
+  fit_one(d, stats::as.formula(paste(
+            "vfd_ord ~",
+            paste(c(MODEL_EXPOSURES,
+                    setdiff(COVARIATES, c("age", "sex", "cci"))),
+                  collapse = " + "))),
           "sensitivity_partial_po",
           paste0("age, sex and cci given nominal (cut-point-specific) effects ",
                  "because they violate proportional odds; exposures keep one OR"),
@@ -570,7 +796,7 @@ tidy_one <- function(m) {
     z = round(co[, 3], 4), p_value = signif(co[, 4], 4),
     odds_ratio = round(exp(co[, 1]), 4),
     n_admissions = m$n, n_units = m$n_units,
-    is_exposure = rownames(co) %in% EXPOSURES,
+    is_exposure = rownames(co) %in% MODEL_EXPOSURES,
     stringsAsFactors = FALSE)
   # TWO SCALES, NAMED. estimate/std_error/ci_* are LOG ODDS -- that is the scale
   # inverse-variance pooling needs. odds_ratio/or_ci_* are the exponentiated
@@ -584,7 +810,10 @@ tidy_one <- function(m) {
   }
   out$or_ci_lo <- round(exp(out$ci_lo), 4)
   out$or_ci_hi <- round(exp(out$ci_hi), 4)
-  out$scale_note <- "estimate/std_error/ci_* are log odds; odds_ratio/or_ci_* are exp()"
+  out$scale_note <- sprintf(paste0("estimate/std_error/ci_* are log odds; ",
+    "odds_ratio/or_ci_* are exp(). EXPOSURE TERMS ARE PER %d PERCENTAGE ",
+    "POINTS of the share, not per unit share -- see protocol.json ",
+    "model.outcome_model._exposure_scale_why"), EXP_SCALE_PP)
   rownames(out) <- NULL
   out
 }
@@ -612,7 +841,7 @@ print(show, row.names = FALSE)
 vcov_rows <- do.call(rbind, lapply(MODELS, function(m) {
   V <- tryCatch(stats::vcov(m$fit), error = function(e) NULL)
   if (is.null(V)) return(NULL)
-  present <- intersect(EXPOSURES, rownames(V))
+  present <- intersect(MODEL_EXPOSURES, rownames(V))
   if (length(present) < 2) return(NULL)
   g <- expand.grid(term_row = present, term_col = present,
                    stringsAsFactors = FALSE)

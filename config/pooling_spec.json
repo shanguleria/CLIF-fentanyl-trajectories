@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.3.0",
+    "definition_version": "0.4.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -725,7 +725,8 @@
                 "exposure",
                 "location_name"
             ],
-            "_why": "Per-unit medians and IQRs for the violin figure and for between-unit dispersion. Quantiles do not pool; the RANGE across units is what to report, and location_name is site-local so these rows pass through per site.",
+            "_why": "Per-unit medians and IQRs for the per-unit figure and for between-unit dispersion. Quantiles do not pool; the RANGE across units is what to report, and location_name is site-local so these rows pass through per site.",
+            "_location_category_column_why": "Added 2026-10-27 for protocol.json 0.13.0, alongside the icu_only sensitivity. location_name is SITE-LOCAL FREE TEXT -- 'N08S' and 'ED CCD' mean nothing at Northwestern or Rush -- so without the mCIDE location_category beside it the centre cannot tell an ICU row from an ED row, and the per-unit rows cannot be grouped into anything comparable across sites. This is not hypothetical: at UCMC the Emergency Department is the LARGEST level at 1,212 of 2,897 admissions (41.8%) while every description of the model called these 'ICU fixed effects', and that went unnoticed until the composition was measured. The column is a LABEL, not a quantity: it is functionally determined by location_name, so it is deliberately NOT added to `keys` -- the grain is still one row per (exposure, location_name) and adding it would imply a finer grain than the file has. It needs no label_columns entry either, because heterogeneity_source falls through pool_sites.R without reaching pool_sum_counts, where the label-versus-blank logic lives.",
             "_order": 13,
             "_title": "Exposure by ICU",
             "_grain": "admission",
@@ -871,6 +872,7 @@
     "_changelog": {
         "0.2.0": "2026-10-27, for protocol.json 0.8.0. Four 05 files gained `cohort` as their FIRST key (all | landmark). Four method checks moved to 05_titration/diagnostics/ and their spec keys moved with them. Table 1 strata changed from predominant dose band to cohort membership, so `stratum` in pooling_categorical.csv and pooling_continuous.csv takes overall | Landmark | Not landmark. A bundle from 0.1.0 WILL be refused: the moved files arrive at paths this spec does not claim, which is the intended loud failure rather than a silent partial pool.",
         "0.1.0": "2026-10-26. First version, written with code/pool_sites.R.",
+        "0.4.0": "2026-10-27, for protocol.json 0.13.0. Adds the location_category column to 07_outcome_model/exposure_by_unit.csv so a per-unit row can be identified as an ICU or an ED at the centre, where location_name is site-local free text and says nothing. No file is added or removed and no method changes; the grain of every entry is unchanged. Also records the exposure reporting unit: both 07 exposure coefficients are now per 10 PERCENTAGE POINTS of the share and the shipped term names say so (Pbolus_per10pp, Pindicated_per10pp), so coefficients from a v0.12.x bundle and a v0.13.x bundle are on DIFFERENT SCALES and must not be pooled together.",
         "0.3.0": "2026-10-27, for protocol.json 0.12.0. Adds the eight 07_outcome_model files. model_coefficients.csv introduces a method this spec has not carried before -- INVERSE-VARIANCE META-ANALYSIS of regression coefficients rather than summing numerators and denominators. It is declared as `coefficient_meta` and pool_sites.R does not implement it yet; the entry exists so the file is CLAIMED and a bundle carrying it is not refused, and so the contract is written down before the centre-side code is."
     }
 }

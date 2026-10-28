@@ -31,6 +31,12 @@ OUT = REPO / "output" / "final_no_phi" / "07_outcome_model"
 SPEC = json.loads((REPO / "config" / "protocol.json").read_text())["model"]["outcome_model"]
 SOURCE = (REPO / "code" / "07_outcome_model.R").read_text()
 
+# The exposures enter the model rescaled to the declared reporting unit, and the
+# shipped term names carry that unit so a coefficient cannot be read against the
+# wrong one. Derived here the same way the R derives it, from the same key.
+SCALE_PP = round(SPEC["exposure_scale_per"] * 100)
+MODEL_EXPOSURES = [f"{e}_per{SCALE_PP}pp" for e in SPEC["exposures"]]
+
 
 def rows(name: str) -> list[dict]:
     with open(OUT / name, newline="") as fh:
@@ -171,7 +177,7 @@ def test_the_unit_fixed_effects_are_not_poolable():
 def test_both_exposures_ship_a_full_covariance_block():
     """The centre combines the two exposures jointly, which needs the 2x2 and not
     just the two standard errors."""
-    exposures = set(SPEC["exposures"])
+    exposures = set(MODEL_EXPOSURES)
     cov = rows("model_covariance.csv")
     by_model: dict[str, set] = {}
     for r in cov:
@@ -234,7 +240,11 @@ def test_every_fitted_sensitivity_model_is_declared_in_the_protocol():
     cannot (`min_events` is fitted as `sensitivity_min_4_events`, the 4 coming
     from sensitivity_min_increase_events).
     """
-    declared = {k: set(k.split("_")) for k in SPEC["sensitivity_models"]}
+    # Underscore-prefixed keys are prose, not models -- the convention this
+    # protocol uses throughout (_purpose, _why, ...). Including them would
+    # make the test demand a model named after a comment.
+    declared = {k: set(k.split("_")) for k in SPEC["sensitivity_models"]
+                if not k.startswith("_")}
     fitted = [d["model"] for d in rows("diagnostics/model_diagnostics.csv")
               if d["model"] != "primary"]
     assert fitted, "no sensitivity models were fitted"
@@ -257,13 +267,53 @@ def test_the_declared_exposures_and_covariates_are_the_ones_fitted():
     primary = [d for d in rows("diagnostics/model_diagnostics.csv")
                if d["model"] == "primary"][0]
     formula = primary["formula"]
-    for term in SPEC["exposures"] + SPEC["covariates"]:
+    for term in MODEL_EXPOSURES + SPEC["covariates"]:
         assert term in formula, f"{term} is declared but not in the fitted formula: {formula}"
     assert "n_increase" not in formula and "n_event" not in formula, (
         "the increase-event count is in the formula. It is the denominator of both "
         "exposures and is measured inside the exposure window; see protocol.json "
         "model.outcome_model._n_events_is_NOT_a_covariate"
     )
+
+
+def test_the_declared_exposure_scale_reaches_the_shipped_coefficients():
+    """CLAUDE.md config-integrity, applied to the reporting unit.
+
+    protocol.json declares exposure_scale_per; if nothing consumed it the model
+    would still fit and every number would look plausible -- just on a 0%->100%
+    scale while the protocol claimed 10 percentage points. That is the silent,
+    plausible-direction failure the rule is about, so this asserts the scale
+    reached BOTH the term names and the scale_note a reader relies on.
+    """
+    rs = rows("model_coefficients.csv")
+    shipped = {r["term"] for r in rs}
+    for term in MODEL_EXPOSURES:
+        assert term in shipped, (
+            f"{term!r} is not in model_coefficients.csv -- the declared "
+            f"exposure_scale_per={SPEC['exposure_scale_per']} did not reach the "
+            f"fitted terms (shipped: {sorted(shipped)[:6]}...)"
+        )
+    flagged = {r["term"] for r in rs if r["is_exposure"] == "TRUE"}
+    assert flagged == set(MODEL_EXPOSURES), (
+        f"is_exposure marks {sorted(flagged)}, expected {sorted(MODEL_EXPOSURES)}"
+    )
+    note = rs[0]["scale_note"]
+    assert "PERCENTAGE" in note.upper() and str(SCALE_PP) in note, (
+        f"scale_note does not state the {SCALE_PP}-percentage-point unit: {note!r}"
+    )
+
+
+def test_the_unscaled_exposure_names_do_not_ship_as_coefficients():
+    """The share-scale names still label the DESCRIPTIVE outputs, which is
+    correct -- a share is what was measured. They must not also appear as
+    coefficient rows, or the same name would mean two different units inside one
+    output directory."""
+    shipped = {r["term"] for r in rows("model_coefficients.csv")}
+    for bare in SPEC["exposures"]:
+        assert bare not in shipped, (
+            f"{bare!r} ships as a coefficient on the share scale while "
+            f"{bare}_per{SCALE_PP}pp is the declared reporting unit"
+        )
 
 
 if __name__ == "__main__":
