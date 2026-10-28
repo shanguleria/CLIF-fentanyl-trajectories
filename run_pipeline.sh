@@ -15,6 +15,10 @@ PY="${PYTHON:-python3}"
 
 # Preflight. Fails here, in a second, rather than an hour into a table read.
 echo "== Preflight =="
+if ! "$PY" tests/test_config_parses.py; then
+  echo "ERROR: a tracked config is not valid JSON. Nothing was run." >&2
+  exit 1
+fi
 if ! "$PY" code/check_config.py; then
   echo "ERROR: config is not usable. Nothing was run." >&2
   exit 1

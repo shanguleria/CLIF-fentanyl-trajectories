@@ -11,6 +11,8 @@ if (Test-Path ".venv/Scripts/python.exe") { $py = ".venv/Scripts/python.exe" }
 
 # Preflight. Fails here, in a second, rather than an hour into a table read.
 Write-Host "== Preflight =="
+& $py tests/test_config_parses.py
+if ($LASTEXITCODE -ne 0) { Write-Error "a tracked config is not valid JSON. Nothing was run." }
 & $py code/check_config.py
 if ($LASTEXITCODE -ne 0) { Write-Error "config is not usable. Nothing was run." }
 & $py tests/test_protocol.py

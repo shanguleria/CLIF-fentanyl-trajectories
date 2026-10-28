@@ -219,6 +219,38 @@ def test_every_declared_outcome_model_setting_is_consumed():
     )
 
 
+def test_every_fitted_sensitivity_model_is_declared_in_the_protocol():
+    """The REVERSE of the consumption check above, and the direction that was
+    missing. test_every_declared_outcome_model_setting_is_consumed catches a
+    protocol key no code reads; this catches a model the code FITS that the
+    protocol never declared -- which in a federated repo is worse, because
+    protocol.json is the digest-visible statement of the estimand and a site
+    comparing protocols would see agreement while the models differed.
+
+    Found live on 2026-10-27: sensitivity_partial_po was fitted and shipped
+    before it was declared.
+
+    Matching is by token containment, because a label may carry a value the key
+    cannot (`min_events` is fitted as `sensitivity_min_4_events`, the 4 coming
+    from sensitivity_min_increase_events).
+    """
+    declared = {k: set(k.split("_")) for k in SPEC["sensitivity_models"]}
+    fitted = [d["model"] for d in rows("diagnostics/model_diagnostics.csv")
+              if d["model"] != "primary"]
+    assert fitted, "no sensitivity models were fitted"
+    for label in fitted:
+        tokens = set(label.removeprefix("sensitivity_").split("_"))
+        hits = [k for k, kt in declared.items() if kt <= tokens]
+        assert hits, (
+            f"the model {label!r} is fitted and shipped but no "
+            f"protocol.json model.outcome_model.sensitivity_models entry "
+            f"declares it (declared: {sorted(declared)})"
+        )
+    for key, kt in declared.items():
+        hits = [l for l in fitted if kt <= set(l.removeprefix("sensitivity_").split("_"))]
+        assert hits, f"sensitivity model {key!r} is declared but was not fitted"
+
+
 def test_the_declared_exposures_and_covariates_are_the_ones_fitted():
     """The formula is written out in model_diagnostics.csv, so the protocol can be
     compared to what was actually fitted rather than to what the script says."""
