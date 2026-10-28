@@ -504,35 +504,68 @@ def test_the_titration_analysis_never_reads_the_hourly_grid():
             f"timestamps would mean the grid leaked in")
 
 
-def test_the_table1_stratification_is_declared_and_ordered():
-    """Table 1 is stratified on predominant fentanyl intensity. Three things
-    must hold or the strata mean something other than what the text will claim.
-    """
-    spec = COV.get("predominant_intensity")
-    assert spec is not None, "protocol.json must declare predominant_intensity"
+def test_the_table1_stratification_is_cohort_membership():
+    """Table 1 is stratified on COHORT MEMBERSHIP as of 2026-10-27, replacing
+    predominant fentanyl intensity. Three things must hold or the columns mean
+    something other than what the text will claim."""
+    spec = COV.get("table1")
+    assert spec is not None, "protocol.json must declare table1"
+    assert spec["stratify_on"] == "cohort_membership"
 
-    # 1. it reuses the SAME bands the state figures use, so the two cannot drift
-    assert spec["bands_from"] == "exposure.dose_states"
-    assert spec["variable"] == COV["exposure"]["dose_states"]["variable"], (
-        "the stratification must be cut on the same variable as the bands")
+    # 1. exactly two MUTUALLY EXCLUSIVE strata. Landmark is a subset of Overall,
+    #    so the complement column is what makes the p-value interpretable at all.
+    assert len(spec["strata"]) == 2, (
+        "a p-value between Overall and its own subset compares a group with "
+        "itself; the complement column is not decoration")
 
-    # 2. the tie-break is declared, not left to sort order. 7.3% of episodes tie.
-    assert spec["tie_break"] in ("higher", "lower"), (
-        "a tie resolved by whatever order the levels happen to be in is not a rule")
-
-    # 3. both artifacts stay visible as Table 1 rows
-    assert spec["report_modal_share"] is True, (
-        "modal share says how decisive each label is; a coin-flip label is not a stratum")
-    assert spec["report_at_risk_hours"] is True, (
-        "at-risk hours expose the duration confound -- a short course cannot "
-        "accumulate zero windows")
+    # 2. the test matches the design. Two unordered groups take a rank sum, not
+    #    the Spearman trend the ORDERED dose bands carried until 2026-10-27 --
+    #    run across two groups that is the same number claiming a gradient.
+    assert spec["test_continuous"] == "wilcoxon"
+    assert spec["test_categorical"] == "chi-square"
 
     build = (REPO / "code" / "02_descriptive_cohort.R").read_text()
-    states = (REPO / "code" / "utils" / "states.R").read_text()
+    # The declared name must NAME the operation, not sit beside a hardcoded one.
+    # 02 dispatches on it through T1_TESTS and labels the column from the same
+    # entry, so the test that runs and the test the table claims cannot diverge.
+    assert f'`{spec["test_categorical"]}`' in build or \
+           f'"{spec["test_categorical"]}"' in build, (
+        "02 must dispatch on the declared categorical test name")
+    assert "cor.test" not in build, (
+        "a leftover Spearman call would label a two-group difference as a trend")
+    assert "T1_CONT$label" in build and "T1_CAT$label" in build, (
+        "the `test` column must come from the same entry as the function that "
+        "ran, or a reader cannot tell which question a p-value answered")
+
+    # 3. every live key reaches the code
     live = {k for k in spec if not k.startswith("_")}
-    unread = {k for k in live if k not in build and k not in states}
-    assert not unread, (
-        f"predominant_intensity keys declared but read by nothing: {sorted(unread)}")
+    unread = {k for k in live if k not in build}
+    assert not unread, f"table1 keys declared but read by nothing: {sorted(unread)}"
+
+
+def test_the_tabled_intensity_stratification_has_no_live_consumer():
+    """predominant_intensity was tabled on 2026-10-27, not deleted: the rule and
+    its two measured artifacts are kept so it can be resumed. What must NOT
+    survive is a half-connection -- the spec reachable under its live name, or
+    predominant_band() still cutting a stratum nothing reports."""
+    assert "predominant_intensity" not in COV, (
+        "a tabled spec must not keep its live key, or the next reader takes it "
+        "for policy")
+    tabled = COV.get("_tabled_predominant_intensity")
+    assert tabled is not None, (
+        "tabling is keeping the reasoning, not deleting it -- SG rejected none "
+        "of this and it must be resumable without re-deriving it")
+    assert "_TABLED" in tabled and "2026-10-27" in tabled["_TABLED"]
+
+    build = (REPO / "code" / "02_descriptive_cohort.R").read_text()
+    assert "predominant_band(" not in build and "PI_SPEC" not in build, (
+        "02 still cuts the tabled stratum")
+    assert "modal_share" not in build and "at_risk_hours" not in build, (
+        "the rows describing the tabled label's artifacts must go with it")
+    assert (REPO / "code" / "utils" / "states.R").read_text().count(
+        "predominant_band <- function") == 1, (
+        "predominant_band() stays in states.R, caller-less, so resuming is a "
+        "one-line change rather than a re-derivation")
 
 
 def test_the_stratification_is_never_called_a_trajectory():

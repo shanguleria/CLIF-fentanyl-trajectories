@@ -295,7 +295,22 @@ only consumer of `landmark_cohort.parquet` was the already-tabled gbmt/lcmm
 pair, so a live step existed largely to feed tabled work; `06_unit_variation.R`
 took the slot it vacated and nothing else renumbered. `time_to_event.parquet` is
 unaffected — it is a Phase 0 product that steps 1 and 3 still read, so the STROBE
-landmark row survives. They still run, but by hand:
+landmark row survives.
+
+**The landmark cohort is no longer only a STROBE row.** Since `definition_version`
+0.8.0 (2026-10-27) Phase 0 measures **ventilator-free days to day 28** on it
+(`vfd_28` in `time_to_event.parquet`), and the landmark cohort is the `landmark`
+stratum of Table 1 and of the four reported `05_titration` tables. A
+ventilator-free day is a day alive and off invasive ventilation, counted only
+inside a liberation lasting at least 48 h; death at or before day 28 scores 0,
+which is what lets VFD sidestep the competing risk between extubation and death.
+A liberation and a death are now recorded as **separate facts** — a patient
+liberated on day 4 who dies on day 20 is a success that also died. Outcome
+ascertainment reads the waterfalled respiratory support across the whole
+encounter block rather than the 72 h-trimmed window grid, without which a
+post-landmark extubation cannot be observed at all. No model is fitted: the
+column exists, the association does not yet. See `config/protocol.json`
+`outcomes.vfd` for the definition and the measurements behind each clause. They still run, but by hand:
 `Rscript code/tabled/gbmt_classes.R`. Their names and output folders carry **no
 step number**: the number line belongs to the live pipeline, and while these
 scripts kept their old numbers two different scripts claimed 04 and two claimed
@@ -565,10 +580,10 @@ What each script writes:
 | Script | Files |
 |---|---|
 | `01_build_cohort.py` | `01_cohort/` — `strobe.{csv,txt,png}`, `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json`; PHI handoffs include `titration_{rate,bolus}_events.parquet` (raw charted timestamps — the titration analysis never uses the hourly grid) and `care_intervals.parquet` (attributed care-location stays — ICU and ED — on the relative clock, so the attribution rule can change without a Phase 0 rebuild) at the root of `final_no_phi/` |
-| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv`, `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
+| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv` (Table 1, stratified on **cohort membership**: Overall, Landmark, Not landmark — the p-value tests the mutually exclusive split, not Overall against its own subset), `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
 | `03_exemplar.R` | `03_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
 | `04_delivery_states.R` | `04_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
-| `05_titration.R` | `05_titration/` — `coadministration.csv`, `window_sensitivity.csv`, `charting_precision.csv`, `rate_change_magnitude.csv`, `charting_agreement.csv`, `adherence_distribution.csv`, `assessment_frequency.csv` (how often a pain or sedation score is documented at all, per instrument — the answer to "is the low indicated fraction just missing documentation?"), `provenance.json`, `captions.md`; figures `coadministration.png`, `window_sensitivity.png`; the indication analysis `indication.csv`, `indication_window_sensitivity.csv`, `indication.png`; PHI handoffs `output/intermediate_phi/titration_adherence.parquet` (per-encounter adherence; only its distribution ships), `titration_events_classified.parquet` and `indication_events.parquet` (the classified events and per-event indication flags `06_unit_variation.R` splits, so each definition has one home) |
+| `05_titration.R` | `05_titration/` — **reported directly:** `coadministration.csv`, `indication.csv`, `adherence_distribution.csv`, `assessment_frequency.csv` (how often a pain or sedation score is documented at all, per instrument — the answer to "is the low indicated fraction just missing documentation?"), `rate_change_magnitude.csv`, `pooling_histograms.csv`, `provenance.json`, `captions.md`; figures `coadministration.png`, `indication.png`. **`05_titration/diagnostics/` — method checks:** `window_sensitivity.{csv,png}`, `indication_window_sensitivity.csv`, `charting_precision.csv`, `charting_agreement.csv`. The first four CSVs carry a **`cohort`** column (`all` \| `landmark`): the descriptive epidemiology belongs to the whole analytic cohort, the outcome analysis can only speak for the landmark subset, and `landmark` is a *subset* of `all` — never sum the two. PHI handoffs `output/intermediate_phi/titration_adherence.parquet` (per-encounter adherence; only its distribution ships), `titration_events_classified.parquet` and `indication_events.parquet` (the classified events and per-event indication flags `06_unit_variation.R` splits, so each definition has one home) |
 | `06_unit_variation.R` | `06_unit_variation/` — `unit_adherence.csv`, `year_adherence.csv`, `attribution_funnel.csv`, `overdispersion.csv`, `provenance.json`, `captions.md`; ten figures, named by metric: `coadmin_*` (was a bolus given with the increase?) and `indication_*` (was there a documented pain score or agitation?), each as `_caterpillar_<key>.png`, `_funnel_<key>.png` and `_year.png` — one pair of caterpillar/funnel per `unit_variation.unit_keys` (`care_setting`, `location_name`). Writes no PHI handoff |
 | `tabled/landmark_cohort.R` | **Tabled 2026-09-30, not run by the runners.** `landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
 

@@ -1843,18 +1843,185 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
         )
 
 
-def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
-                        imv_records: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
-    """One row per block, origin = landmark T.
+def resolve_death(frame: pd.DataFrame, patient: pd.DataFrame) -> pd.DataFrame:
+    """Death, for the WHOLE analytic cohort. Config: outcomes.death_definition.
 
-    Successful extubation = extubation not followed by reintubation within
-    successful_extubation_hours. Ventilation status comes from the RAW IMV series,
-    not the window grid: the grid stops at T, so outcomes ascertained from it are
-    all censored by construction.
+    THE ONLY PLACE the mortality rule lives. Two sources, in this order:
+    death_dttm supplies a TIMESTAMP, and a discharge_category in
+    mortality_categories supplies the FACT with block_discharge_dttm standing in
+    for the time. Neither alone is enough -- MEASURED at UCMC, of 9,328 patients
+    flagged Expired or Hospice only 4,621 (49.5%) carry a death_dttm, and 3,066
+    carry a death_dttm with no death discharge.
+
+    Returns encounter_block, died, death_hr (hours from the anchor, NaT-safe).
+    Both the Phase 1 state description and the landmark outcomes read this, so
+    the two cannot drift -- before 2026-10-27 they were separate expressions and
+    a comment asserted they were identical.
+    """
+    f = frame[["encounter_block", "patient_id", "anchor_dttm",
+               "block_discharge_dttm", "discharge_category"]].copy()
+    if "death_dttm" in patient.columns:
+        f = f.merge(patient[["patient_id", "death_dttm"]]
+                    .drop_duplicates("patient_id"), on="patient_id", how="left")
+    else:
+        # CLIF 2.1 makes death_dttm optional and the protocol's own note records
+        # it as unstable. A site without it falls back entirely to the terminal
+        # discharge, which is the branch that already does most of the work.
+        f["death_dttm"] = pd.NaT
+    # An ALL-NULL death_dttm column is tz-naive and subtracting the tz-aware
+    # anchor from it raises -- which is every site where no cohort patient
+    # carries one, plus the column just created. clifpy has already normalised
+    # real values to the site zone, so localise rather than convert.
+    dd = pd.to_datetime(f["death_dttm"])
+    tz = f["anchor_dttm"].dt.tz
+    dd = dd.dt.tz_localize(tz) if dd.dt.tz is None else dd.dt.tz_convert(tz)
+
+    terminal = f["discharge_category"].isin(set(COV["outcomes"]["mortality_categories"]))
+    f["died"] = terminal | dd.notna()
+    from_dttm = (dd - f["anchor_dttm"]).dt.total_seconds() / 3600
+    to_disc = ((f["block_discharge_dttm"] - f["anchor_dttm"])
+               .dt.total_seconds() / 3600)
+    f["death_hr"] = from_dttm.where(from_dttm.notna(), to_disc.where(terminal))
+    f.loc[~f["died"], "death_hr"] = np.nan
+
+    note("deaths, analytic cohort", int(f["died"].sum()))
+    note("  with a death_dttm", int(from_dttm.notna().sum()))
+    note("  from a terminal discharge_category only",
+         int((terminal & from_dttm.isna()).sum()))
+    note("  flagged dead with no usable timestamp",
+         int((f["died"] & f["death_hr"].isna()).sum()))
+    return f[["encounter_block", "died", "death_hr"]]
+
+
+def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
+                   horizon_h: float) -> pd.DataFrame:
+    """IMV / not-IMV intervals per block, from the WATERFALLED series.
+
+    THE OUTCOME SIDE OF THE AMENDMENT. Eligibility is NOT computed here -- it
+    still comes from the window grid, deliberately unchanged on 2026-10-27 so the
+    landmark cohort did not move. What changed is the outcome, which until then
+    read the RAW IMV screen: a `device_category == "IMV"` filter applied BEFORE
+    the waterfall fills anything in, and trimmed at 72h besides. A record charted
+    after the landmark whose device_category was null in the source was therefore
+    invisible to the outcome while the waterfall knew perfectly well it was IMV.
+    The grid and this function now derive from the same waterfalled series, which
+    is the drift the amendment closed.
+
+    MEASURED at UCMC 2026-10-27, before the change and under the then-current 72h
+    liberation threshold: 1,602 landmark blocks had no extubation at or after T;
+    579 of them had a real IMV -> non-IMV transition the trim was hiding, and
+    only 88 had no real record after T at all. Of the whole landmark cohort 98.4%
+    carried a real post-landmark record and the trim was discarding a median 236h
+    -- about ten days -- of real follow-up per patient.
+
+    Each row is a half-open interval [t_start_hr, t_end_hr) with one state. The
+    last record's interval runs to the end of follow-up, not to the next record,
+    because there is no next record.
+    """
+    r = resp.merge(cohort[["encounter_block", "anchor_dttm", "followup_end_dttm"]],
+                   on="encounter_block", how="inner")
+    r["hr"] = (r["recorded_dttm"] - r["anchor_dttm"]).dt.total_seconds() / 3600
+    r["end_hr"] = ((r["followup_end_dttm"] - r["anchor_dttm"]).dt.total_seconds()
+                   / 3600)
+    r = r[(r["hr"] >= 0) & (r["hr"] <= horizon_h)]
+    r = r.sort_values(["encounter_block", "hr"], kind="stable")
+    r["is_imv"] = r["device_category"].eq("IMV")
+
+    # Collapse consecutive records in the same state: an interval is a RUN, so a
+    # 48h liberation is one row rather than however many times it was charted.
+    r["run"] = (r["is_imv"] != r.groupby("encounter_block")["is_imv"].shift()).cumsum()
+    iv = (r.groupby(["encounter_block", "run"], as_index=False)
+            .agg(t_start_hr=("hr", "min"), is_imv=("is_imv", "first"),
+                 end_hr=("end_hr", "first")))
+    iv["t_end_hr"] = iv.groupby("encounter_block")["t_start_hr"].shift(-1)
+    # The final run ends at follow-up, capped at the horizon.
+    iv["t_end_hr"] = iv["t_end_hr"].fillna(iv["end_hr"].clip(upper=horizon_h))
+    iv["t_end_hr"] = iv[["t_end_hr", "end_hr"]].min(axis=1).clip(upper=horizon_h)
+    return iv[iv["t_end_hr"] > iv["t_start_hr"]].drop(columns=["run", "end_hr"])
+
+
+def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
+                         death_hr: pd.Series) -> pd.DataFrame:
+    """VFD-28 from IMV onset. Config: outcomes.vfd.
+
+    A ventilator-free day is a day alive and off IMV, counted only inside a
+    liberation lasting at least successful_extubation_hours. Read
+    outcomes.vfd._definition and the four notes beside it before changing
+    anything here -- each branch below is one of them.
+
+    ORDER MATTERS. The discharged-alive extension lengthens the final interval
+    BEFORE the qualifying filter, not after. Extending afterwards would credit a
+    patient liberated at hour 640 and sent home at 660 with the 12 remaining
+    hours, when the whole liberation is 32h and qualifies for nothing.
+    """
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+    succ_h = float(COV["outcomes"]["successful_extubation_hours"])
+
+    # Takes the intervals rather than the raw series: _imv_intervals() merges the
+    # whole waterfalled respiratory_support, which is millions of rows, and the
+    # caller already needs the same intervals to find the liberation.
+    iv = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable")
+    idx = cohort.set_index("encounter_block")
+    disc_h = ((idx["followup_end_dttm"] - idx["anchor_dttm"])
+              .dt.total_seconds() / 3600)
+
+    # Death at or before the horizon zeroes the total, whatever was accrued.
+    # This is the convention that lets VFD sidestep the competing risk -- and it
+    # is also the right test for "alive at day 28", which `death_hr.isna()` is
+    # not: a death recorded AFTER day 28 still leaves the patient alive at it.
+    died_in = (death_hr.reindex(idx.index) <= horizon_h).fillna(False)
+
+    # Discharged alive before the horizon: extend ONLY if off IMV at discharge.
+    # A trached patient discharged to an LTACH on a ventilator is still on IMV,
+    # and the naive reading of "assume alive and IMV-free" would credit them days
+    # they did not have. They keep anything earned earlier -- the rule stops
+    # accrual, it does not zero the total.
+    tail = iv.groupby("encounter_block").tail(1)
+    tail = tail[~tail["is_imv"]]
+    ok = (~died_in & (disc_h < horizon_h)).reindex(
+        tail["encounter_block"]).fillna(False).to_numpy()
+    iv.loc[tail.index[ok], "t_end_hr"] = horizon_h
+    extended = set(tail.loc[tail.index[ok], "encounter_block"])
+
+    free = iv[~iv["is_imv"]].copy()
+    free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
+    # A liberation shorter than succ_h is a FAILED extubation and contributes
+    # nothing -- SG: "extubated and reintubated within 48h, that is zero VFDs as
+    # the extubation was unsuccessful". Several qualifying ones each count.
+    qual = free[free["dur_h"] >= succ_h]
+
+    out = pd.DataFrame(index=idx.index)
+    out["vfd_hours"] = (qual.groupby("encounter_block")["dur_h"].sum()
+                            .reindex(idx.index).fillna(0.0))
+    out.loc[died_in, "vfd_hours"] = 0.0
+    out["vfd_28"] = (out["vfd_hours"] / 24.0).round(2)
+    out["vfd_extended_from_discharge"] = out.index.isin(extended) & ~died_in
+    out["vfd_zero_for_death"] = died_in
+    out["vfd_liberations"] = (qual.groupby("encounter_block").size()
+                                  .reindex(idx.index).fillna(0).astype(int))
+    out.loc[died_in, "vfd_liberations"] = 0
+    return out.reset_index()
+
+
+def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
+                        resp: pd.DataFrame) -> pd.DataFrame:
+    """One row per landmark block: liberation, death, and VFD-28.
+
+    ONE SERIES ANSWERS BOTH QUESTIONS as of 2026-10-27. Eligibility still comes
+    from the window grid -- deliberately unchanged, so the landmark cohort does
+    not move under this amendment -- but the OUTCOME now comes from the
+    waterfalled respiratory_support over the whole encounter block rather than
+    the raw IMV screen. See _imv_intervals() for what that fixes and by how much.
+
+    AN EXTUBATION AND A DEATH ARE SEPARABLE and are no longer collapsed. A
+    patient liberated on day 4 who dies on day 20 is a SUCCESS that also died:
+    extubation_event keeps the liberation, mortality_event keeps the death, and
+    VFD holds both by construction. MEASURED at UCMC before the change: 399
+    blocks, 5.9% of the cohort, had their liberation erased this way.
     """
     T = COV["cohort"]["landmark_hours"]
     succ_h = COV["outcomes"]["successful_extubation_hours"]
-    death_cats = set(COV["outcomes"]["mortality_categories"])
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
 
     at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
     eligible = set(at_T.loc[at_T["imv_status"] == 1, "encounter_block"])
@@ -1865,49 +2032,65 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     tte["landmark_eligible"] = True
     tte["hours_to_discharge"] = (
         (tte["block_discharge_dttm"] - tte["anchor_dttm"]).dt.total_seconds() / 3600)
-    tte["died"] = tte["discharge_category"].isin(death_cats)
 
-    imv = (imv_records.merge(mapping, on="hospitalization_id", how="inner")
-                      .merge(tte[["encounter_block", "anchor_dttm"]],
-                             on="encounter_block", how="inner"))
-    imv["hr"] = (imv["recorded_dttm"] - imv["anchor_dttm"]).dt.total_seconds() / 3600
-    imv = imv[imv["hr"] >= 0].sort_values(["encounter_block", "hr"], kind="stable")
+    # died / death_hr arrive on the cohort from resolve_death(); see there for
+    # the rule. Asserted rather than recomputed so there is no second expression
+    # of it to drift -- that drift is what this amendment repaired.
+    assert {"died", "death_hr"} <= set(tte.columns), \
+        "resolve_death() must run before build_time_to_event()"
+    # np.select below needs a real bool, and a merge can leave this as object.
+    tte["died"] = tte["died"].fillna(False).astype(bool)
 
-    # An extubation is an IMV record whose next IMV record is more than succ_h
-    # later, or which has none. The first such event at or after T is the outcome.
-    imv["next_hr"] = imv.groupby("encounter_block")["hr"].shift(-1)
-    gap = imv["next_hr"] - imv["hr"]
-    imv["is_extubation"] = imv["next_hr"].isna() | (gap > succ_h)
-    ext = imv[imv["is_extubation"] & (imv["hr"] >= T)]
-    first_ext = ext.groupby("encounter_block")["hr"].min().rename("ext_hr")
-    tte = tte.merge(first_ext, on="encounter_block", how="left")
+    # ---- liberation: the first QUALIFYING one at or after T ------------------
+    iv = _imv_intervals(resp, tte, horizon_h)
+    free = iv[~iv["is_imv"]].copy()
+    free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
+    qual = free[(free["dur_h"] >= succ_h) & (free["t_end_hr"] > T)]
+    first_lib = (qual.groupby("encounter_block")["t_start_hr"].min()
+                     .rename("ext_hr").clip(lower=T))
+    tte = tte.merge(first_lib, on="encounter_block", how="left")
+    note(f"blocks with a qualifying liberation (>= {succ_h:g}h off IMV) at/after T",
+         int(tte["ext_hr"].notna().sum()))
 
-    note("blocks with an extubation at or after T", int(tte["ext_hr"].notna().sum()))
-
-    # Death inside the succ_h window after extubation is the competing event,
-    # not a success, per the VFD convention.
-    off = tte["hours_to_discharge"] - tte["ext_hr"]
-    died_in_window = tte["died"] & (off < succ_h)
-    success = tte["ext_hr"].notna() & ~died_in_window
-
+    # A liberation counts even if death follows it -- only a death BEFORE any
+    # qualifying liberation displaces it.
+    died_first = tte["died"] & (tte["death_hr"].fillna(np.inf)
+                                <= tte["ext_hr"].fillna(np.inf))
+    success = tte["ext_hr"].notna() & ~died_first
     tte["extubation_event"] = np.select([success, tte["died"]], [1, 2], default=0)
     tte["extubation_time"] = np.where(
         tte["extubation_event"] == 1, tte["ext_hr"] - T,
-        (tte["hours_to_discharge"] - T).clip(lower=0))
+        (tte[["death_hr", "hours_to_discharge"]].min(axis=1) - T).clip(lower=0))
 
     tte["mortality_event"] = np.where(tte["died"], 1, 2)
-    tte["mortality_time"] = (tte["hours_to_discharge"] - T).clip(lower=0)
+    tte["mortality_time"] = (tte["death_hr"].fillna(tte["hours_to_discharge"]) - T
+                             ).clip(lower=0)
 
     unresolved = set(COV["outcomes"]["unresolved_discharge_categories"])
     n_unres = int(tte["discharge_category"].isin(unresolved).sum())
     if n_unres:
         note("blocks with an unresolved discharge_category", n_unres)
-    for code, label in ((1, "successful extubation"), (2, "death"), (0, "censored")):
-        note(f"  extubation outcome = {label}",
+    for code, label in ((1, "successful liberation"), (2, "death first"),
+                        (0, "censored")):
+        note(f"  liberation outcome = {label}",
              int((tte["extubation_event"] == code).sum()))
-    note("  30-day analysis: died", int((tte["mortality_event"] == 1).sum()))
+    note("  died at any point", int((tte["mortality_event"] == 1).sum()))
+    note("  liberated AND later died (both facts kept)",
+         int((success & tte["died"]).sum()))
 
-    # Tracheostomy is event code 3 and its rule is still undecided.
+    # ---- VFD-28 --------------------------------------------------------------
+    tte = tte.merge(ventilator_free_days(tte, iv,
+                                         tte.set_index("encounter_block")["death_hr"]),
+                    on="encounter_block", how="left")
+    note("  VFD-28 = 0", int((tte["vfd_28"] == 0).sum()))
+    note("  VFD-28 extended from an off-IMV discharge",
+         int(tte["vfd_extended_from_discharge"].sum()))
+    print(f"    VFD-28 median {tte['vfd_28'].median():.1f}d, "
+          f"IQR {tte['vfd_28'].quantile(.25):.1f}-{tte['vfd_28'].quantile(.75):.1f}, "
+          f"max {tte['vfd_28'].max():.1f}d")
+
+    # Tracheostomy is resolved FOR VFD -- a trach is on IMV while
+    # device_category says IMV -- but not for the time-to-event outcome.
     tte["tracheostomy_pending"] = True
     return tte
 
@@ -1946,8 +2129,9 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     w = w.assign(_vent=(w["imv_status"].notna() & (w["imv_status"] == 1)))
     g = w.groupby("encounter_block", sort=False)
     ever_vent = g["_vent"].any()
-    # Block-level death, from discharge_category -- it already covers Expired
-    # AND Hospice, so both forms of comfort care are caught.
+    # Block-level death, carried on `long` from resolve_death(): death_dttm where
+    # present, else a terminal discharge_category, which covers Expired AND
+    # Hospice so both forms of comfort care are caught.
     died_block = g["died"].any()
     # first window that is alive-admitted and NOT ventilated, after ventilation
     def _extub_window(d):
@@ -2341,6 +2525,8 @@ def main() -> None:
     flow("ANALYTIC COHORT -- trajectory_long", len(cohort),
          "no weight charted anywhere in the block")
     note_dependence(cohort)
+    cohort = cohort.merge(resolve_death(cohort, t["patient"]),
+                          on="encounter_block", how="left")
     bmi = bmi_admission(t, cohort)
 
     print("\nWindows")
@@ -2379,12 +2565,11 @@ def main() -> None:
                 "n_imv_episodes", "discharge_category"]],
         on="encounter_block", how="left")
 
-    # died is derived here rather than left to each consumer, so the mortality
-    # rule lives in one place. time_to_event applies the identical rule to the
-    # landmark subset; this carries it for the WHOLE analytic cohort, which the
-    # Phase 1 state description needs in order to tell died from discharged.
-    long["died"] = long["discharge_category"].isin(
-        set(COV["outcomes"]["mortality_categories"]))
+    # died comes from resolve_death() on the cohort, so the mortality rule lives
+    # in ONE place and time_to_event cannot drift from the Phase 1 state
+    # description, which needs it to tell died from discharged.
+    long = long.merge(cohort[["encounter_block", "died"]],
+                      on="encounter_block", how="left")
 
     print("\n  SOFA")
     sofa_in = _sofa_inputs(t, cohort)
@@ -2438,7 +2623,7 @@ def main() -> None:
     assert_config_is_honoured(long)
 
     print("\nTime to event")
-    tte = build_time_to_event(cohort, long, imv_records, mapping)
+    tte = build_time_to_event(cohort, long, t["resp"])
 
     out = dirs["out_phi"]
     # Parquet is what later phases read; CSV is the same table for human review.

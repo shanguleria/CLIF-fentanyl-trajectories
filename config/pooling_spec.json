@@ -1,6 +1,6 @@
 {
-    "definition_version": "0.1.0",
-    "_date": "2026-10-26",
+    "definition_version": "0.2.0",
+    "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
     "_consumption_contract": "pool_sites.R MUST iterate the keys of `files` and MUST assert that every CSV present in a bundle is claimed by exactly one entry. A hardcoded list of filenames in the script would mean a newly shipped export is silently never pooled -- the first config-integrity failure mode in CLAUDE.md, one level up.",
@@ -99,8 +99,8 @@
             "_order": 80,
             "_title": "Table 1, categorical",
             "_grain": "episode -- one row per episode, so intervals pool honestly",
-            "_numerator": "episodes with that level in that stratum",
-            "_denominator": "episodes in that stratum",
+            "_numerator": "episodes with that level in that stratum (overall | Landmark | Not landmark)",
+            "_denominator": "episodes in that stratum. Landmark is a SUBSET of overall, so the three strata do not sum to the cohort and must never be added together.",
             "_caveat": "Table 1 p-values are deliberately dropped from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n."
         },
         "02_descriptive/pooling_histograms.csv": {
@@ -132,7 +132,7 @@
         "02_descriptive/baseline_characteristics.csv": {
             "method": "per_site_only",
             "grain": "episode",
-            "_why": "Display strings with embedded Ns and a p-value column. The POOLABLE form of the same content is pooling_categorical.csv and pooling_continuous.csv. Section 8.4 also drops Table 1 p-values from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n. The pooled mean SOFA and NEE per band carry that claim instead."
+            "_why": "Display strings with embedded Ns and a p-value column. The POOLABLE form of the same content is pooling_categorical.csv and pooling_continuous.csv. Section 8.4 also drops Table 1 p-values from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n. STRATA CHANGED on 2026-10-27 from predominant dose band to COHORT MEMBERSHIP -- the columns are now Overall, Landmark and Not landmark, so `stratum` in the two poolable files takes those values instead of band labels. A bundle mixing the two vintages pools into strata that do not exist at every site; coordinate the tag rather than reconciling afterwards."
         },
         "02_descriptive/retention.csv": {
             "method": "sum_counts",
@@ -355,6 +355,7 @@
             "method": "sum_counts",
             "grain": "event",
             "keys": [
+                "cohort",
                 "group"
             ],
             "numerators": [
@@ -370,15 +371,17 @@
             },
             "_order": 10,
             "_title": "Bolus co-administration at a fentanyl rate increase",
-            "_grain": "event, clustered within episodes",
+            "_grain": "event, clustered within episodes; emitted per cohort (all | landmark)",
             "_numerator": "rate-change events with a fentanyl bolus charted within +/-30 min",
             "_denominator": "rate-change events of that kind, ventilated windows only",
-            "_caveat": "`any increase` = initiation union uptitration; downtitration is the NEGATIVE CONTROL and is excluded from it. `deff` is blank in the pooled row on purpose: it describes clustering within ONE site's episodes, so averaging two of them would describe nothing. The point estimate pools exactly; the interval does not."
+            "_caveat": "`any increase` = initiation union uptitration; downtitration is the NEGATIVE CONTROL and is excluded from it. `deff` is blank in the pooled row on purpose: it describes clustering within ONE site's episodes, so averaging two of them would describe nothing. The point estimate pools exactly; the interval does not. EACH ROW APPEARS TWICE, under cohort = all and cohort = landmark. `all` is the whole analytic cohort; `landmark` is the subset still on IMV at T = 72h, the only population the outcome analysis can speak for. Read them side by side -- the gap is the selection -- and never add them, because landmark is a subset of all.",
+            "_cohort_key_why": "A KEY, NOT A LABEL. `landmark` is a SUBSET of `all`, so summing the two rows -- which every sum_counts method does across whatever it is not keyed on -- would count every landmark event twice. Carrying cohort in `keys` makes the pooled table report the two strata side by side, which is the comparison SG asked for on 2026-10-27: the descriptive epidemiology belongs to the whole cohort, the outcome analysis can only speak for the landmark subset, and the gap between them IS the selection bias the paper has to declare."
         },
         "05_titration/indication.csv": {
             "method": "sum_counts",
             "grain": "event",
             "keys": [
+                "cohort",
                 "event_type",
                 "class",
                 "window_hours"
@@ -401,12 +404,13 @@
             },
             "_order": 20,
             "_title": "Was the escalation indicated? Documented pain or agitation nearby",
-            "_grain": "event, clustered within episodes",
+            "_grain": "event, clustered within episodes; emitted per cohort (all | landmark)",
             "_numerator": "pct_assessed: events with ANY score of that class within the window. pct_indicated_all: events with a score AT OR ABOVE that instrument's threshold",
             "_denominator": "events of that type. pct_indicated_of_assessed uses n_assessed instead, which is what separates documentation from indication",
-            "_caveat": "THE PAIN CLASS IS NOT COMPARABLE ACROSS SITES that chart different instruments: cpot_total >= 3 on a 0-8 scale and NVPS >= 4 on a 0-10 scale do not mark the same severity, and they behave differently under the window sweep. The SEDATION class uses RASS >= +1 everywhere and is the clean cross-site comparison."
+            "_caveat": "THE PAIN CLASS IS NOT COMPARABLE ACROSS SITES that chart different instruments: cpot_total >= 3 on a 0-8 scale and NVPS >= 4 on a 0-10 scale do not mark the same severity, and they behave differently under the window sweep. The SEDATION class uses RASS >= +1 everywhere and is the clean cross-site comparison. EACH ROW APPEARS TWICE, under cohort = all and cohort = landmark. `all` is the whole analytic cohort; `landmark` is the subset still on IMV at T = 72h, the only population the outcome analysis can speak for. Read them side by side -- the gap is the selection -- and never add them, because landmark is a subset of all.",
+            "_cohort_key_why": "A KEY, NOT A LABEL. `landmark` is a SUBSET of `all`, so summing the two rows -- which every sum_counts method does across whatever it is not keyed on -- would count every landmark event twice. Carrying cohort in `keys` makes the pooled table report the two strata side by side, which is the comparison SG asked for on 2026-10-27: the descriptive epidemiology belongs to the whole cohort, the outcome analysis can only speak for the landmark subset, and the gap between them IS the selection bias the paper has to declare."
         },
-        "05_titration/indication_window_sensitivity.csv": {
+        "05_titration/diagnostics/indication_window_sensitivity.csv": {
             "method": "sum_counts",
             "grain": "event",
             "keys": [
@@ -431,12 +435,14 @@
             "_grain": "event, clustered within episodes",
             "_numerator": "as indication.csv, swept over W = 1-4 h",
             "_denominator": "as indication.csv",
-            "_caveat": "Widening the window buys more ASSESSED events faster than more INDICATED ones, so the level rises with W at every site. The primary window is 1 h."
+            "_caveat": "Widening the window buys more ASSESSED events faster than more INDICATED ones, so the level rises with W at every site. The primary window is 1 h.",
+            "_relocated": "Moved from 05_titration/ into 05_titration/diagnostics/ on 2026-10-27 so the phase directory holds only what we report directly. Still shipped, still pooled -- the split is editorial. A site running an older tag emits it at the old path and pool_sites.R will refuse the bundle as unclaimed, which is the intended loud failure."
         },
         "05_titration/assessment_frequency.csv": {
             "method": "sum_counts",
             "grain": "episode_window",
             "keys": [
+                "cohort",
                 "instrument",
                 "class"
             ],
@@ -461,12 +467,13 @@
             "_why": "Answers the reviewer objection that a low indicated fraction reflects missing documentation rather than absent pain. Keyed by INSTRUMENT, so n_ventilated_windows repeats across the rows of one site and sums correctly across sites within an instrument -- no double counting. The denominator is VENTILATED windows, matching the indication analysis; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is 1.36x larger at UCMC, and setting the two side by side without noticing that looks like a contradiction.",
             "_order": 30,
             "_title": "How often is a score documented at all?",
-            "_grain": "episode-window (4h)",
+            "_grain": "episode-window (4h); emitted per cohort (all | landmark)",
             "_numerator": "ventilated windows containing at least one score of that instrument",
-            "_denominator": "that site's ventilated windows",
-            "_caveat": "An instrument charted at only ONE site pools to that site's own value by construction -- it is not a two-site estimate. The denominator is VENTILATED windows; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is larger, so quoting the two together without saying so looks contradictory."
+            "_denominator": "that site's ventilated windows, RESTRICTED TO THE SAME COHORT as the numerator -- landmark records over landmark ventilated windows. Dividing landmark records by the whole cohort's windows would report a cadence about 2x too sparse.",
+            "_caveat": "An instrument charted at only ONE site pools to that site's own value by construction -- it is not a two-site estimate. The denominator is VENTILATED windows; missingness.csv counts the same scores over ALIVE-ADMITTED windows, which is larger, so quoting the two together without saying so looks contradictory. EACH ROW APPEARS TWICE, under cohort = all and cohort = landmark. `all` is the whole analytic cohort; `landmark` is the subset still on IMV at T = 72h, the only population the outcome analysis can speak for. Read them side by side -- the gap is the selection -- and never add them, because landmark is a subset of all.",
+            "_cohort_key_why": "A KEY, NOT A LABEL. `landmark` is a SUBSET of `all`, so summing the two rows -- which every sum_counts method does across whatever it is not keyed on -- would count every landmark event twice. Carrying cohort in `keys` makes the pooled table report the two strata side by side, which is the comparison SG asked for on 2026-10-27: the descriptive epidemiology belongs to the whole cohort, the outcome analysis can only speak for the landmark subset, and the gap between them IS the selection bias the paper has to declare."
         },
-        "05_titration/window_sensitivity.csv": {
+        "05_titration/diagnostics/window_sensitivity.csv": {
             "method": "sum_counts",
             "grain": "event",
             "keys": [
@@ -487,9 +494,10 @@
             "_grain": "event, clustered within episodes",
             "_numerator": "events with a bolus within W minutes",
             "_denominator": "rate-change events of that kind",
-            "_caveat": "A result that holds only at the widest window is measuring charting cadence rather than practice. Read the ORDERING across widths, not the level."
+            "_caveat": "A result that holds only at the widest window is measuring charting cadence rather than practice. Read the ORDERING across widths, not the level.",
+            "_relocated": "Moved from 05_titration/ into 05_titration/diagnostics/ on 2026-10-27 so the phase directory holds only what we report directly. Still shipped, still pooled -- the split is editorial. A site running an older tag emits it at the old path and pool_sites.R will refuse the bundle as unclaimed, which is the intended loud failure."
         },
-        "05_titration/charting_precision.csv": {
+        "05_titration/diagnostics/charting_precision.csv": {
             "method": "sum_counts",
             "grain": "event",
             "keys": [
@@ -510,9 +518,10 @@
             "_grain": "event",
             "_numerator": "events paired with a bolus within W minutes",
             "_denominator": "events in that on-the-hour / off-the-hour class",
-            "_caveat": "On-the-hour timestamps are likely retrospectively rounded, so the true minute is unknown and pairing fails. A measurement-quality check, not a finding."
+            "_caveat": "On-the-hour timestamps are likely retrospectively rounded, so the true minute is unknown and pairing fails. A measurement-quality check, not a finding.",
+            "_relocated": "Moved from 05_titration/ into 05_titration/diagnostics/ on 2026-10-27 so the phase directory holds only what we report directly. Still shipped, still pooled -- the split is editorial. A site running an older tag emits it at the old path and pool_sites.R will refuse the bundle as unclaimed, which is the intended loud failure."
         },
-        "05_titration/charting_agreement.csv": {
+        "05_titration/diagnostics/charting_agreement.csv": {
             "method": "sum_counts",
             "grain": "event",
             "keys": [
@@ -522,12 +531,14 @@
             "numerators": [
                 "n_events"
             ],
-            "_why": "Counts of charted action label against the rate delta that defines the event. Summable."
+            "_why": "Counts of charted action label against the rate delta that defines the event. Summable.",
+            "_relocated": "Moved from 05_titration/ into 05_titration/diagnostics/ on 2026-10-27 so the phase directory holds only what we report directly. Still shipped, still pooled -- the split is editorial. A site running an older tag emits it at the old path and pool_sites.R will refuse the bundle as unclaimed, which is the intended loud failure."
         },
         "05_titration/adherence_distribution.csv": {
             "method": "sum_counts",
             "grain": "episode",
             "keys": [
+                "cohort",
                 "scope"
             ],
             "numerators": [
@@ -544,10 +555,11 @@
             },
             "_order": 70,
             "_title": "Per-episode share of increases that were paired",
-            "_grain": "episode",
+            "_grain": "episode; emitted per cohort (all | landmark)",
             "_numerator": "pct_never: episodes at exactly 0. pct_always: episodes at exactly 1",
             "_denominator": "n_episodes_ge_min_events -- episodes with at least 2 increases, NOT n_episodes",
-            "_caveat": "A single-event episode can only score 0 or 1, which would pile artificial mass at both ends of a distribution meant to describe a tendency. The word 'adherence' asserts a standard that no evidence here establishes."
+            "_caveat": "A single-event episode can only score 0 or 1, which would pile artificial mass at both ends of a distribution meant to describe a tendency. The word 'adherence' asserts a standard that no evidence here establishes. EACH ROW APPEARS TWICE, under cohort = all and cohort = landmark. `all` is the whole analytic cohort; `landmark` is the subset still on IMV at T = 72h, the only population the outcome analysis can speak for. Read them side by side -- the gap is the selection -- and never add them, because landmark is a subset of all.",
+            "_cohort_key_why": "A KEY, NOT A LABEL. `landmark` is a SUBSET of `all`, so summing the two rows -- which every sum_counts method does across whatever it is not keyed on -- would count every landmark event twice. Carrying cohort in `keys` makes the pooled table report the two strata side by side, which is the comparison SG asked for on 2026-10-27: the descriptive epidemiology belongs to the whole cohort, the outcome analysis can only speak for the landmark subset, and the gap between them IS the selection bias the paper has to declare."
         },
         "05_titration/rate_change_magnitude.csv": {
             "method": "sum_counts",
@@ -701,5 +713,9 @@
         "ed": "Emergency",
         "multiple": "Mixed/reclassified"
     },
-    "_care_setting_display_groups_why": "PRESENTATION ONLY, for the pooled figures. Centre-side: no site reads this and it does not affect any analysis. MEASURED 2026-10-27 across UCMC and Rush: only 2 of 10 care_setting values -- ed and medical_icu -- appear at BOTH sites. The other eight are unique to one, so colouring 14 units by 10 raw settings makes the colour a site label with extra steps, which defeats the reason for using care_setting at all (seeing whether, say, medical ICUs cluster high ACROSS hospitals). Grouping to 6 comparable classes restores that reading. THE MAPPING IS A CLINICAL JUDGEMENT AND IS PROVISIONAL: whether general_icu is Medical and whether mixed_cardiothoracic_icu groups with cardiac or with surgical are SG's calls, not the code's. An unmapped value falls through to its own label rather than being silently bucketed. NOTE the grouping does not rescue comparability by itself -- at these two sites even the shared categories separate BY SITE (ED 11.5% vs 65.4%; medical ICUs 20.8-23.1% vs 26.9-45.8%), which is itself the finding: site dominates care setting."
+    "_care_setting_display_groups_why": "PRESENTATION ONLY, for the pooled figures. Centre-side: no site reads this and it does not affect any analysis. MEASURED 2026-10-27 across UCMC and Rush: only 2 of 10 care_setting values -- ed and medical_icu -- appear at BOTH sites. The other eight are unique to one, so colouring 14 units by 10 raw settings makes the colour a site label with extra steps, which defeats the reason for using care_setting at all (seeing whether, say, medical ICUs cluster high ACROSS hospitals). Grouping to 6 comparable classes restores that reading. THE MAPPING IS A CLINICAL JUDGEMENT AND IS PROVISIONAL: whether general_icu is Medical and whether mixed_cardiothoracic_icu groups with cardiac or with surgical are SG's calls, not the code's. An unmapped value falls through to its own label rather than being silently bucketed. NOTE the grouping does not rescue comparability by itself -- at these two sites even the shared categories separate BY SITE (ED 11.5% vs 65.4%; medical ICUs 20.8-23.1% vs 26.9-45.8%), which is itself the finding: site dominates care setting.",
+    "_changelog": {
+        "0.2.0": "2026-10-27, for protocol.json 0.8.0. Four 05 files gained `cohort` as their FIRST key (all | landmark). Four method checks moved to 05_titration/diagnostics/ and their spec keys moved with them. Table 1 strata changed from predominant dose band to cohort membership, so `stratum` in pooling_categorical.csv and pooling_continuous.csv takes overall | Landmark | Not landmark. A bundle from 0.1.0 WILL be refused: the moved files arrive at paths this spec does not claim, which is the intended loud failure rather than a silent partial pool.",
+        "0.1.0": "2026-10-26. First version, written with code/pool_sites.R."
+    }
 }

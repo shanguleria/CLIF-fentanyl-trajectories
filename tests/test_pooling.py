@@ -182,6 +182,74 @@ def test_the_categorical_export_carries_every_stratum_the_continuous_one_does():
         )
 
 
+# ------------------------------------------------- the spec and the writers
+SPEC = REPO / "config" / "pooling_spec.json"
+
+
+def test_the_pooling_spec_claims_every_csv_the_pipeline_writes():
+    """A path the spec does not claim is refused at the CENTRE, after the upload.
+
+    pool_sites.R hard-stops on an unclaimed file -- deliberately, since a silent
+    partial pool is worse -- but it does so on someone else's machine, days
+    later, with a bundle that has to be rebuilt. This catches the same divergence
+    here, on the site's own run. It earned its place on 2026-10-27, when four
+    method checks moved into 05_titration/diagnostics/ and their spec keys had to
+    move with them.
+
+    Keyed on what is ON DISK rather than on the OWNED lists, because OWNED is R
+    and parsing it from Python would test the parser. That makes this a check of
+    a completed run; it skips when the tree is empty.
+    """
+    claimed = set(json.loads(SPEC.read_text())["files"])
+    if not OUT.is_dir():
+        print("  SKIP  no output/final_no_phi -- run the pipeline")
+        return
+    on_disk = {f.relative_to(OUT).as_posix() for f in OUT.rglob("*.csv")}
+    # Phase 0's strobe.csv and the tabled scripts' leftovers are not pooled.
+    labels = set(json.loads(SPEC.read_text()).get("not_poolable_columns", []))
+    unclaimed = sorted(on_disk - claimed)
+    assert not unclaimed, (
+        f"config/pooling_spec.json claims no entry for: {unclaimed}. Either add "
+        f"one, or if the file is deliberately not pooled say so there -- "
+        f"pool_sites.R will refuse the whole bundle otherwise.")
+    # The converse -- a spec entry with no file -- is checked only inside phase
+    # directories that produced SOMETHING. A phase mid-run has just cleared its
+    # own outputs, which is indistinguishable from a relocation; asserting
+    # globally made this test fail whenever it ran beside a live pipeline. Scoped
+    # this way it still catches a file moved WITHIN a phase, which is the bug.
+    produced = {f.parent.relative_to(OUT).as_posix() for f in OUT.rglob("*.csv")}
+    missing = sorted(k for k in claimed
+                     if str(Path(k).parent) in produced and not (OUT / k).is_file())
+    assert not missing, (
+        f"the spec claims files their own phase did not write: {missing}. A "
+        f"relocated output leaves the spec pointing at the old path.")
+    assert labels, "not_poolable_columns must be declared"
+
+
+def test_the_cohort_column_is_a_key_wherever_it_is_emitted():
+    """`landmark` is a SUBSET of `all`. If cohort is emitted but not keyed, every
+    sum_counts method adds the two rows and double-counts every landmark event --
+    silently, in the plausible direction, with a pooled numerator that still
+    looks like a count."""
+    spec = json.loads(SPEC.read_text())["files"]
+    for rel, entry in spec.items():
+        f = OUT / rel
+        if not f.is_file():
+            continue
+        cols = set(pd.read_csv(f, nrows=1).columns)
+        if "cohort" not in cols:
+            continue
+        assert "cohort" in entry.get("keys", []), (
+            f"{rel} ships a `cohort` column but the spec does not key on it; "
+            f"pooling would add `all` and `landmark` together")
+        d = pd.read_csv(f)
+        assert set(d["cohort"]) <= {"all", "landmark"}, (
+            f"{rel} carries an unexpected cohort value: {sorted(set(d['cohort']))}")
+        n_all = (d["cohort"] == "all").sum()
+        assert n_all and (d["cohort"] == "landmark").sum(), (
+            f"{rel} must carry both cohorts or the comparison is not available")
+
+
 HISTS = [OUT / "02_descriptive" / "pooling_histograms.csv",
          OUT / "05_titration" / "pooling_histograms.csv"]
 

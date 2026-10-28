@@ -47,6 +47,10 @@ if ! "$PY" tests/test_build_cohort.py; then
   echo "ERROR: Phase 0 logic failed its tests. Nothing was run." >&2
   exit 1
 fi
+if ! "$PY" tests/test_vfd.py; then
+  echo "ERROR: ventilator-free days failed its tests. Nothing was run." >&2
+  exit 1
+fi
 echo
 
 echo "== Phase 0: build cohort (Python) =="

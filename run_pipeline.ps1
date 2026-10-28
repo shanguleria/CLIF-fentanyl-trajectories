@@ -27,6 +27,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "dose unit conversion failed its tests. N
 if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Nothing was run." }
 & $py tests/test_build_cohort.py
 if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 logic failed its tests. Nothing was run." }
+& $py tests/test_vfd.py
+if ($LASTEXITCODE -ne 0) { Write-Error "ventilator-free days failed its tests. Nothing was run." }
 Write-Host ""
 
 Write-Host "== Phase 0: build cohort (Python) =="

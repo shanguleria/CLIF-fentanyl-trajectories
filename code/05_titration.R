@@ -5,7 +5,9 @@
 # Author  : Shan Guleria
 # Created : 2026-09-24
 # Inputs  : output/intermediate_phi/titration_{rate,bolus}_events.parquet, trajectory_long.parquet
-# Outputs : output/final_no_phi/05_titration/ : the files listed in OWNED
+# Outputs : output/final_no_phi/05_titration/            reported directly
+#           output/final_no_phi/05_titration/diagnostics/ method checks
+#           both listed in OWNED, which also decides where each one is written
 #
 # DESCRIPTIVE ONLY. Associations between adherence and average rate, cumulative
 # dose or time to extubation are deliberately deferred (SG, 2026-09-24). The
@@ -93,6 +95,11 @@ stopifnot(
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "05_titration")
+# SG, 2026-10-27: method checks and sensitivity analyses go in their own folder
+# so what remains in the phase directory is only what we intend to REPORT. The
+# split is editorial, not technical -- every file here still ships, and the
+# pooling spec reaches into the subfolder by path.
+dirs$diagnostics <- phase_dir(dirs, file.path("05_titration", "diagnostics"))
 prov <- provenance(config)
 
 message(sprintf("[05_titration] site=%s  clif=%s  data=%s",
@@ -109,16 +116,26 @@ OWNED <- list(
   out_phi = c("titration_adherence.parquet",
               "titration_events_classified.parquet",
               "indication_events.parquet"),
-  phase   = c("coadministration.csv", "window_sensitivity.csv",
-              "indication.csv", "indication_window_sensitivity.csv",
-              "indication.png",
-              "charting_precision.csv", "rate_change_magnitude.csv",
-              "charting_agreement.csv", "adherence_distribution.csv",
-              "assessment_frequency.csv",
-              "pooling_histograms.csv",
-              "coadministration.png", "window_sensitivity.png",
-              "provenance.json", "captions.md"))
-RETIRED <- character(0)          # new script on 2026-09-24
+  # REPORTED DIRECTLY. rate_change_magnitude.csv stays here by SG's decision on
+  # 2026-10-27 -- it describes the exposure, not the method.
+  phase   = c("coadministration.csv", "indication.csv",
+              "adherence_distribution.csv", "assessment_frequency.csv",
+              "rate_change_magnitude.csv", "pooling_histograms.csv",
+              "coadministration.png", "indication.png",
+              "provenance.json", "captions.md"),
+  # METHOD CHECKS. Two window sweeps that establish the headline is not an
+  # artifact of the window, and two charting-resolution checks that establish the
+  # denominator is real. All four are cited in Methods, none is a result.
+  diagnostics = c("window_sensitivity.csv", "indication_window_sensitivity.csv",
+                  "charting_precision.csv", "charting_agreement.csv",
+                  "window_sensitivity.png"))
+# The four method checks and one figure moved down into diagnostics/ on
+# 2026-10-27; their copies in the phase directory are stale twins that
+# clear_owned_outputs no longer names.
+RETIRED <- file.path("output", "final_no_phi", "05_titration",
+                     c("window_sensitivity.csv", "indication_window_sensitivity.csv",
+                       "charting_precision.csv", "charting_agreement.csv",
+                       "window_sensitivity.png"))
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -154,6 +171,42 @@ long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 
 cat(sprintf("\n%s rate record(s), %s bolus record(s), %s episodes\n",
             format(nrow(rate), big.mark = ","), format(nrow(bol), big.mark = ","),
+            format(length(unique(rate$encounter_block)), big.mark = ",")))
+
+
+# ---- 5b. Cohort strata -------------------------------------------------------
+# TWO COHORTS, ONE SET OF FILES. The descriptive epidemiology belongs to the
+# whole analytic cohort; the outcome analysis can only speak for the landmark
+# cohort, which is a SELECTED subset -- alive, admitted and still on IMV at T.
+# SG, 2026-10-27, asked for both without "creating too many outputs", so each of
+# the four reported tables gains a `cohort` column rather than a twin file.
+#
+# IT IS A KEY, NOT A LABEL. landmark is a SUBSET of all, so summing across the
+# two -- here or at the coordinating centre -- double-counts every landmark
+# event. config/pooling_spec.json carries `cohort` in `keys` for exactly this
+# reason, and the pooled summary reports the two side by side.
+tte <- as.data.frame(read_parquet(
+  file.path(dirs$out_phi, "time_to_event.parquet"),
+  col_select = c("encounter_block", "landmark_eligible")))
+ELIG <- tte$encounter_block[tte$landmark_eligible]
+# NULL means no restriction. Spelling `all` as NULL rather than as the full id
+# list keeps the unrestricted pass byte-identical to what this script produced
+# before the column existed, which is how the change was verified.
+COHORTS <- list(all = NULL, landmark = ELIG)
+
+keep_rows <- function(d, keep)
+  if (is.null(keep)) d else d[d$encounter_block %in% keep, , drop = FALSE]
+
+by_cohort <- function(build) {
+  do.call(rbind, lapply(names(COHORTS), function(ck) {
+    out <- build(COHORTS[[ck]])
+    if (is.null(out) || !nrow(out)) return(NULL)
+    rownames(out) <- NULL
+    cbind(cohort = ck, out, stringsAsFactors = FALSE)
+  }))
+}
+cat(sprintf("  landmark cohort: %s of %s episodes with a titration record\n",
+            format(length(intersect(ELIG, unique(rate$encounter_block))), big.mark = ","),
             format(length(unique(rate$encounter_block)), big.mark = ",")))
 
 
@@ -256,22 +309,29 @@ boot_one <- function(d, outcome_col) {
              deff = round(r$deff[1], 3))
 }
 
-coad <- summarise_pairing(ev, "kind")
 inc <- ev[ev$kind != "downtitration", ]
-coad <- rbind(
-  coad,
-  data.frame(group = "any increase", n_events = nrow(inc),
-             n_episodes = length(unique(inc$encounter_block)),
-             events_per_episode = round(nrow(inc) / length(unique(inc$encounter_block)), 2),
-             n_paired = sum(inc$paired),
-             pct_paired = round(100 * mean(inc$paired), 1)))
-coad <- cbind(coad, do.call(rbind, lapply(coad$group, function(g) {
-  boot_one(if (identical(g, "any increase")) inc else ev[ev$kind == g, ], "paired")
-})))
-coad$window_minutes <- WIN_MIN
+
+build_coad <- function(keep) {
+  e <- keep_rows(ev, keep)
+  i <- e[e$kind != "downtitration", ]
+  if (!nrow(i)) return(NULL)
+  out <- rbind(
+    summarise_pairing(e, "kind"),
+    data.frame(group = "any increase", n_events = nrow(i),
+               n_episodes = length(unique(i$encounter_block)),
+               events_per_episode = round(nrow(i) / length(unique(i$encounter_block)), 2),
+               n_paired = sum(i$paired),
+               pct_paired = round(100 * mean(i$paired), 1)))
+  out <- cbind(out, do.call(rbind, lapply(out$group, function(g) {
+    boot_one(if (identical(g, "any increase")) i else e[e$kind == g, ], "paired")
+  })))
+  out$window_minutes <- WIN_MIN
+  out
+}
+coad <- by_cohort(build_coad)
 
 cat(sprintf("\nBolus within +/-%g min of the event\n", WIN_MIN))
-print(coad[, c("group", "n_events", "n_episodes", "events_per_episode",
+print(coad[, c("cohort", "group", "n_events", "n_episodes", "events_per_episode",
                "n_paired", "pct_paired")], row.names = FALSE)
 cat(sprintf("  percentages are EVENT-level; %s episodes contribute the %s increases\n",
             format(length(unique(inc$encounter_block)), big.mark = ","),
@@ -371,10 +431,12 @@ adherence <- function(d, tag) {
   agg$scope <- tag
   agg
 }
+# adh itself stays UNRESTRICTED: the pooling histogram below is a whole-cohort
+# distribution and restricting it would silently change what that figure means.
 adh <- rbind(adherence(ev, "overall"),
              adherence(ev[ev$t_hr <= ADH_LM_H, ], sprintf("first_%gh", ADH_LM_H)))
 
-adh_dist <- do.call(rbind, lapply(split(adh, adh$scope), function(x) {
+summarise_adherence <- function(a) do.call(rbind, lapply(split(a, a$scope), function(x) {
   e <- x[x$n_events >= MIN_EV, ]
   data.frame(scope = x$scope[1],
              n_episodes = nrow(x),
@@ -390,6 +452,14 @@ adh_dist <- do.call(rbind, lapply(split(adh, adh$scope), function(x) {
              pct_never = round(100 * mean(e$adherence == 0), 1),
              pct_always = round(100 * mean(e$adherence == 1), 1))
 }))
+
+adh_dist <- by_cohort(function(keep) {
+  e <- keep_rows(ev, keep)
+  a <- rbind(adherence(e, "overall"),
+             adherence(e[e$t_hr <= ADH_LM_H, ], sprintf("first_%gh", ADH_LM_H)))
+  if (is.null(a)) return(NULL)
+  summarise_adherence(a)
+})
 cat(sprintf("\nPer-encounter adherence (episodes with >= %g increases)\n", MIN_EV))
 print(adh_dist, row.names = FALSE)
 
@@ -439,13 +509,21 @@ cat(sprintf("\nPooling histograms: %s (%d bins total)\n",
 
 asm_w <- asm
 asm_w$window_idx <- floor(asm_w$t_hr / WINDOW_H)
-vent_keys <- paste(long$encounter_block[long$ventilated],
-                   long$window_idx[long$ventilated], sep = "\r")
-n_vent_windows <- length(vent_keys)
-vent_days <- n_vent_windows * WINDOW_H / 24
+vent <- long[long$ventilated, c("encounter_block", "window_idx")]
 
-asm_freq <- do.call(rbind, lapply(sort(unique(asm$instrument)), function(ins) {
-  d <- asm_w[asm_w$instrument == ins, ]
+# THE DENOMINATOR RESTRICTS WITH THE NUMERATOR. For the landmark pass both the
+# records and the ventilated windows they are counted over come from the landmark
+# episodes -- restricting only the numerator would divide landmark records by the
+# whole cohort's windows and report a cadence roughly 2x too sparse.
+build_asm_freq <- function(keep) {
+  a <- keep_rows(asm_w, keep)
+  v <- keep_rows(vent, keep)
+  vent_keys <- paste(v$encounter_block, v$window_idx, sep = "\r")
+  n_vent_windows <- length(vent_keys)
+  vent_days <- n_vent_windows * WINDOW_H / 24
+  if (!nrow(a) || !n_vent_windows) return(NULL)
+  out <- do.call(rbind, lapply(sort(unique(a$instrument)), function(ins) {
+  d <- a[a$instrument == ins, ]
   # Gaps are WITHIN an episode and between consecutive records. A gap across two
   # episodes is not a charting interval, it is a discharge.
   gaps <- unlist(lapply(split(d$t_hr, d$encounter_block), function(t) {
@@ -467,16 +545,20 @@ asm_freq <- do.call(rbind, lapply(sort(unique(asm$instrument)), function(ins) {
     n_gaps = length(gaps),
     gap_p50 = q(0.50), gap_p75 = q(0.75), gap_p90 = q(0.90), gap_p95 = q(0.95),
     stringsAsFactors = FALSE)
-}))
-asm_freq$pct_windows_with_any <-
-  round(100 * asm_freq$n_windows_with_any / asm_freq$n_ventilated_windows, 1)
+  }))
+  out$pct_windows_with_any <-
+    round(100 * out$n_windows_with_any / out$n_ventilated_windows, 1)
+  out
+}
+asm_freq <- by_cohort(build_asm_freq)
 stopifnot(
   "a documented window count exceeds the ventilated windows it is counted over" =
     all(asm_freq$n_windows_with_any <= asm_freq$n_ventilated_windows))
 
 cat("\nAssessment documentation frequency (ventilated windows)\n")
-print(asm_freq[, c("instrument", "class", "n_records", "records_per_ventilated_day",
-                   "pct_windows_with_any", "gap_p50", "gap_p90")], row.names = FALSE)
+print(asm_freq[, c("cohort", "instrument", "class", "n_records",
+                   "records_per_ventilated_day", "pct_windows_with_any",
+                   "gap_p50", "gap_p90")], row.names = FALSE)
 
 
 # ---- 8b. Was the dose change indicated? --------------------------------------
@@ -569,21 +651,48 @@ for (w in IND_SWEEP_H) {
 }
 ind_sens <- do.call(rbind, ind_rows)
 ind_sens$class <- factor(ind_sens$class, levels = c("pain", "sedation", "either"))
-ind <- ind_sens[ind_sens$window_hours == IND_WIN_H, ]
+
+# THE SWEEP STAYS WHOLE-COHORT. It is a method check -- it establishes that the
+# headline is not an artifact of the window width -- and that question is about
+# the measurement, not the population. Running it twice would double a
+# diagnostic nobody reports per cohort. The PRIMARY window below carries both.
+IND_HIT <- list(pain = PAIN_HIT, sedation = SED_HIT, either = BOTH_HIT)
 
 # Bootstrap the PRIMARY window only. The sweep's 24 rows would say nothing
 # further about the clustering and would cost 24 x BOOT_REPS to learn it. The
 # interval is on pct_indicated_all, which is why the columns say so -- this row
 # carries four different percentages and a bare `ci_lo` would be ambiguous.
-IND_HIT <- list(pain = PAIN_HIT, sedation = SED_HIT, either = BOTH_HIT)
-ind <- cbind(ind, do.call(rbind, lapply(seq_len(nrow(ind)), function(i) {
-  d <- ev_sets[[as.character(ind$event_type[i])]]
-  b <- boot_one(data.frame(encounter_block = d$encounter_block,
-                           y = near_any(d, IND_HIT[[as.character(ind$class[i])]],
-                                        IND_WIN_H)), "y")
-  names(b) <- paste0("indicated_", names(b))
-  b
-})))
+ind <- by_cohort(function(keep) {
+  es <- lapply(ev_sets, keep_rows, keep = keep)
+  rows <- do.call(rbind, lapply(names(es), function(etype) {
+    d <- es[[etype]]
+    if (!nrow(d)) return(NULL)
+    rbind(indication_row(d, IND_WIN_H, etype, "pain", PAIN_HIT, PAIN_ANY),
+          indication_row(d, IND_WIN_H, etype, "sedation", SED_HIT, SED_ANY),
+          indication_row(d, IND_WIN_H, etype, "either", BOTH_HIT, BOTH_ANY))
+  }))
+  if (is.null(rows)) return(NULL)
+  rows$class <- factor(rows$class, levels = c("pain", "sedation", "either"))
+  cbind(rows, do.call(rbind, lapply(seq_len(nrow(rows)), function(i) {
+    d <- es[[as.character(rows$event_type[i])]]
+    b <- boot_one(data.frame(encounter_block = d$encounter_block,
+                             y = near_any(d, IND_HIT[[as.character(rows$class[i])]],
+                                          IND_WIN_H)), "y")
+    names(b) <- paste0("indicated_", names(b))
+    b
+  })))
+})
+# The whole-cohort rows must be the same numbers the sweep reports at the primary
+# window -- two code paths, one quantity, so they are compared rather than
+# assumed. This is what makes the `all` pass verifiably unchanged.
+local({
+  a <- ind[ind$cohort == "all", ]
+  b <- ind_sens[ind_sens$window_hours == IND_WIN_H, ]
+  k <- c("event_type", "class", "n_events", "n_assessed", "n_indicated")
+  a <- a[order(a$event_type, a$class), k]; b <- b[order(b$event_type, b$class), k]
+  stopifnot("the per-cohort indication rows disagree with the window sweep" =
+              isTRUE(all.equal(a, b, check.attributes = FALSE)))
+})
 
 # The accounting must close, and a wider window can only ADD qualifying scores.
 # A fall as the window widens means the join is wrong, not that practice changed.
@@ -599,7 +708,7 @@ for (k in split(ind_sens, list(ind_sens$event_type, ind_sens$class), drop = TRUE
 }
 
 cat("\n", sprintf("Documented indication within +/-%gh of the dose change\n", IND_WIN_H))
-print(ind[, c("event_type", "class", "n_events", "pct_assessed",
+print(ind[, c("cohort", "event_type", "class", "n_events", "pct_assessed",
               "pct_indicated_all", "pct_indicated_of_assessed",
               "pct_indicated_backward_only")], row.names = FALSE)
 
@@ -630,7 +739,10 @@ register_caption("coadministration.png",
             nrow(inc) / length(unique(inc$encounter_block)))))
 
 p_coad <- house(
-  ggplot(coad[coad$group %in% EVENT_LEVELS, ],
+  # WHOLE COHORT. coad carries both cohorts since 2026-10-27 and plotting it
+  # unfiltered would draw two bars per group with no way to tell them apart.
+  # The landmark rows are reported in the table, not here.
+  ggplot(coad[coad$cohort == "all" & coad$group %in% EVENT_LEVELS, ],
          aes(factor(group, levels = EVENT_LEVELS), pct_paired,
              fill = factor(group, levels = EVENT_LEVELS))) +
     geom_col(width = 0.62) +
@@ -679,7 +791,7 @@ p_sens <- house(
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
     labs(x = "Pairing window, +/- minutes",
          y = "% of rate-change EVENTS with a bolus"))
-ggsave(file.path(dirs$phase, "window_sensitivity.png"), p_sens,
+ggsave(file.path(dirs$diagnostics, "window_sensitivity.png"), p_sens,
        width = 7.5, height = 4.4, dpi = 200)
 
 
@@ -742,9 +854,15 @@ ggsave(file.path(dirs$phase, "indication.png"), p_ind,
 
 # ---- 10. Write ---------------------------------------------------------------
 
+# Destination comes from OWNED, so a file cannot be declared in one folder and
+# written to another -- the failure that a hand-passed path invites.
 write_out <- function(x, name) {
-  write.csv(x, file.path(dirs$phase, name), row.names = FALSE)
-  cat(sprintf("written: %s\n", name))
+  key <- if (name %in% OWNED$diagnostics) "diagnostics" else "phase"
+  stopifnot("write_out called for a file OWNED does not declare" =
+              name %in% c(OWNED$phase, OWNED$diagnostics))
+  write.csv(x, file.path(dirs[[key]], name), row.names = FALSE)
+  cat(sprintf("written: %s%s\n", if (key == "diagnostics") "diagnostics/" else "",
+              name))
 }
 
 report_small_cells <- function(x, name) {
@@ -838,7 +956,10 @@ stopifnot(
 # would report different numbers for the same quantity.
 for (et in c("increase", "bolus")) {
   here <- 100 * mean(ind_ev$any_indicated[ind_ev$event_type == et])
-  there <- ind$pct_indicated_all[ind$event_type == et & ind$class == "either"]
+  # The handoff is the WHOLE cohort -- 06 splits it by unit, not by landmark
+  # membership -- so it is compared against the `all` rows.
+  there <- ind$pct_indicated_all[ind$cohort == "all" & ind$event_type == et
+                                 & ind$class == "either"]
   stopifnot("the handoff disagrees with indication.csv" = abs(here - there) < 0.05)
 }
 
@@ -853,7 +974,8 @@ write_json(prov, file.path(dirs$phase, "provenance.json"),
 cat("written: provenance.json\n")
 
 write_captions(file.path(dirs$phase, "captions.md"), "05_titration.R",
-               grep("\\.png$", OWNED$phase, value = TRUE), prov)
+               grep("\\.png$", c(OWNED$phase, OWNED$diagnostics), value = TRUE),
+               prov)
 cat("written: captions.md\n")
 
 

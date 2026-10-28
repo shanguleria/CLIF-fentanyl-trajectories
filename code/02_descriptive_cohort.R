@@ -27,7 +27,6 @@ for (p in pkgs) {
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
 source(here("code", "utils", "figures.R"))
-source(here("code", "utils", "states.R"))   # predominant_band(), for Table 1
 
 
 # ---- 2. Config (never setwd(); here() anchors to the .Rproj) -----------------
@@ -41,16 +40,10 @@ EXTENT_H  <- COV$cohort$granular_extent_hours
 PANELS    <- unlist(COV$cohort$balanced_panel_hours)
 LANDMARK  <- COV$cohort$landmark_hours
 
-# Dose-band definition. Read from the config, never defaulted here: the cuts are
-# federation-critical and a local default is how a site keeps cutting at the old
-# values after the consortium moves them.
-DS_SPEC   <- COV$exposure$dose_states
-DOSE_CUTS <- as.numeric(unlist(DS_SPEC$cuts))
-DOSE_LAB  <- unlist(DS_SPEC$labels)
-stopifnot("protocol.json exposure.dose_states must declare cuts and labels" =
-            length(DOSE_CUTS) > 0 && length(DOSE_LAB) == length(DOSE_CUTS) + 2,
-          "dose states must be defined on window_mcg" =
-            identical(DS_SPEC$variable, "window_mcg"))
+# The dose bands were read here only to cut the predominant-intensity stratum,
+# which was tabled on 2026-10-27. They are still read and validated in 04, where
+# the state figures that use them live; declaring them here as well would
+# be a second copy of a federation-critical constant with no consumer.
 SED_UNITS <- COV$exposure$sedatives$units
 
 # Read the drug list FROM the config rather than restating it. A hardcoded list
@@ -366,30 +359,40 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
 
 base <- long[long$window_idx == 0, ]
 
-# STRATIFIED ON PREDOMINANT FENTANYL INTENSITY (SG, 2026-09-24), replacing
-# landmark-eligible vs not. That split was a leftover from the modelling design:
-# "eligible vs not" is "survived ventilated to 72h vs not", a severity contrast
-# rather than a delivery contrast, and its p-value invited reading as a finding.
+# STRATIFIED ON COHORT MEMBERSHIP (SG, 2026-10-27), replacing predominant
+# fentanyl intensity, which is tabled at protocol.json
+# _tabled_predominant_intensity with its reasoning intact. The study became a
+# question about the landmark cohort, and the Table 1 a reader needs is the one
+# that shows whether that cohort is a selected population.
 #
-# The bands are ORDERED, so the test below is a trend test, not an omnibus one.
-# The same rule on delivery ROUTE was measured first and rejected -- it left
-# `continuous + bolus` with n = 124.
-PI_SPEC <- COV$predominant_intensity
-stopifnot("protocol.json must declare predominant_intensity" = !is.null(PI_SPEC),
-          "the stratification must use the declared dose bands" =
-            identical(PI_SPEC$bands_from, "exposure.dose_states"),
-          "the stratification variable must be the one the bands are cut on" =
-            identical(PI_SPEC$variable, DS_SPEC$variable))
-pi_class <- predominant_band(long, DOSE_CUTS, DOSE_LAB, window_h = WINDOW_H,
-                             tie_break = PI_SPEC$tie_break)
-base <- merge(base, pi_class, by = "encounter_block", all.x = TRUE)
-stopifnot("every analytic block must receive a predominant band" =
-            !any(is.na(base$band)))
-
-grp     <- base$band
-STRATA  <- levels(grp)
-cat(sprintf("\nTable 1 stratified on predominant intensity (%s ties broken %s)\n",
-            format(sum(base$tied), big.mark = ","), PI_SPEC$tie_break))
+# THREE COLUMNS, AND THE THIRD IS WHAT MAKES THE TEST LEGAL. Overall is the whole
+# analytic cohort; Landmark is the subset carried into the outcome analysis; Not
+# landmark is the complement. A p-value between Overall and Landmark would
+# compare a group with itself. See table1._why_the_complement_column.
+T1 <- COV$table1
+stopifnot("protocol.json must declare table1" = !is.null(T1),
+          "Table 1 must be stratified on cohort membership" =
+            identical(T1$stratify_on, "cohort_membership"),
+          "table1.strata must name exactly two mutually exclusive groups" =
+            length(unlist(T1$strata)) == 2)
+STRATA <- unlist(T1$strata)
+# The declared test NAMES the operation and labels the column, so a protocol that
+# changes the test changes both. Hardcoding either would make test_continuous a
+# policy declaration nothing honours -- which is what the test suite caught.
+T1_TESTS <- list(wilcoxon = list(label = "difference (Wilcoxon)",
+                                 fn = function(v, g) stats::wilcox.test(v ~ g, exact = FALSE)$p.value),
+                 `chi-square` = list(label = "heterogeneity (chi-square)",
+                                     fn = function(tab) stats::chisq.test(tab)$p.value))
+stopifnot("table1 declares a test this script cannot run" =
+            all(c(T1$test_continuous, T1$test_categorical) %in% names(T1_TESTS)))
+T1_CONT <- T1_TESTS[[T1$test_continuous]]
+T1_CAT  <- T1_TESTS[[T1$test_categorical]]
+base$landmark_eligible <- base$encounter_block %in% elig
+grp <- factor(ifelse(base$landmark_eligible, STRATA[1], STRATA[2]),
+              levels = STRATA)
+cat(sprintf("\nTable 1 stratified on cohort membership (%s of %s blocks reach T=%dh)\n",
+            format(sum(base$landmark_eligible), big.mark = ","),
+            format(nrow(base), big.mark = ","), LANDMARK))
 print(table(grp))
 
 hdr <- function(label, n) sprintf("%s (N = %s)", label, format(n, big.mark = ","))
@@ -418,23 +421,21 @@ fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
 # sum_sq into POOL, because a median cannot be pooled across sites and a display
 # string cannot be pooled at all.
 
-# The strata are ORDERED, so the question is whether a characteristic trends
-# across increasing fentanyl intensity -- not whether any two differ. Spearman
-# rho against the band index is a trend test and is in base R; an omnibus
-# Kruskal-Wallis would answer a weaker question and is easier to over-read.
+# TWO MUTUALLY EXCLUSIVE GROUPS, so the test is a rank-sum DIFFERENCE. Until
+# 2026-10-27 the strata were ordered dose bands and this was a Spearman trend
+# test; run across two unordered groups that returns the same number wearing a
+# label that claims a gradient, which is why the row names its own test.
 row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
   for (st in c("overall", STRATA)) {
     x <- if (st == "overall") v else v[grp == st]
     POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x, MIN_CELL)
   }
-  p <- tryCatch(stats::cor.test(as.integer(grp), v, method = "spearman",
-                                exact = FALSE)$p.value,
-                error = function(e) NA_real_)
+  p <- tryCatch(T1_CONT$fn(v, grp), error = function(e) NA_real_)
   out <- data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
                     overall = fmt_iqr(v, digits), stringsAsFactors = FALSE)
   for (st in STRATA) out[[st]] <- fmt_iqr(v[grp == st], digits)
   out$p_value <- fmt_p(p)
-  out$test <- "trend (Spearman)"
+  out$test <- T1_CONT$label
   out
 }
 
@@ -452,13 +453,13 @@ row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
   tab <- table(v, grp)
   keep <- rownames(tab)[rownames(tab) != "Missing"]
   p <- if (length(keep) > 1 && all(dim(tab[keep, , drop = FALSE]) > 1))
-    tryCatch(stats::chisq.test(tab[keep, , drop = FALSE])$p.value,
-             error = function(e) NA_real_) else NA_real_
+    tryCatch(T1_CAT$fn(tab[keep, , drop = FALSE]), error = function(e) NA_real_)
+    else NA_real_
   head <- data.frame(characteristic = sprintf("__%s__, n (%%)", label),
                      overall = "", stringsAsFactors = FALSE)
   for (st in STRATA) head[[st]] <- ""
   head$p_value <- fmt_p(p)
-  head$test <- "heterogeneity (chi-square)"
+  head$test <- T1_CAT$label
   body <- do.call(rbind, lapply(lv, function(l) {
     r <- data.frame(characteristic = paste0("    ", l),
                     overall = fmt_pct(sum(v == l), length(v)),
@@ -489,27 +490,26 @@ baseline <- rbind(
     sprintf("%s dose, first window (%s)",
             paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
     base[[DRUGS[[d]]]], UNITS[[d]]))),
-  row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours"),
-  # Not baseline characteristics -- properties of the stratification itself,
-  # reported so its two artifacts stay visible rather than being argued away.
-  # At-risk hours expose a duration confound (a short course cannot accumulate
-  # zero windows); modal share says how decisive each label is. Both are gated
-  # on the config flags so the declaration governs rather than decorates.
-  if (isTRUE(PI_SPEC$report_at_risk_hours))
-    row_continuous("At-risk time on the ventilator, hours",
-                   base$at_risk_hours, "hours"),
-  if (isTRUE(PI_SPEC$report_modal_share))
-    row_continuous("Share of at-risk time in the assigned band",
-                   base$modal_share, "proportion")
+  row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours")
+  # The two rows that reported properties of the predominant-intensity
+  # stratification -- at-risk hours and modal share -- went with it on
+  # 2026-10-27. They described that label's artifacts and say nothing about
+  # cohort membership, which is observed rather than assigned.
 )
-# The strata are ordered, so most rows carry a TREND test; categorical rows can
-# only carry heterogeneity. Naming the test per row is the only way a reader can
-# tell which question a given p-value answered.
+# Continuous rows carry a rank-sum DIFFERENCE, categorical rows a heterogeneity
+# chi-square. Naming the test per row is the only way a reader can tell which
+# question a given p-value answered.
 names(baseline) <- c("Characteristic", COLS, "p-value", "test")
 
 stopifnot(
   "the strata must partition the cohort" = sum(table(grp)) == nrow(base),
-  "every stratum must be non-empty" = all(table(grp) > 0),
+  # Not a data finding either way: every block is landmark-eligible or not, so an
+  # empty column means `elig` did not arrive, not that a site has no such
+  # patients. Catching it here beats a Table 1 of NaNs.
+  "every stratum must be non-empty -- check that time_to_event.parquet loaded" =
+    all(table(grp) > 0),
+  "the Landmark column must match the landmark cohort exactly" =
+    sum(grp == STRATA[1]) == length(intersect(elig, base$encounter_block)),
   "window 0 must hold every analytic block exactly once" =
     nrow(base) == anchor_n
 )
