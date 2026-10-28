@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.4.0",
+    "definition_version": "0.5.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -766,6 +766,91 @@
             "_numerator": "admissions in that level",
             "_denominator": "admissions in the analysis set",
             "_caveat": "The bottom level is exactly 0 and holds about half the cohort. It means two different things -- died, or never liberated -- and the split between them is in time_to_event, not here."
+        },
+        "07_outcome_model/vfd_day_distribution.csv": {
+            "method": "sum_counts",
+            "grain": "admission",
+            "keys": [
+                "day"
+            ],
+            "numerators": [
+                "n_admissions"
+            ],
+            "denominator": "denominator",
+            "percents": {
+                "pct": "n_admissions"
+            },
+            "_why": "THE PRIMARY OUTCOME'S OWN DISTRIBUTION, one row per attainable whole day. Added for protocol.json 0.14.0, where outcome_scale became integer_days: a reader cannot reconstruct 24 model levels from the 4 descriptive bands in vfd_ordinal.csv, and the two files answer different questions. Counts sum across sites exactly. THE DAY GRID IS FIXED AT 0..25 AND SHIPPED IN FULL, including days with zero admissions, so the key set is identical at every site and the pooled row is a sum over the same levels rather than an outer join that invents gaps.",
+            "_order": 19,
+            "_title": "VFD-28 by whole day",
+            "_grain": "admission",
+            "_numerator": "admissions with that many whole ventilator-free days",
+            "_denominator": "admissions in the analysis set",
+            "_caveat": "is_model_level is FALSE for a day no admission reached, which is not missing data: day 1 is unreachable by construction because a liberation must last 48h to count at all, so the smallest nonzero VFD is about two days. Day 25 is the ceiling and requires extubation at exactly the landmark hour. The floor at day 0 holds about half the cohort and means two different things -- died, or never liberated."
+        },
+        "07_outcome_model/adjusted_prediction.csv": {
+            "method": "heterogeneity_source",
+            "grain": "admission",
+            "keys": [
+                "model",
+                "exposure",
+                "exposure_pct"
+            ],
+            "_why": "The standardised predicted mean VFD-28 and P(VFD-28 = 0) across the declared exposure grid. PASSES THROUGH PER SITE AND IS NOT POOLED, because standardisation averages over THAT SITE'S covariate distribution -- age, sex, CCI, SOFA and its own ICU fixed effects -- so two sites' curves are not estimates of one quantity and averaging them would be averaging over two different populations while looking like a meta-analysis. What DOES pool is the exposure coefficient in model_coefficients.csv, by inverse variance, which is the declared pooling route for this model (protocol.json model.outcome_model._pooling_why). A pooled curve, if the centre ever wants one, is drawn FROM the pooled coefficient against a chosen covariate distribution -- it is not built by combining these rows.",
+            "_order": 20,
+            "_title": "Adjusted predicted VFD-28 by exposure level",
+            "_grain": "admission",
+            "_numerator": "n/a -- a model-standardised prediction",
+            "_denominator": "n_admissions, the model frame the prediction is standardised over",
+            "_caveat": "Intervals are bootstrap percentile intervals from MVN(coef, vcov) at the declared seed, so they are reproducible but are NOT comparable to the Wald intervals on the coefficients. The curve is an association standardised over observed covariates, not an effect: confounding by indication is unaddressed."
+        },
+        "07_outcome_model/unadjusted_bins.csv": {
+            "method": "sum_counts",
+            "grain": "admission",
+            "keys": [
+                "exposure",
+                "bin"
+            ],
+            "numerators": [
+                "n_vfd_zero"
+            ],
+            "denominator": "n_admissions",
+            "percents": {
+                "pct_vfd_zero": "n_vfd_zero"
+            },
+            "not_poolable": [
+                "exposure_mean",
+                "exposure_pct_mean",
+                "mean_vfd_28",
+                "mean_vfd_28_lo",
+                "mean_vfd_28_hi",
+                "median_vfd_28",
+                "pct_vfd_zero_lo",
+                "pct_vfd_zero_hi"
+            ],
+            "_why": "The unadjusted comparison the adjusted curve is read against: VFD-28 by binned exposure, with exactly zero split out as its own bin. THE ZERO SHARE DOES POOL and is pooled here -- n_vfd_zero and n_admissions sum, pct_vfd_zero is recomputed from the sums -- which is deliberately NOT what happens to the per-unit zero shares in exposure_by_unit.csv, left as a heterogeneity_source because its grain is a site-local unit name. Here the key is a declared bin that means the same thing at every site, so there is no reason not to pool it.",
+            "_not_poolable_why": "The MEANS cannot pool from what this file ships: a mean of means needs the per-bin n, sum and sum_sq that pool_sufficient consumes, and this file ships a mean and an interval instead. Declared rather than silently blanked -- pool_sum_counts stops on an undeclared numeric column for exactly this reason. mean_vfd_28 per bin is therefore a PER-SITE number; the pooled row carries the zero share and NA for the mean. If a pooled mean is ever wanted, ship n/sum/sum_sq and switch the method, do not average the means.",
+            "_order": 21,
+            "_title": "VFD-28 by exposure bin, unadjusted",
+            "_grain": "admission",
+            "_numerator": "admissions in that bin with VFD-28 exactly zero",
+            "_denominator": "n_admissions in that bin",
+            "_caveat": "EXACTLY ZERO IS ITS OWN BIN because about half of admissions never have a qualifying score at any increase, so a 0-20% bin would be half the cohort and almost entirely one value. Bins below reporting.small_cell_min_den keep their counts and have every statistic blanked. Unadjusted means confound: no case mix, no unit, no severity."
+        },
+        "07_outcome_model/diagnostics/proportional_odds_gate.csv": {
+            "method": "per_site_only",
+            "grain": "admission",
+            "keys": [
+                "model",
+                "term"
+            ],
+            "_why": "THE VERDICT OF THE GATE, as a file and not only as a console line. The partial-proportional-odds sensitivity was dropped on 2026-10-28 conditional on both exposures passing the PO test (protocol.json model.outcome_model.proportional_odds_gate), so whether that condition held at a site is part of what the site must ship -- a bundle whose gate failed is not poolable at all, and the centre needs to see that without reading a log.",
+            "_order": 22,
+            "_title": "Proportional-odds gate on the exposures",
+            "_grain": "admission",
+            "_numerator": "n/a",
+            "_denominator": "n/a",
+            "_caveat": "passed = FALSE on any row means DO NOT POOL this bundle. status = not_testable also fails: an untested assumption is not a satisfied one. The gate binds on the primary model only; a sensitivity that fails is warned about in the run log and does not halt it."
         },
         "07_outcome_model/strobe.csv": {
             "method": "sum_counts",

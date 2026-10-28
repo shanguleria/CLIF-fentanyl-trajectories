@@ -1,32 +1,18 @@
-# Shared figure look, in one place.
-#
-# The palette line and the theme were copy-pasted into four scripts, which is
-# tolerable while one script draws figures and a problem once two do. Sourcing
-# this is what keeps a figure drawn in 04_delivery_states.R looking like one
-# drawn in 02_descriptive_cohort.R.
-#
+# Shared figure look, in one place, so every script's figures agree.
 # Needs: ggplot2 attached by the caller.
 
 INK      <- "#0b0b0b"
-# Retained for MARKS that must recede -- a reference rule, an axis spine -- but
-# no longer used for any text. SG, 2026-09-24: every label reads black, because
-# grey type on a near-white ground costs legibility for nothing, and these
-# figures are for print.
+# MUTED is for MARKS that must recede (a reference rule, an axis spine); it sets
+# no text -- every label reads INK, because these figures are for print.
 MUTED    <- "#898781"
 GRIDLINE <- "#e1e0d9"
 PAPER    <- "#fcfcfb"
 
-# Kept as lowercase aliases too: the scripts were written against these names and
-# renaming every reference buys nothing.
+# Lowercase aliases too: the scripts were written against these names.
 ink <- INK; muted <- MUTED; gridline <- GRIDLINE
 
-# The house theme. Horizontal gridlines only -- every figure here has a
-# continuous y and a time or categorical x, so vertical rules add ink without
-# adding information.
-#
-# LEGEND AT THE FOOT, in a box (SG, 2026-09-24). A legend on top is awkward and
-# nonstandard; on the right it would steal width from an x axis that is always
-# time, and on the exemplar it would collide with the three right-hand scales.
+# The house theme. Horizontal gridlines only; legend at the foot in a box, since
+# a right-hand legend would steal width from an x axis that is always time.
 house <- function(p) {
   p + theme_minimal(base_size = 12) +
     theme(plot.title = element_text(colour = INK, face = "bold"),
@@ -47,28 +33,11 @@ house <- function(p) {
 }
 
 # ---- State palettes ----------------------------------------------------------
-# ONE palette per state definition, shared by every figure that draws it. The
-# prevalence plot, the alluvial and the per-patient raster must agree on colour
-# or a reader cannot move between them, and a per-figure palette is how they
-# stop agreeing -- these values lived in the delivery-states script until 2026-09-24
-# and had already drifted from the copy here on six of seven states.
-# Levels come from code/utils/states.R.
-#
-# CATEGORICAL, not a lightness ramp: delivery routes are not ordered, so
-# "continuous + bolus" is a different colour from "continuous only" rather than
-# a darker one. The three terminal states are separate hues, so leaving the
-# cohort never looks like a dose.
-#
-# Checked, not eyeballed. Every pair clears both separation floors under
-# ALL-pairs adjacency, which is what the raster needs -- in it any two states
-# can share an edge, unlike the area and alluvial where the stacking order
-# fixes the neighbours:
-#   worst simulated-CVD pair  extubated <-> continuous + bolus  dE 13.7 (floor 8)
-#   worst normal-vision pair  died      <-> discharged alive    dE 15.6 (floor 15)
-# `extubated` was #7fb069 and `discharged alive` #a8c8ee until 2026-09-24; those
-# collided at dE 5.8 with `bolus only` under deuteranopia, and at dE 9.1 with
-# `no fentanyl` for readers with NORMAL colour vision. Re-step with the
-# validator, not by eye, if these ever move again.
+# ONE palette per state definition, shared by every figure that draws it, or the
+# prevalence plot, the alluvial and the raster stop agreeing. Levels come from
+# code/utils/states.R. Categorical, not a lightness ramp: routes are not
+# ordered. Separation measured with the validator under ALL-pairs adjacency,
+# which is what the raster needs; re-step there, not by eye, if these move.
 STATE_COLOURS <- c(
   "no fentanyl"        = "#d8d6cf",
   "continuous only"    = "#14427e",
@@ -78,38 +47,20 @@ STATE_COLOURS <- c(
   "discharged alive"   = "#86667b",
   "died"               = "#8c2f18")
 
-# The three titration series in 06_unit_variation.R: an initiation, an
-# uptitration, and the two combined. Categorical, not ordered -- "any increase" is
-# the union of the other two, not a third level of something.
-#
-# A SEPARATE PALETTE FROM STATE_COLOURS, DELIBERATELY. The nearest state hues
-# (continuous only #14427e, bolus only #eb6834, extubated #09b3a6) separate
-# beautifully -- worst all-pairs CVD dE 14.5 -- but two of the three fail the
-# per-colour checks against the #fcfcfb ground: #14427e sits at OKLCH L 0.384,
-# below the 0.43 light-mode floor, and #09b3a6 reaches only 2.55:1 contrast,
-# under the 3.0 minimum. Those failures are invisible inside a
-# stacked area, where a large filled region carries its own weight, and matter
-# here because these are 2mm dots and thin interval bars.
-#
-# Re-stepped with the validator to the NEAREST passing triple rather than the
-# most separated one -- maximising dE alone returns an electric blue and a brown
-# and throws the house look away. Total OKLab drift from the state hues is
-# 0.100, most of it in the blue and the teal; the orange moves 0.006.
-#   every colour   L in [0.43,0.77], C >= 0.10, contrast >= 3.0 vs #fcfcfb  PASS
-#   worst CVD pair uptitration <-> any increase   dE 13.2 (target 8)
-#   worst normal   any increase <-> initiation    dE 26.1 (floor 15)
-# Re-step with the validator, not by eye, if these ever move.
+# The three titration series in 06_unit_variation.R. Categorical -- "any
+# increase" is the union of the other two. Deliberately NOT the state hues:
+# those fail the per-colour lightness and contrast checks against the #fcfcfb
+# ground, which does not show in a filled area but does in 2mm dots and thin
+# bars. Stepped to the nearest passing triple with the validator, not by eye.
 SERIES_COLOURS <- c(
   "initiation"   = "#234e90",
   "uptitration"  = "#ed6531",
   "any increase" = "#39a390")
 
-# The intensity-band definition. The four bands ARE ordered, so they get a
-# sequential ramp rather than categorical hues, and the three terminal states
-# are inherited from above so the two state figures agree about what leaving
-# the cohort looks like. Labels come from protocol.json via the caller --
-# never restated here, or a consortium change to the band names would silently
-# grey every band.
+# The intensity-band definition. The four bands ARE ordered, so a sequential
+# ramp; the terminal three are inherited so the two state figures agree. Labels
+# come from protocol.json via the caller -- restating them here would silently
+# grey a renamed band.
 dose_palette <- function(labels) {
   stopifnot("dose_palette() expects the four band labels" = length(labels) == 4)
   setNames(c("#e8e6df", "#a8c8ee", "#4a8bd8", "#14427e",
@@ -120,21 +71,12 @@ dose_palette <- function(labels) {
 }
 
 # ---- Numbers-at-risk table ---------------------------------------------------
-# A survival-curve risk table, for a stacked area. A reader cannot take a
-# percentage off a band to better than about five points, and cannot take the
-# denominator off it at all -- which matters most here, where the same bands are
-# drawn twice on denominators that differ by more than half the cohort by 72h.
-#
-# Rows are in STACKING order read top to bottom, so a row sits under the band it
-# describes: ggplot's position_stack() puts factor level 1 at the TOP, so level
-# order IS top-to-bottom order, and a discrete y axis has to be reversed to
-# match. The denominator sits at the foot, where a risk table puts it.
-#
-# The panel shares the main plot's x scale and breaks so the columns land under
-# the ticks. End columns are anchored rather than centred (hjust 0 at the first
-# hour, 1 at the last); centring them would push half of each label outside the
-# panel, and widening the x expansion to make room would leave the area chart
-# floating off its own axis.
+# A survival-curve risk table, for a stacked area: a reader cannot take a
+# percentage off a band to better than about five points, nor the denominator
+# off it at all, and here the same bands are drawn twice on denominators that
+# differ by half the cohort. Rows run in STACKING order top to bottom --
+# position_stack() puts factor level 1 at the TOP, so the discrete y axis is
+# reversed to match. End columns are anchored, not centred, to stay in panel.
 risk_table_panel <- function(prevalence, windows, denom_label, x_title = NULL,
                              text_size = 2.3) {
   stopifnot("risk_table_panel needs a factor state, in stacking order" =
@@ -148,8 +90,7 @@ risk_table_panel <- function(prevalence, windows, denom_label, x_title = NULL,
   HEADER <- "hour"
 
   cells <- rbind(
-    # The header names the hour each column reports. The figure no longer
-    # carries a subtitle to explain the windowing, so the table says it itself.
+    # The header names the hour each column reports; there is no subtitle.
     data.frame(window_start_hr = windows$start_hr, row = HEADER,
                label = windows$label),
     data.frame(window_start_hr = tab$window_start_hr,
@@ -158,18 +99,15 @@ risk_table_panel <- function(prevalence, windows, denom_label, x_title = NULL,
     data.frame(window_start_hr = den$window_start_hr,
                row   = denom_label, label = num(den$n)))
 
-  # Reversed, because a discrete y axis counts UP from the bottom while
-  # position_stack() puts factor level 1 at the TOP of the bands.
+  # Reversed: a discrete y axis counts up, position_stack() puts level 1 on top.
   rows <- c(HEADER, lv, denom_label)
   cells$row   <- factor(cells$row, levels = rev(rows))
   cells$hjust <- ifelse(cells$window_start_hr == min(windows$start_hr), 0,
                  ifelse(cells$window_start_hr == max(windows$start_hr), 1, 0.5))
   cells$face  <- ifelse(cells$row %in% c(HEADER, denom_label), "bold", "plain")
 
-  # Rules BETWEEN rows, not through them. house() sets panel.grid.major.y
-  # explicitly, and `panel.grid = element_blank()` does NOT override an
-  # explicitly-set child element -- the y gridlines survived and struck through
-  # every line of text. Each grid component has to be blanked by name.
+  # `panel.grid = element_blank()` does NOT override house()'s explicitly-set
+  # panel.grid.major.y, which struck through the text; blank each by name.
   p <- house(
     ggplot(cells, aes(window_start_hr, row)) +
       geom_hline(yintercept = seq_len(length(rows) - 1L) + 0.5,
@@ -191,36 +129,25 @@ risk_table_panel <- function(prevalence, windows, denom_label, x_title = NULL,
 }
 
 # ---- Stacking panels on one shared x axis -------------------------------------
-# Several plots drawn one above the other, sharing an x axis: an area chart over
-# its risk table, or the exemplar's four series. Two things have to be forced.
-#
-# WIDTHS. Each panel has its own y-axis labels, of different widths, so their
-# plot panels would otherwise start at different x positions and the shared axis
-# would be a lie. unit.pmax() across every gtable column aligns them.
-#
-# HEIGHTS. A ggplot panel is `1null`, meaning "share the space equally". Stacking
-# four of those gives four equal panels, and stacking a risk table under a chart
-# gives the table half the figure. Any panel passed an absolute height gets it;
-# those left NA stay `null` and divide what is left.
-#
-# `heights` is in inches, one per plot, NA to leave a panel flexible.
+# Plots drawn one above the other on a shared x axis. WIDTHS: y-label widths
+# differ, so unit.pmax() across every gtable column aligns the panels, or the
+# shared axis is a lie. HEIGHTS: a ggplot panel is `1null` (equal shares),
+# which would give a risk table half the figure; a panel passed an absolute
+# height gets it. `heights` is in inches, one per plot, NA to stay flexible.
 stack_panels <- function(plots, heights = NULL) {
   stopifnot("stack_panels needs at least two plots" = length(plots) >= 2)
   if (is.null(heights)) heights <- rep(NA_real_, length(plots))
   stopifnot("one height per plot" = length(heights) == length(plots))
 
-  # ggplotGrob() measures text, which needs an open graphics device. Under
-  # Rscript there is none, so R opens the DEFAULT one and leaves an Rplots.pdf
-  # in the repo root on every pipeline run. Measure on a null device instead.
+  # ggplotGrob() measures text, which needs an open device; under Rscript R opens
+  # the DEFAULT one and leaves an Rplots.pdf behind. Measure on a null device.
   grDevices::pdf(NULL)
   on.exit(grDevices::dev.off(), add = TRUE)
 
   gs <- lapply(plots, ggplotGrob)
 
-  # A bottom legend belongs under the WHOLE stack, not between the first plot
-  # and whatever is stacked beneath it. On the prevalence figures that would
-  # push the risk table away from the axis ticks its columns are aligned to,
-  # which is the entire reason the panels share a width in the first place.
+  # A bottom legend belongs under the WHOLE stack: between panels it would push
+  # the risk table off the axis ticks its columns are aligned to.
   legend <- NULL
   gs <- lapply(gs, function(g) {
     i <- which(g$layout$name == "guide-box-bottom")
@@ -252,20 +179,16 @@ stack_panels <- function(plots, heights = NULL) {
   out
 }
 
-# The risk-table case: the chart stays flexible, the table gets exactly the
-# height its rows need.
+# The risk-table case: the chart stays flexible, the table gets its rows' height.
 stack_with_risk_table <- function(p_main, p_table, row_height = 0.20) {
   stack_panels(list(p_main, p_table),
                c(NA, row_height * attr(p_table, "n_rows")))
 }
 
 # ---- Captions ----------------------------------------------------------------
-# Figures here are journal panels: no title, no subtitle. What would have sat on
-# the panel is registered instead and written out as captions.md beside the
-# figures, so the n, the denominator, the seed and the selection rules survive in
-# a form a manuscript can lift. Held in an environment rather than a list so a
-# draw function can register from inside its own scope without `<<-` reaching
-# through whatever happens to enclose it.
+# Journal panels carry no title or subtitle, so what would have sat there is
+# registered here and written out as captions.md beside the figures. An
+# environment, not a list, so a draw function can register without `<<-`.
 .captions <- new.env(parent = emptyenv())
 
 register_caption <- function(file, title, note) {
@@ -273,9 +196,7 @@ register_caption <- function(file, title, note) {
   invisible(NULL)
 }
 
-# `figures` is the authority on what must exist -- pass the .png entries of the
-# script's OWNED list. A panel whose provenance lives only in the code is a panel
-# nobody can caption later, so a missing entry is an error, not a warning.
+# Pass the .png entries of the script's OWNED list; a missing caption is an error.
 write_captions <- function(path, script, figures, prov) {
   missing <- setdiff(figures, ls(.captions))
   stopifnot("every figure must register a caption" = length(missing) == 0)
@@ -298,14 +219,10 @@ write_captions <- function(path, script, figures, prov) {
 }
 
 # ---- A third y axis ----------------------------------------------------------
-# ggplot gives a panel one secondary axis and no more, so a Baker-style panel
-# with three scales -- one left, two right -- cannot be built from scales alone.
-# This borrows a right-hand axis from a second plot drawn on the SAME panel range
-# and hangs it outside the first plot's existing right axis.
-#
-# The donor's y scale must span the identical range, or the borrowed ticks will
-# point at the wrong heights while looking perfectly plausible. `donor` is
-# expected to be a bare plot carrying nothing but that scale.
+# ggplot gives a panel one secondary axis, so three scales -- one left, two
+# right -- cannot come from scales alone. This borrows a right-hand axis from a
+# donor drawn on the SAME panel range and hangs it outside the existing right
+# axis. The donor must span the identical y range or the ticks plausibly lie.
 add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
   grDevices::pdf(NULL)
   on.exit(grDevices::dev.off(), add = TRUE)
@@ -315,10 +232,8 @@ add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
 
   ax <- gd$grobs[[which(gd$layout$name == "axis-r")]]
   pos <- g$layout[g$layout$name == "axis-r", ]
-  # ggplot lays out an axis-r SLOT whether or not a secondary axis exists, and
-  # fills it with a zeroGrob when it does not -- so the slot's presence proves
-  # nothing. Check the grob itself, or a third axis silently hangs off an empty
-  # second one and the reader gets two scales where three are labelled.
+  # ggplot lays out an axis-r SLOT whether or not a secondary axis exists, filling
+  # it with a zeroGrob, so check the grob rather than the slot.
   stopifnot(
     "the main plot has no right axis to hang a third scale beside" =
       nrow(pos) == 1,
@@ -326,10 +241,7 @@ add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
       !inherits(g$grobs[[which(g$layout$name == "axis-r")]], "zeroGrob"),
     "the donor plot has no right axis to borrow" = !inherits(ax, "zeroGrob"))
 
-  # Insert OUTSIDE the existing right axis AND its title, so each scale is
-  # followed by its own label. Hanging it between the second axis and the second
-  # axis's title puts one axis's name next to the other axis's ticks, which is
-  # worse than having no title at all.
+  # OUTSIDE the existing right axis AND its title, so each scale keeps its label.
   ttl <- g$layout[g$layout$name %in% c("ylab-r", "axis-r-title", "ylab-r-title"), ]
   at <- if (nrow(ttl)) max(ttl$r) else max(pos$r)
 
@@ -347,3 +259,8 @@ add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
   }
   g
 }
+
+# ---- Adjusted vs unadjusted ---------------------------------------------------
+# The prediction figure (07_outcome_model.R) reuses the validated
+# initiation/uptitration hues. One entry, because it now draws one series.
+PREDICTION_COLOURS <- c("adjusted" = "#234e90")

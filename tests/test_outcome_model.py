@@ -62,6 +62,19 @@ def test_the_proportional_odds_test_produced_a_verdict_for_every_model():
     refit died, nominal_test returned a fully formed table with every term NA,
     and nothing anywhere said so. Fixed by fitting through do.call, which inlines
     the data into the stored call.
+
+    THIS GUARD FIRED AGAIN ON 2026-10-28, on sensitivity_icu_only, and was
+    right to. ordinal:::nominal_test.clm guards its refit with
+    `!inherits(nfit, "try-error") && nfit$convergence$code >= 0`, and clm
+    returns a LENGTH-2 convergence code when a refit trips two conditions at
+    once -- so under R >= 4.3 the whole call raises rather than reporting a
+    failed refit, and the model shipped as one `errored` row. The fix was to
+    test one term at a time through nominal_test's own `scope` argument, which
+    reproduces the all-at-once table exactly on the primary (df and p, all
+    seven terms, 1e-8) while letting one term's failure stay that term's
+    failure. The underlying refits on that model genuinely do not converge, so
+    its exposures remain not_testable -- which is why the GATE, not this test,
+    is what decides whether the exposures passed.
     """
     po = rows("diagnostics/proportional_odds_test.csv")
     diag = rows("diagnostics/model_diagnostics.csv")
@@ -70,27 +83,50 @@ def test_the_proportional_odds_test_produced_a_verdict_for_every_model():
         terms = [r for r in po if r["model"] == model and r["term"] != "<none>"]
         assert terms, f"{model}: no term rows in the proportional-odds test"
         tested = [r for r in terms if num(r["p_value"]) is not None]
+        states = sorted({r["status"] for r in terms})
+        notes = sorted({r.get("note", "") for r in terms if r.get("note")})
         assert tested, (
-            f"{model}: the proportional-odds test ran but tested NOTHING -- "
-            f"{len(terms)} term rows, every p-value NA. The assumption is "
-            f"UNTESTED, not satisfied. See this test's docstring."
+            f"{model}: the proportional-odds test produced NO verdict for any "
+            f"term -- {len(terms)} term rows, statuses {states}, every p-value "
+            f"NA. The assumption is UNTESTED, not satisfied."
+            + (f" Reported reason(s): {notes}" if notes else "")
+            + " See this test's docstring."
         )
 
 
 def test_every_proportional_odds_row_declares_its_status():
-    """The status column is what makes an untestable model distinguishable from
-    a passing one in the shipped file. Counting significant terms over an all-NA
-    table yields zero, which reads as the assumption holding."""
+    """The status column is what makes an untestable term distinguishable from a
+    passing one in the shipped file. Counting significant terms over an all-NA
+    table yields zero, which reads as the assumption holding.
+
+    AMENDED 2026-10-28 with the day-scale outcome. This test used to require
+    every row to read `tested`, which was a true statement about the four-band
+    model and is a POLICY, not a bug check -- lessons.md #21. At 23 thresholds
+    the per-term refits for `age` and `icu` return NA, so a blanket demand would
+    fail on a protocol change rather than on a defect. What is enforced instead:
+    status is per TERM and is one of the declared values, a null p-value is
+    never called `tested`, and a non-null one is never called `not_testable`.
+    WHICH terms must pass is the gate's job, tested below.
+    """
     po = rows("diagnostics/proportional_odds_test.csv")
     assert po, "proportional_odds_test.csv is empty"
-    assert "status" in po[0], "the status column is gone -- an untestable model would again be silent"
-    allowed = {"tested", "not_testable", "errored"}
+    assert "status" in po[0], "the status column is gone -- an untestable term would again be silent"
+    allowed = {"tested", "not_testable", "errored", "reference"}
     for r in po:
         assert r["status"] in allowed, f"unknown status {r['status']!r}"
-    assert not [r for r in po if r["status"] != "tested"], (
-        "a model's proportional-odds assumption could not be tested: "
-        + ", ".join(sorted({r["model"] for r in po if r["status"] != "tested"}))
-    )
+        if r["term"] == "<none>":
+            continue
+        p = num(r["p_value"])
+        if r["status"] == "tested":
+            assert p is not None, (
+                f"{r['model']}/{r['term']}: status 'tested' beside a null "
+                f"p-value -- the diagnostic is reporting a pass it did not make"
+            )
+        if r["status"] == "not_testable":
+            assert p is None, (
+                f"{r['model']}/{r['term']}: status 'not_testable' but a "
+                f"p-value of {p} is present"
+            )
 
 
 # ---- the outcome scale is the one the protocol declares ---------------------
@@ -314,6 +350,209 @@ def test_the_unscaled_exposure_names_do_not_ship_as_coefficients():
             f"{bare!r} ships as a coefficient on the share scale while "
             f"{bare}_per{SCALE_PP}pp is the declared reporting unit"
         )
+
+
+
+# ---- the outcome is modelled at whole-day resolution ------------------------
+
+def test_the_model_outcome_is_the_declared_scale():
+    """protocol.json 0.14.0 made integer days the primary outcome. The number of
+    levels the models actually fitted is written into model_diagnostics.csv, so
+    the declaration can be checked against the fit rather than against the
+    script's intentions."""
+    assert SPEC["outcome_scale"] == "integer_days", SPEC["outcome_scale"]
+    assert SPEC["day_rounding"] == "floor", SPEC["day_rounding"]
+    diag = {d["model"]: d for d in rows("diagnostics/model_diagnostics.csv")}
+    assert "primary" in diag, "no primary model was fitted"
+    n_levels = int(float(diag["primary"]["n_outcome_levels"]))
+    n_bands = len(SPEC["vfd_ordinal_labels"])
+    assert n_levels > n_bands, (
+        f"the primary fitted {n_levels} outcome levels, which is not more than "
+        f"the {n_bands} descriptive bands -- the day-scale outcome did not reach "
+        f"the model. protocol.json declares outcome_scale = integer_days"
+    )
+
+
+def test_the_four_band_sensitivity_still_reports_the_old_scale():
+    """The four-band model is kept precisely so the previously reported number
+    does not vanish. It must be fitted AND must be on four levels -- fitting it
+    on the day scale would make it a duplicate of the primary wearing a
+    sensitivity's name."""
+    diag = {d["model"]: d for d in rows("diagnostics/model_diagnostics.csv")}
+    assert "sensitivity_four_band" in diag, (
+        "the four_band sensitivity was not fitted, so the outcome-scale change "
+        "silently dropped the number this study has already reported"
+    )
+    got = int(float(diag["sensitivity_four_band"]["n_outcome_levels"]))
+    assert got == len(SPEC["vfd_ordinal_labels"]), (
+        f"the four_band sensitivity fitted {got} levels, not "
+        f"{len(SPEC['vfd_ordinal_labels'])}"
+    )
+
+
+def test_the_day_distribution_covers_the_whole_attainable_range():
+    """The day grid ships in full, including days no admission reached, so the
+    key set is identical at every site and a pooled row sums over the same
+    levels. An absent level is information: day 1 is unreachable because a
+    liberation must last 48h to count."""
+    dd = rows("vfd_day_distribution.csv")
+    assert dd, "vfd_day_distribution.csv is empty"
+    days = [int(float(r["day"])) for r in dd]
+    assert days == list(range(min(days), max(days) + 1)), \
+        f"the day grid has holes: {days}"
+    assert min(days) == 0, f"the day grid starts at {min(days)}, not 0"
+    den = {int(float(r["denominator"])) for r in dd}
+    assert len(den) == 1, f"the denominator is not constant across days: {den}"
+    total = sum(int(float(r["n_admissions"])) for r in dd)
+    assert total == den.pop(), \
+        f"the day counts sum to {total}, not the shipped denominator"
+
+
+# ---- the proportional-odds gate ---------------------------------------------
+
+def test_the_proportional_odds_gate_passed_for_both_exposures():
+    """partial_po was dropped on 2026-10-28 CONDITIONAL on both exposures
+    passing the PO test. The condition is the only thing holding the
+    simplification up, so it is checked against the shipped verdict and not
+    against the run log."""
+    gate = rows("diagnostics/proportional_odds_gate.csv")
+    assert gate, "proportional_odds_gate.csv is empty -- the gate did not run"
+    scope = SPEC["proportional_odds_gate"]["scope"]
+    terms = {r["term"] for r in gate}
+    assert terms == set(MODEL_EXPOSURES), (
+        f"the gate covers {sorted(terms)}, not the declared exposures "
+        f"{sorted(MODEL_EXPOSURES)}"
+    )
+    for r in gate:
+        assert r["model"] == scope, f"the gate ran on {r['model']!r}, not {scope!r}"
+        assert r["passed"] in ("TRUE", "FALSE"), r["passed"]
+        assert r["passed"] == "TRUE", (
+            f"PROPORTIONAL-ODDS GATE FAILED for {r['term']} "
+            f"(status {r['status']}, p {r['p_value']}). A single odds ratio is "
+            f"not a valid summary of that exposure; reinstate a partial-PO model"
+        )
+        assert float(r["alpha"]) == SPEC["proportional_odds_gate"]["alpha"]
+
+
+def test_the_partial_po_sensitivity_is_gone_from_both_sides():
+    """It was removed on the condition above. If it comes back it must come back
+    in BOTH places -- a model fitted but not declared is the failure
+    test_every_fitted_sensitivity_model_is_declared_in_the_protocol exists for,
+    and a declaration with no model is the reverse."""
+    assert "partial_po" not in SPEC["sensitivity_models"], \
+        "partial_po is declared again -- is it also fitted?"
+    fitted = {d["model"] for d in rows("diagnostics/model_diagnostics.csv")}
+    assert not [m for m in fitted if "partial_po" in m], \
+        f"a partial-PO model is still fitted: {sorted(fitted)}"
+
+
+# ---- the adjusted prediction -------------------------------------------------
+
+def test_the_adjusted_prediction_is_on_the_declared_grid():
+    pred = rows("adjusted_prediction.csv")
+    assert pred, "adjusted_prediction.csv is empty"
+    want = [float(g) for g in SPEC["prediction"]["exposure_grid_pct"]]
+    got = [float(r["exposure_pct"]) for r in pred]
+    assert got == want, f"the prediction grid is {got}, not the declared {want}"
+    for r in pred:
+        assert r["exposure"] == SPEC["prediction"]["exposure"]
+        assert int(float(r["n_draws"])) == SPEC["prediction"]["bootstrap_draws"]
+        assert abs(float(r["exposure_share"]) * 100 - float(r["exposure_pct"])) < 1e-9
+
+
+def test_every_predicted_interval_brackets_its_point_estimate():
+    """A percentile interval that does not contain the fitted point estimate
+    means the bootstrap is drawing from a different model than the one that
+    produced the point -- the exact failure a hand-rolled linear predictor
+    invites, and why the script asserts itself against predict.clm first."""
+    for r in rows("adjusted_prediction.csv"):
+        for stem in ("mean_vfd_28", "pct_vfd_zero"):
+            lo, mid, hi = (num(r[stem + "_lo"]), num(r[stem]), num(r[stem + "_hi"]))
+            assert None not in (lo, mid, hi), f"{stem} has a missing bound at {r['exposure_pct']}%"
+            assert lo <= mid <= hi, (
+                f"{stem} at {r['exposure_pct']}%: {mid} is outside its own "
+                f"interval [{lo}, {hi}]"
+            )
+            assert lo < hi, f"{stem} at {r['exposure_pct']}%: a zero-width interval"
+
+
+def test_the_predicted_mean_stays_inside_the_attainable_vfd_range():
+    """The ceiling is horizon minus landmark, not the horizon: accrual starts at
+    the landmark. A predicted mean above it would mean the day values the
+    expectation is taken over are wrong."""
+    protocol = json.loads((REPO / "config" / "protocol.json").read_text())
+    ceiling = (protocol["outcomes"]["vfd"]["horizon_days"]
+               - protocol["cohort"]["landmark_hours"] / 24)
+    for r in rows("adjusted_prediction.csv"):
+        m = num(r["mean_vfd_28"])
+        assert 0 <= m <= ceiling, (
+            f"a standardised mean of {m} days at {r['exposure_pct']}% is outside "
+            f"[0, {ceiling}]"
+        )
+        z = num(r["pct_vfd_zero"])
+        assert 0 <= z <= 100, f"a predicted zero share of {z}%"
+
+
+# ---- the unadjusted comparison -----------------------------------------------
+
+def test_the_unadjusted_bins_are_the_declared_bins_and_partition_the_frame():
+    bins = rows("unadjusted_bins.csv")
+    assert bins, "unadjusted_bins.csv is empty"
+    want = list(SPEC["prediction"]["unadjusted_bin_labels"])
+    assert [r["bin"] for r in bins] == want, \
+        f"the bins are {[r['bin'] for r in bins]}, not the declared {want}"
+    total = sum(int(float(r["n_admissions"])) for r in bins)
+    primary = [d for d in rows("diagnostics/model_diagnostics.csv")
+               if d["model"] == "primary"][0]
+    assert total == int(float(primary["n_admissions"])), (
+        f"the bins hold {total} admissions but the primary model frame holds "
+        f"{primary['n_admissions']} -- the comparison is not on the same set as "
+        f"the curve it is drawn against"
+    )
+
+
+def test_exactly_zero_is_its_own_bin():
+    """About half the admissions never have a qualifying score at any increase.
+    Folded into a 0-20% bin they would make it a mixture rather than a level of
+    exposure, and it would no longer be comparable to the adjusted curve at
+    exactly 0, which is a point and not an interval."""
+    breaks = SPEC["prediction"]["unadjusted_bin_breaks"]
+    assert breaks[0] < 0 <= breaks[1] == 0, (
+        f"the first bin is not the single point 0: breaks start {breaks[:3]}"
+    )
+    bins = rows("unadjusted_bins.csv")
+    zero_bin = bins[0]
+    assert zero_bin["bin"] == "0", zero_bin["bin"]
+    if not zero_bin["suppressed"] == "TRUE":
+        assert num(zero_bin["exposure_pct_mean"]) == 0, (
+            f"the zero bin's mean exposure is {zero_bin['exposure_pct_mean']}%, "
+            f"so it is not holding only exact zeros"
+        )
+
+
+def test_a_suppressed_bin_keeps_its_count_and_loses_its_statistics():
+    """The small-cell rule the rest of the phase follows: the count stays so the
+    bin is auditable, the statistics go."""
+    mincell = json.loads((REPO / "config" / "protocol.json").read_text())["reporting"]["small_cell_min_den"]
+    for r in rows("unadjusted_bins.csv"):
+        n = int(float(r["n_admissions"]))
+        suppressed = r["suppressed"] == "TRUE"
+        assert suppressed == (n < mincell), (
+            f"bin {r['bin']!r} has n={n} and suppressed={r['suppressed']} "
+            f"against a floor of {mincell}"
+        )
+        if suppressed:
+            assert num(r["mean_vfd_28"]) is None, \
+                f"bin {r['bin']!r} is suppressed but still ships a mean"
+            assert int(float(r["n_admissions"])) == n, "the count must survive suppression"
+
+
+def test_the_prediction_figure_was_drawn():
+    assert (OUT / "vfd_vs_pindicated.png").exists(), \
+        "vfd_vs_pindicated.png is missing -- the figure the whole section is for"
+    caps = (OUT / "captions.md").read_text()
+    assert "vfd_vs_pindicated.png" in caps, \
+        "the prediction figure has no caption, so its n, seed and bins live only in pixels"
 
 
 if __name__ == "__main__":

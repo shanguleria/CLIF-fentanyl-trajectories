@@ -1,12 +1,10 @@
 # ==============================================================================
-# 07_outcome_model.R  --  from events to admissions: does titration practice
-#                         track ventilator-free days?
+# 07_outcome_model.R  --  per-admission titration exposures vs ventilator-free days
 #
-# Purpose : The first analysis here that leaves the EVENT and asks about the
-#           ADMISSION. Two per-admission exposures measured over the first 72h --
-#           the share of fentanyl increases paired with a bolus (Pbolus) and the
-#           share with a documented pain or agitation score (Pindicated) -- against
-#           VFD-28, by proportional-odds ordinal regression with ICU fixed effects.
+# Purpose : Two per-admission exposures over the first 72h -- the share of fentanyl
+#           increases paired with a bolus (Pbolus) and the share with a documented
+#           pain or agitation score (Pindicated) -- against VFD-28, by
+#           proportional-odds ordinal regression with ICU fixed effects.
 # Author  : Shan Guleria
 # Created : 2026-10-27
 # Inputs  : output/intermediate_phi/ : titration_adherence.parquet,
@@ -14,37 +12,13 @@
 #           trajectory_long.parquet, care_intervals.parquet
 # Outputs : output/final_no_phi/07_outcome_model/ : the files listed in OWNED
 #           output/intermediate_phi/outcome_model_frame.parquet (PHI, per admission)
-#
-# THE EXPOSURES ARE NOT REDEFINED HERE. 05_titration.R owns what counts as an
-# increase, a pairing and an indication; this script aggregates its two
-# per-event handoffs to the admission. A second implementation of "what is an
-# uptitration" would be a drift hazard with no upside -- the same rule
-# 06_unit_variation.R follows.
-#
-# THIS IS AN ASSOCIATION, NOT AN EFFECT. No randomisation, no instrument, and
-# confounding by indication is the obvious threat: a patient who is titrated
-# often is a patient someone is worried about. The ICU fixed effects absorb
-# between-unit practice, not within-unit case mix. Say "associated with" and
-# never "improves" or "causes".
-#
-# THE DENOMINATOR IS SMALL AND THAT IS THE MAIN THREAT TO THIS ANALYSIS.
-# MEASURED at UCMC: median 4 increase events per admission (IQR 2-6), 9.4% with
-# exactly one, and only 55 distinct Pbolus values across 2,897 admissions. A
-# proportion built on a denominator of one to three is mostly denominator noise,
-# which pulls the coefficient toward the null. That is what the sensitivity
-# analysis is for, and why its result deserves as much space as the primary.
-# Adjusting for the event count is NOT the fix and is deliberately not done --
-# see protocol.json model.outcome_model._n_events_is_NOT_a_covariate.
 # ==============================================================================
 
 # Run this in a FRESH R session (RStudio: Cmd+Shift+F10).
 
 # ---- 1. Packages -------------------------------------------------------------
 
-# `ordinal` is the only new pinned dependency this study has taken on since the
-# stack was fixed; clm() has no substitute in base R. metafor is deliberately NOT
-# here -- the pooling is coordinating-centre code and that decision is deferred,
-# so a site never installs it. See protocol.json model.outcome_model._pooling_why.
+# No metafor: pooling is coordinating-centre code. See protocol.json _pooling_why.
 pkgs <- c("here", "jsonlite", "ggplot2", "arrow", "ordinal")
 for (p in pkgs) {
   if (!requireNamespace(p, quietly = TRUE)) {
@@ -78,17 +52,8 @@ COVARIATES <- unlist(SPEC$covariates)
 MIN_UNIT_N <- as.integer(SPEC$min_admissions_per_unit)
 SENS_MIN   <- as.integer(SPEC$sensitivity_min_increase_events)
 
-# THE EXPOSURE REPORTING UNIT. Both exposures are shares on [0, 1], so an
-# unscaled coefficient is a 0% -> 100% contrast: an admission where every
-# increase was documented against one where none was. With half the cohort at
-# exactly zero that contrast describes almost nobody, and a per-percentage-point
-# figure is too small to read and too easy to mistake for the per-unit one.
-# SG set 10 percentage points as the clinically plausible step, 2026-10-27.
-#
-# The MODEL terms carry the scaling and say so in their names; the descriptive
-# tables and all three figures keep the natural share scale, because a share is
-# what was measured. Naming them apart is what stops a coefficient being read
-# against the wrong unit -- see protocol.json _exposure_scale_why.
+# Reporting unit: MODEL terms are the share / EXP_SCALE and say so in their names;
+# tables and figures keep the [0, 1] share. See _exposure_scale_why.
 EXP_SCALE <- as.numeric(SPEC$exposure_scale_per)
 stopifnot(
   "protocol.json must declare model.outcome_model.exposure_scale_per" =
@@ -100,9 +65,7 @@ MODEL_EXPOSURES <- sprintf("%s_per%dpp", EXPOSURES, EXP_SCALE_PP)
 LANDMARK_H <- COV$cohort$landmark_hours
 MIN_CELL   <- COV$reporting$small_cell_min_den
 
-# The ICU-only sensitivity restricts on the mCIDE location_category, which means
-# the same thing at every site. Checked against the categories the study already
-# declares it attributes, so this cannot name a category no care interval carries.
+# The ICU-only sensitivity restricts on the mCIDE location_category.
 ICU_CAT <- tolower(as.character(SPEC$sensitivity_icu_only_location_category))
 ATTR_CATS <- tolower(unlist(COV$unit_variation$attributed_location_categories))
 stopifnot(
@@ -110,14 +73,64 @@ stopifnot(
     length(ICU_CAT) == 1 && nzchar(ICU_CAT),
   "the ICU-only category must be one the study attributes" = ICU_CAT %in% ATTR_CATS)
 
-# The ordinal cut points. Declared, never chosen here: two sites cutting VFD-28
-# at different days are not estimating the same parameter.
+# Descriptive table and the four_band sensitivity only, not the model outcome.
 CUTS   <- as.numeric(unlist(SPEC$vfd_ordinal_breaks))
 LABELS <- unlist(SPEC$vfd_ordinal_labels)
 stopifnot(
   "protocol.json must declare vfd_ordinal_breaks and vfd_ordinal_labels" =
     length(CUTS) > 1 && length(LABELS) == length(CUTS) - 1,
   "the breaks must be increasing" = !is.unsorted(CUTS, strictly = TRUE))
+
+# One ordinal level per whole day; see _outcome_scale_why and _day_rounding_why.
+OUTCOME_SCALE <- as.character(SPEC$outcome_scale)
+DAY_ROUNDING  <- as.character(SPEC$day_rounding)
+stopifnot(
+  "this script implements outcome_scale = integer_days only" =
+    identical(OUTCOME_SCALE, "integer_days"),
+  "this script implements day_rounding = floor only" =
+    identical(DAY_ROUNDING, "floor"))
+
+# Declared with the UNSCALED exposure names and matched to the model terms below,
+# so the gate cannot drift from SPEC$exposures. Enforced at the end of the script.
+GATE       <- SPEC$proportional_odds_gate
+GATE_TERMS <- unlist(GATE$terms)
+GATE_ALPHA <- as.numeric(GATE$alpha)
+stopifnot(
+  "protocol.json must declare model.outcome_model.proportional_odds_gate" =
+    !is.null(GATE),
+  "the gate must name terms that are declared exposures" =
+    length(GATE_TERMS) > 0 && all(GATE_TERMS %in% EXPOSURES),
+  "the gate alpha must be a probability" =
+    length(GATE_ALPHA) == 1 && GATE_ALPHA > 0 && GATE_ALPHA < 1,
+  "only proportional_odds_gate.on_failure = fail is implemented" =
+    identical(as.character(GATE$on_failure), "fail"))
+GATE_MODEL_TERMS <- MODEL_EXPOSURES[match(GATE_TERMS, EXPOSURES)]
+
+PRED          <- SPEC$prediction
+PRED_EXPOSURE <- as.character(PRED$exposure)
+PRED_GRID_PCT <- as.numeric(unlist(PRED$exposure_grid_pct))
+PRED_DRAWS    <- as.integer(PRED$bootstrap_draws)
+BIN_BREAKS    <- as.numeric(unlist(PRED$unadjusted_bin_breaks))
+BIN_LABELS    <- unlist(PRED$unadjusted_bin_labels)
+stopifnot(
+  "protocol.json must declare model.outcome_model.prediction" = !is.null(PRED),
+  "the prediction exposure must be one of the declared exposures" =
+    length(PRED_EXPOSURE) == 1 && PRED_EXPOSURE %in% EXPOSURES,
+  "the prediction grid must be percentages in [0, 100]" =
+    length(PRED_GRID_PCT) > 1 && all(PRED_GRID_PCT >= 0 & PRED_GRID_PCT <= 100),
+  "the prediction grid must be increasing" =
+    !is.unsorted(PRED_GRID_PCT, strictly = TRUE),
+  "only prediction.method = standardization is implemented" =
+    identical(as.character(PRED$method), "standardization"),
+  "bootstrap_draws must be a positive count" =
+    length(PRED_DRAWS) == 1 && is.finite(PRED_DRAWS) && PRED_DRAWS > 0,
+  "one unadjusted bin label per interval" =
+    length(BIN_LABELS) == length(BIN_BREAKS) - 1,
+  "the unadjusted bin breaks must be increasing" =
+    !is.unsorted(BIN_BREAKS, strictly = TRUE),
+  "the first bin break must sit below zero so exactly 0 gets its own bin" =
+    BIN_BREAKS[1] < 0)
+PRED_MODEL_EXPOSURE <- MODEL_EXPOSURES[match(PRED_EXPOSURE, EXPOSURES)]
 
 
 # ---- 3. Paths and provenance -------------------------------------------------
@@ -136,16 +149,19 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
 
 OWNED <- list(
   out_phi = c("outcome_model_frame.parquet"),
-  # REPORTED DIRECTLY.
+  # Reported directly.
   phase = c("exposure_distribution.csv", "exposure_by_unit.csv",
             "exposure_correlation.csv", "vfd_ordinal.csv",
+            "vfd_day_distribution.csv", "adjusted_prediction.csv",
+            "unadjusted_bins.csv",
             "model_coefficients.csv", "model_covariance.csv", "strobe.csv",
             "exposure_histogram.png", "exposure_by_unit.png",
-            "exposure_scatter.png", "provenance.json", "captions.md"),
-  # METHOD CHECKS. The proportional-odds test belongs here: it is evidence about
-  # whether the model is admissible, not a result.
-  diagnostics = c("model_diagnostics.csv", "proportional_odds_test.csv"))
-RETIRED <- character(0)          # new script on 2026-10-27
+            "exposure_scatter.png", "vfd_vs_pindicated.png",
+            "provenance.json", "captions.md"),
+  # Method checks: evidence about whether the model is admissible, not results.
+  diagnostics = c("model_diagnostics.csv", "proportional_odds_test.csv",
+                  "proportional_odds_gate.csv"))
+RETIRED <- character(0)
 n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
@@ -160,10 +176,7 @@ flow <- function(label, n, dropped_because = NA_character_) {
 
 # ---- 5. Read -----------------------------------------------------------------
 
-# Pbolus comes straight from 05's per-encounter handoff. Its `overall` scope IS
-# the first-72h exposure: titration events are bounded at the granular extent and
-# 05 asserts it, so there is no separate 72h filter to apply and no second place
-# the window could drift.
+# 05's `overall` scope IS the first-72h exposure, so no 72h filter is applied here.
 adh <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_adherence.parquet")))
 stopifnot("titration_adherence must carry the overall scope" =
             "overall" %in% adh$scope)
@@ -194,10 +207,7 @@ icu <- as.data.frame(read_parquet(file.path(dirs$out_phi, "care_intervals.parque
 
 
 # ---- 6. The two exposures ----------------------------------------------------
-# Both are a share of INCREASE events: initiation union uptitration, excluding
-# downtitrations. They share the identical denominator, which is asserted rather
-# than assumed -- if the two handoffs ever disagree about what an increase is,
-# the ratios stop being comparable and the collinearity check becomes meaningless.
+# A share of INCREASE events; the shared denominator is asserted, not assumed.
 
 inc <- ind[ind$event_type == "increase", ]
 pi_ <- aggregate(cbind(n_inc = rep(1, nrow(inc)),
@@ -222,10 +232,8 @@ cat(sprintf("\nAdmissions with a fentanyl infusion and at least one increase: %s
 
 
 # ---- 7. The analysis set -----------------------------------------------------
-# Three restrictions, each with a reason, each a STROBE row. The landmark one is
-# not optional: VFD-28 is only defined for admissions still ventilated at T, and
-# it is also what guarantees the exposure window closed before the outcome
-# window opened.
+# Three restrictions, each a STROBE row. The landmark one is not optional: VFD-28
+# is defined only on IMV at T, and it puts the exposure window before the outcome.
 
 flow("Admissions with >= 1 fentanyl increase event", nrow(ex))
 
@@ -237,33 +245,23 @@ d <- d[d$n_uptitration >= 1, ]
 flow("With >= 1 UPTITRATION (not initiation alone)", nrow(d),
      "initiation only -- no titration decision to describe")
 
-# ICU at hour 0. Not the modal unit over the exposure window: that would be
-# partly determined by the exposure and would make a baseline covariate
-# post-exposure. See protocol.json model.outcome_model._icu_attribution_why.
+# ICU at hour 0, not the modal unit over the window: see _icu_attribution_why.
 icu <- icu[icu$t_start_hr <= 0 & icu$t_end_hr > 0, ]
-# location_category travels with location_name. It is the mCIDE-controlled key --
-# `icu` or `ed` per unit_variation.attributed_location_categories -- and it is
-# what the ICU-only sensitivity restricts on. care_setting cannot serve: it
-# resolves an ICU row to its location_type SUBTYPE (general_icu, burn_icu, ...),
-# so it answers "which ICU", never "is this an ICU".
+# location_category is the mCIDE key the ICU-only sensitivity restricts on.
+# care_setting cannot serve: it gives the subtype ("which ICU"), not "is it one".
 icu <- icu[!duplicated(icu$encounter_block),
            c("encounter_block", "location_name", "location_category")]
 d <- merge(d, icu, by = "encounter_block", all.x = TRUE)
 
-# `unattributed` is a real group -- no attributed care location covers hour 0 --
-# and is kept as its own level rather than dropped or merged, because merging it
-# into a ward it was not in would be a fabrication. It is labelled on BOTH keys,
-# so the ICU-only restriction excludes it explicitly rather than by an NA
-# comparison that would silently return NA and drop the row anyway.
+# `unattributed` is a real group, kept as its own level and labelled on BOTH keys
+# so the ICU-only restriction excludes it explicitly, not by an NA comparison.
 d$location_name[is.na(d$location_name)] <- "unattributed"
 d$location_category[is.na(d$location_category)] <- "unattributed"
 d$icu <- factor(d$location_name)
 cat(sprintf("  ICU levels before collapsing: %d\n", nlevels(d$icu)))
 
-# COMPOSITION BY CARE CATEGORY, printed every run. The fixed effects are named
-# "ICU" throughout and at UCMC the largest level is the ED, so this is the line
-# that stops that being forgotten -- and it is what the ICU-only sensitivity
-# restricts on, so its denominator should never be a surprise.
+# Care-category composition: the fixed effects are named "ICU" but the largest
+# level need not be one, and this is the ICU-only sensitivity's denominator.
 comp <- as.data.frame(table(location_category = tolower(d$location_category)),
                       stringsAsFactors = FALSE)
 comp$pct <- round(100 * comp$Freq / nrow(d), 1)
@@ -274,18 +272,11 @@ for (i in seq_len(nrow(comp))) {
               if (identical(comp$location_category[i], ICU_CAT))
                 "   <- the ICU-only sensitivity" else ""))
 }
-# THE COLLAPSE HAPPENS PER MODEL FRAME, not here. Each model drops a different
-# set of incomplete cases, so a level that clears the threshold on 2,897
-# admissions can fall to one on the 2,472 that are complete -- which is exactly
-# what happened on the first run: a single collapsed admission sat alone in the
-# top VFD band, the Hessian went singular (condition number 1.1e16) and the
-# primary model did not converge. Sizing the collapse on the wrong frame is the
-# bug; see collapse_units() in fit_one().
+# The unit collapse happens PER MODEL FRAME: each model drops a different set of
+# incomplete cases, so it must be sized on the frame fitted. See collapse_units().
 
-# Baseline covariates, all measured at or before intubation. age / sex / cci are
-# time-invariant; sofa_baseline is the worst value in the 24h BEFORE the anchor
-# (protocol.json time_invariant.sofa_baseline), which is why it is a Phase 0
-# product and not derived here.
+# Baseline covariates, at or before intubation. sofa_baseline is a Phase 0 product
+# (protocol.json time_invariant.sofa_baseline), not derived here.
 d <- merge(d, base, by = "encounter_block", all.x = TRUE)
 stopifnot("the covariate merge changed the admission count" =
             nrow(d) == nrow(unique(d["encounter_block"])),
@@ -293,27 +284,45 @@ stopifnot("the covariate merge changed the admission count" =
             all(c("age", "sex", "cci", "sofa_baseline") %in% names(d)))
 d$sex <- factor(d$sex)
 
-# The ordinal outcome. cut() is right-closed, so the first break sits BELOW zero
-# to put exactly 0 in its own bottom level -- half the cohort lives there and it
-# must not leak into the next band.
-d$vfd_ord <- cut(d$vfd_28, breaks = CUTS, labels = LABELS, ordered_result = TRUE)
-stopifnot("a VFD-28 value fell outside the declared breaks" = !any(is.na(d$vfd_ord)),
-          "the ordinal outcome must be ordered" = is.ordered(d$vfd_ord))
+# vfd_ord is the MODEL outcome: whole days via floor(), observed levels only.
+# vfd_band is the four-band descriptive cut; cut() is right-closed, so the first
+# break sits BELOW zero to give exactly 0 its own level. Ceiling derived, not typed.
+VFD_CEILING_D <- as.numeric(COV$outcomes$vfd$horizon_days) - LANDMARK_H / 24
+stopifnot("the VFD ceiling must be a positive whole number of days" =
+            VFD_CEILING_D > 0 && abs(VFD_CEILING_D - round(VFD_CEILING_D)) < 1e-9)
 
-vfd_tab <- as.data.frame(table(level = d$vfd_ord), stringsAsFactors = FALSE)
+d$vfd_band <- cut(d$vfd_28, breaks = CUTS, labels = LABELS, ordered_result = TRUE)
+day <- floor(d$vfd_28 + 1e-9)
+d$vfd_ord <- factor(day, levels = sort(unique(day)), ordered = TRUE)
+stopifnot(
+  "a VFD-28 value fell outside the declared breaks" = !any(is.na(d$vfd_band)),
+  "the descriptive banding must be ordered" = is.ordered(d$vfd_band),
+  "a VFD-28 value produced no integer day" = !any(is.na(d$vfd_ord)),
+  "the model outcome must be ordered" = is.ordered(d$vfd_ord),
+  "flooring must not invent a day above the VFD ceiling" =
+    max(day) <= VFD_CEILING_D)
+
+vfd_tab <- as.data.frame(table(level = d$vfd_band), stringsAsFactors = FALSE)
 names(vfd_tab)[2] <- "n_admissions"
 vfd_tab$denominator <- nrow(d)
 vfd_tab$pct <- round(100 * vfd_tab$n_admissions / nrow(d), 1)
-cat("\nVFD-28 as an ordinal outcome\n")
+cat("\nVFD-28 as the DESCRIPTIVE four-band cut (not the model outcome)\n")
 print(vfd_tab, row.names = FALSE)
 
-# THE MODEL-SCALE EXPOSURES. Dividing the column -- rather than rescaling the
-# coefficient afterwards -- is what makes the estimate, its standard error, its
-# interval and the variance-covariance block all land on the same scale without
-# five hand conversions. It matters most for model_covariance.csv, which is the
-# pooling payload: a variance scales by the SQUARE of the factor while an
-# estimate scales linearly, so a hand conversion that treats them alike corrupts
-# an inverse-variance pool silently instead of failing.
+# One row per attainable day. The empty levels are information: a gap at day 1 is
+# the liberation threshold showing through, not missing data.
+day_tab <- data.frame(day = seq.int(0L, as.integer(round(VFD_CEILING_D))),
+                      stringsAsFactors = FALSE)
+day_tab$n_admissions <- as.integer(table(factor(day, levels = day_tab$day)))
+day_tab$denominator <- nrow(d)
+day_tab$pct <- round(100 * day_tab$n_admissions / nrow(d), 2)
+day_tab$is_model_level <- day_tab$day %in% as.numeric(levels(d$vfd_ord))
+cat(sprintf("VFD-28 on the model scale: %d of %d day levels observed (absent: %s)\n",
+            nlevels(d$vfd_ord), nrow(day_tab),
+            paste(day_tab$day[!day_tab$is_model_level], collapse = ", ")))
+
+# Scaling the COLUMN, not the coefficient afterwards, keeps estimate, SE, CI and
+# vcov on one scale -- a variance scales by the SQUARE of the factor.
 for (i in seq_along(EXPOSURES)) {
   d[[MODEL_EXPOSURES[i]]] <- d[[EXPOSURES[i]]] / EXP_SCALE
 }
@@ -322,9 +331,7 @@ stopifnot("the scaled exposures must reach the model frame" =
 cat(sprintf("\nExposure reporting unit: one OR per %d percentage points (%s)\n",
             EXP_SCALE_PP, paste(MODEL_EXPOSURES, collapse = ", ")))
 
-# Complete case, declared rather than left to clm()'s default. Derived from the
-# config rather than restated: a hardcoded list here would make adding a
-# covariate to protocol.json a silent no-op for the completeness check.
+# Complete case, derived from the config so a new covariate is not a silent no-op.
 NEED <- c(EXPOSURES, COVARIATES)
 d$.complete <- stats::complete.cases(d[, NEED])
 flow("Complete on every model covariate", sum(d$.complete),
@@ -337,8 +344,7 @@ for (v in NEED) {
 
 
 # ---- 8. Exposure description -------------------------------------------------
-# Shipped as BINNED COUNTS, not as a density: counts on fixed bins pool across
-# sites by addition, a kernel density does not.
+# BINNED COUNTS, not a density: counts on fixed bins pool across sites by addition.
 BINS <- seq(0, 1, by = 0.05)
 dist_rows <- do.call(rbind, lapply(EXPOSURES, function(v) {
   b <- cut(d[[v]], breaks = BINS, include.lowest = TRUE, right = TRUE)
@@ -366,27 +372,20 @@ cat(sprintf("  shared denominator (increase events): median %.0f, IQR %.0f-%.0f,
             median(d$n_increase), quantile(d$n_increase, .25),
             quantile(d$n_increase, .75), max(d$n_increase)))
 
-# Per unit, for the violin figure and for between-site heterogeneity. Quantiles
-# do NOT pool; the counts beside them do, and the RANGE across units is the thing
-# to read. Units below the reporting floor are suppressed, not published.
+# Per unit, for the violin figure. Quantiles do NOT pool; the counts beside them
+# do. Units below the reporting floor are suppressed, not published.
 by_unit <- do.call(rbind, lapply(EXPOSURES, function(v) {
   do.call(rbind, lapply(levels(d$icu), function(u) {
     x <- d[[v]][d$icu == u]
     if (!length(x)) return(NULL)
-    # location_category SHIPS BESIDE THE NAME. location_name is site-local free
-    # text, so a coordinating centre reading another site's bundle cannot tell
-    # an ICU from an ED from a ward -- which is exactly the distinction the
-    # ICU-only sensitivity turns on, and the reason the ED's 42% share went
-    # unnoticed here until it was looked for. The category is mCIDE-controlled
-    # and means the same thing everywhere.
+    # location_category SHIPS BESIDE THE NAME: location_name is site-local free
+    # text, so another site cannot tell an ICU from an ED from a ward.
     cat_u <- unique(tolower(d$location_category[d$icu == u]))
     stopifnot("a location_name maps to more than one location_category" =
                 length(cat_u) == 1)
     data.frame(exposure = v, location_name = u, location_category = cat_u,
                n_admissions = length(x),
-               # The POINT MASS, as a count so it pools. The figure labels this
-               # share per unit, and a number shown in a panel that no shipped
-               # file carries cannot be checked or combined by the centre.
+               # The POINT MASS, as a count so it pools and the label is checkable.
                n_at_zero = sum(x == 0),
                median = round(median(x), 3),
                q1 = round(quantile(x, .25, names = FALSE), 3),
@@ -402,9 +401,7 @@ if (any(suppressed)) {
   by_unit[suppressed, c("n_at_zero", "median", "q1", "q3", "mean", "sd")] <- NA
 }
 
-# Collinearity: the question SG asked before the model was written. Pearson for
-# the linear-model concern, Spearman because both exposures are proportions with
-# a point mass at zero and Pearson alone would be read too confidently.
+# Spearman as well as Pearson: both exposures are proportions massed at zero.
 ct_p <- stats::cor.test(d$Pbolus, d$Pindicated, method = "pearson")
 ct_s <- suppressWarnings(stats::cor.test(d$Pbolus, d$Pindicated, method = "spearman",
                                          exact = FALSE))
@@ -463,10 +460,8 @@ p_hist <- house(
 ggsave(file.path(dirs$phase, "exposure_histogram.png"), p_hist,
        width = 7.0, height = 5.2, dpi = 200)
 
-# Violin by unit: within-ICU spread AND between-ICU differences in one panel,
-# which is what SG asked these figures to show. A boxplot inside each violin
-# because a violin alone hides the median, and the n under each unit because a
-# wide violin on twelve admissions is not the same claim as one on four hundred.
+# Violin by unit, with the n under each: a wide violin on twelve admissions is not
+# the same claim as one on four hundred.
 unit_n <- as.data.frame(table(icu = d$icu), stringsAsFactors = FALSE)
 names(unit_n)[2] <- "n"
 long_ex$icu_lab <- factor(long_ex$icu, levels = unit_n$icu,
@@ -516,60 +511,15 @@ register_caption("exposure_by_unit.png",
                  "audience-facing versions anonymise them."),
           MIN_CELL, MIN_UNIT_N))
 
-# ONE POINT PER ADMISSION, NOT A BOX. Both exposures have a point mass at exactly
-# zero -- Pindicated is 0 for 49.5% of admissions -- so median and Q1 coincide on
-# the floor for most units and the box degenerates to a line on the axis. A box
-# that cannot show the thing holding half the data is the wrong mark here.
-#
-# JITTER IS HORIZONTAL ONLY (height = 0). These are proportions bounded at 0 with
-# the mass sitting ON that bound; vertical jitter would move true zeros up to a
-# few percent and read as "a little documentation" where there was none. The
-# scatter below jitters both axes on purpose -- it is a collinearity check, not a
-# level -- and the two must not be made to match.
-#
-# The horizontal banding this produces is REAL AND WORTH SEEING: the median
-# admission has 4 increase events, so attainable values are a sparse rational
-# grid (0, 1/4, 1/3, 1/2, 1...). The bands ARE the small-denominator problem the
-# header names as the main threat to this analysis.
-# VIOLIN PLUS ONE POINT PER ADMISSION, in the r-charts violin+dotplot idiom SG
-# asked for: filled envelope, ink outline, every admission drawn inside it.
-#
-# THE POINTS ARE SINA-POSITIONED, NOT JITTERED, and that is what makes the
-# combination work here. A width-normalised violin is at its widest where the
-# density peaks -- for these exposures that is the spike at zero -- so above the
-# spike the envelope narrows to a waist. Uniform jitter ignores the envelope and
-# sprays points outside it (tried, rendered, rejected). Offsetting each point by
-# the LOCAL density, scaled the way geom_violin(scale = "width") scales the
-# outline, fills the violin exactly.
-#
-# Hand-rolled rather than taking ggforce::geom_sina: the pinned stack IS the
-# cross-site reproducibility guarantee, and one figure does not justify adding
-# to it. Eight lines, and the scaling is the same expression the violin uses.
-#
-# ADJUST IS LEFT AT THE DEFAULT 1. Smoothing it to 2 made the panel prettier and
-# WRONG -- it smeared the atom at zero across the whole range, so N08S, which has
-# 61% of its admissions at exactly zero, rendered as an almost uniform
-# distribution. Rendered, compared, discarded.
-#
-# The median diamond and the "% at 0" label stay: a violin cannot show a point
-# mass legibly either, and the share at zero is the dominant feature of both
-# exposures.
+# One point per admission, not a box: both exposures are massed at exactly zero, so
+# median and Q1 coincide on the floor for most units. The offset is HORIZONTAL ONLY
+# -- a true zero moved vertically reads as documentation that did not happen. Points
+# are SINA-POSITIONED, not jittered: a scale = "width" violin narrows to a waist
+# above the zero spike, so each is offset by the LOCAL density. adjust stays at 1.
 long_ex$n_unit <- unit_n$n[match(long_ex$icu, unit_n$icu)]
 
-# Everything drawn is computed on units at or above the disclosure threshold.
-# At a unit with one admission the point, the median and the zero share are all
-# that single patient's value against a named unit -- what
-# reporting.small_cell_min_den exists to stop. The unit keeps its place on the
-# axis with its n, so the reader sees it was suppressed and not dropped.
-# SG, 2026-10-28: a unit needs at least MIN_CELL admissions to appear in the
-# figure at all. Earlier these kept an empty axis slot so the reader could see
-# they were suppressed; SG's call is that a named column with nothing in it is
-# noise, not disclosure. droplevels is what actually removes the slot -- without
-# it the factor level survives and ggplot keeps drawing the gap.
-# The unit still SHIPS in exposure_by_unit.csv with its n and its statistics
-# blanked, so nothing is hidden from the coordinating centre; it is only absent
-# from the panel. (At UCMC this is ER COMER, n = 1 -- Comer Children's ER, 10
-# intervals across 10 episodes in the whole care-intervals table.)
+# A unit needs MIN_CELL admissions to appear at all, and droplevels is what removes
+# the axis slot. It still ships in exposure_by_unit.csv with its statistics blanked.
 pts <- droplevels(long_ex[long_ex$n_unit >= MIN_CELL, ])
 
 VIOLIN_W <- 0.90
@@ -584,22 +534,17 @@ pts$xoff <- stats::ave(pts$value, interaction(pts$exposure, pts$icu_lab, drop = 
                        FUN = sina_offset)
 pts$xnum <- as.numeric(pts$icu_lab) + pts$xoff
 
-# Derived FROM by_unit rather than recomputed from the frame: the panel and the
-# shipped CSV then cannot disagree, and the suppression is applied in one place.
+# Derived FROM by_unit, not recomputed: the panel and the CSV cannot then disagree.
 agg <- by_unit[by_unit$n_admissions >= MIN_CELL, ]
 agg$icu_lab <- factor(agg$location_name, levels = unit_n$icu,
                       labels = levels(long_ex$icu_lab))
-# Re-level onto the units the panel actually draws, or the diamonds and labels
-# are positioned against a level set the x axis no longer has.
+# Re-level onto the units the panel draws, or the diamonds land on a stale level set.
 agg$icu_lab <- factor(as.character(agg$icu_lab), levels = levels(pts$icu_lab))
 agg$exposure <- factor(agg$exposure, levels = EXPOSURES,
                        labels = unname(EXP_LAB[EXPOSURES]))
 agg$med <- agg$median
-# INTEGER-FIRST, and the reason is not pedantry: 46/80 is 0.575, which is not
-# exactly representable, so 100 * (n/d) gives 57.4999... and prints "57%" while
-# a reader recomputing (100*n)/d from the shipped counts gets 57.5 and prints
-# "58%". A panel number that cannot be reproduced from the CSV beside it is the
-# traceability failure, however small the number.
+# Integer-first: 100 * (n/d) can print a percent below (100*n)/d recomputed from
+# the shipped counts, and the panel number has to match the CSV.
 agg$p0  <- (100 * agg$n_at_zero) / agg$n_admissions
 
 p_unit <- house(
@@ -615,9 +560,7 @@ p_unit <- house(
               size = 2.3, colour = INK) +
     facet_wrap(~exposure, ncol = 1) +
     scale_fill_manual(values = unname(EXP_COL[EXPOSURES]), guide = "none") +
-    # Headroom to 1.14 for the "% at 0" row. NOT cosmetic: ggplot DROPS data
-    # outside scale limits, so with limits = c(0, 1) every label silently
-    # vanishes and the panel looks fine without them.
+    # Headroom for the "% at 0" row: ggplot DROPS data outside the scale limits.
     scale_y_continuous(limits = c(0, 1.14), breaks = seq(0, 1, 0.25),
                        labels = scales::percent_format(1)) +
     labs(x = NULL, y = "Share of increase events") +
@@ -625,9 +568,7 @@ p_unit <- house(
 ggsave(file.path(dirs$phase, "exposure_by_unit.png"), p_unit,
        width = 9.0, height = 6.2, dpi = 200)
 
-# Scatter: the collinearity check, drawn. Jittered because both axes are
-# proportions on a small denominator and hundreds of admissions sit on the exact
-# same coordinate -- an unjittered plot would show a dozen points for 2,897.
+# Jittered because both axes are proportions on a small denominator.
 register_caption("exposure_scatter.png",
   "Are the two exposures measuring the same thing?",
   sprintf(paste0("P(bolus) against P(indicated), one point per admission, ",
@@ -657,21 +598,16 @@ ggsave(file.path(dirs$phase, "exposure_scatter.png"), p_sc,
 
 
 # ---- 10. The models ----------------------------------------------------------
-# Proportional-odds ordinal logistic. A positive coefficient means HIGHER odds of
-# landing in a BETTER (higher) VFD band -- clm() models cumulative odds of being
-# at or below a level, and we negate nothing, so read the sign against the
-# ordering of vfd_ord and not against intuition.
+# Proportional-odds ordinal logistic. clm() models cumulative odds of being at or
+# below a level and nothing is negated: positive means higher odds of a BETTER band.
 
-# Built from the config, not restated. The exposure terms are the SCALED ones, so
-# the shipped coefficient names say which unit they are in.
+# The exposure terms are the SCALED ones, so coefficient names carry their unit.
 FORM_PRIMARY <- stats::as.formula(paste(
   "vfd_ord ~", paste(c(MODEL_EXPOSURES, COVARIATES), collapse = " + ")))
 FORM_COVERAGE <- stats::update(FORM_PRIMARY, . ~ . + sofa_baseline_n_components)
 
-# A fixed effect needs enough admissions to be identified. Rare units collapse to
-# `other`; if `other` is ITSELF below the threshold the remaining admissions are
-# DROPPED rather than relabelled, because assigning a patient to a unit they were
-# never in to make a model fit is not a modelling choice. The count is reported.
+# Rare units collapse to `other`; if `other` is ITSELF below the threshold those
+# admissions are DROPPED rather than relabelled. The count is reported.
 collapse_units <- function(frame) {
   n_by <- table(as.character(frame$location_name))
   small <- names(n_by)[n_by < MIN_UNIT_N]
@@ -689,9 +625,8 @@ collapse_units <- function(frame) {
 }
 
 fit_one <- function(frame, form, label, why, nominal = NULL) {
-  # The nominal terms are NOT in `form`, so they must be named here as well or
-  # the complete-case filter would miss them and clm would drop rows itself,
-  # silently, after the unit collapse had already been sized.
+  # The nominal terms are NOT in `form`, so name them here too or the complete-case
+  # filter misses them and clm drops rows itself, after the collapse was sized.
   vars <- setdiff(c(all.vars(form), all.vars(nominal)), c("vfd_ord", "icu"))
   frame <- frame[stats::complete.cases(frame[, vars, drop = FALSE]), ]
   frame <- collapse_units(frame)
@@ -708,16 +643,8 @@ fit_one <- function(frame, form, label, why, nominal = NULL) {
                 label, nrow(frame), nlevels(frame$vfd_ord)))
     return(NULL)
   }
-  # do.call, NOT ordinal::clm(form, data = frame, ...). The difference is not
-  # style: clm() stores its call verbatim, and nominal_test() REFITS the model
-  # once per term by re-evaluating that call. A plain call records
-  # `data = frame`, `frame` is a local that no longer exists once this function
-  # returns -- and `frame` is also a BASE R FUNCTION (graphics::frame), so the
-  # refit resolves it to that function instead of erroring on an unknown name.
-  # Every refit then fails, and nominal_test returns a well-formed table with
-  # every term's LRT and p-value NA. do.call inlines the data frame into the
-  # recorded call, so the refits have the data they need. Verified: the
-  # coefficients are identical to the plain-call fit at tolerance = 0.
+  # do.call, NOT clm(form, data = frame): nominal_test() re-evaluates clm's verbatim
+  # call, where `frame` resolves to graphics::frame and every refit silently NAs.
   args <- list(formula = form, data = frame, link = "logit")
   if (!is.null(nominal)) args$nominal <- nominal
   fit <- tryCatch(do.call(ordinal::clm, args),
@@ -735,38 +662,21 @@ MODELS <- list(
           sprintf("sensitivity_min_%d_events", SENS_MIN),
           sprintf(paste0("restricted to >= %d increase events -- SG's check on ",
                          "the small denominator"), SENS_MIN)),
-  # ICU-ONLY. The fixed effects are called "ICU" everywhere, but the largest
-  # level is the Emergency Department and a tenth of admissions are
-  # unattributed. The ED documents indication at less than half the ICU rate
-  # while dosing almost identically (2026-09-30), so the biggest contrast in
-  # Pindicated between levels is a CHARTING difference. The fixed effect absorbs
-  # that level shift already; this asks whether the exposure association
-  # survives removing the setting entirely. A sensitivity, not the primary --
-  # intubation in the ED is a real clinical course.
+  # ICU-only. The ED documents indication far more sparsely than it doses, so part
+  # of the between-level contrast in Pindicated is CHARTING. A sensitivity only.
   fit_one(d[tolower(d$location_category) == ICU_CAT, ], FORM_PRIMARY,
           "sensitivity_icu_only",
           sprintf(paste0("restricted to admissions whose care location at hour ",
                          "0 has location_category == '%s' -- excludes the ED ",
                          "and unattributed, where documented indication is ",
                          "measurably sparser than dosing"), ICU_CAT)),
-  # PARTIAL PROPORTIONAL ODDS. Added after the PO test was repaired and turned
-  # out to FAIL for age (p = 1.3e-08), cci (p = 9.9e-05) and sex (p = 0.028)
-  # while HOLDING for both exposures and for sofa_baseline. A single odds ratio
-  # is not a valid summary for those three, so here they get cut-point-specific
-  # effects and the exposures keep one OR each.
-  # A SENSITIVITY, not the primary: SG specified the model, the violations are in
-  # adjustment terms rather than the estimands, and the exposure coefficient is
-  # what travels to the pool. If the exposure ORs move materially between this
-  # and the primary, the primary is the one to doubt.
-  fit_one(d, stats::as.formula(paste(
-            "vfd_ord ~",
-            paste(c(MODEL_EXPOSURES,
-                    setdiff(COVARIATES, c("age", "sex", "cci"))),
-                  collapse = " + "))),
-          "sensitivity_partial_po",
-          paste0("age, sex and cci given nominal (cut-point-specific) effects ",
-                 "because they violate proportional odds; exposures keep one OR"),
-          nominal = ~ age + sex + cci),
+  # The previously shipped primary on the four-band outcome, so the resolution
+  # change is visible: same frame and formula, only the response differs.
+  fit_one(local({ dd <- d; dd$vfd_ord <- dd$vfd_band; dd }), FORM_PRIMARY,
+          "sensitivity_four_band",
+          paste0("the primary refitted on the four-band cut declared in ",
+                 "vfd_ordinal_breaks -- the outcome scale this study used until ",
+                 "2026-10-28 -- so the resolution change is visible, not silent")),
   fit_one(d, FORM_COVERAGE, "sensitivity_sofa_coverage",
           paste0("primary plus sofa_baseline_n_components; NOT a primary ",
                  "covariate, see protocol.json ",
@@ -776,12 +686,8 @@ stopifnot("no model converged -- nothing to report" = length(MODELS) > 0)
 
 tidy_one <- function(m) {
   s <- summary(m$fit)$coefficients
-  # clm puts the thresholds first. They are NUISANCE AND MUST NOT BE SHIPPED: a
-  # threshold depends on each site's covariate distribution, so pooling one
-  # across sites would combine numbers that are not the same quantity. Matched by
-  # NAME via names(fit$alpha) -- `fit$alpha.names` does not exist, which an
-  # earlier version of this line assumed, and the thresholds leaked into the
-  # coefficient table as a result.
+  # clm puts the thresholds first; they are nuisance and MUST NOT BE SHIPPED.
+  # Matched by name via names(fit$alpha) -- there is no `fit$alpha.names`.
   stopifnot("clm did not expose its thresholds as names(fit$alpha)" =
               length(m$fit$alpha) > 0 && !is.null(names(m$fit$alpha)))
   thr <- rownames(s) %in% names(m$fit$alpha)
@@ -798,10 +704,8 @@ tidy_one <- function(m) {
     n_admissions = m$n, n_units = m$n_units,
     is_exposure = rownames(co) %in% MODEL_EXPOSURES,
     stringsAsFactors = FALSE)
-  # TWO SCALES, NAMED. estimate/std_error/ci_* are LOG ODDS -- that is the scale
-  # inverse-variance pooling needs. odds_ratio/or_ci_* are the exponentiated
-  # version for reading. An earlier draft shipped an OR beside a log-odds CI
-  # under the bare names ci_lo/ci_hi, which invites pairing them.
+  # TWO SCALES. estimate/std_error/ci_* are LOG ODDS, which is what pooling needs;
+  # odds_ratio/or_ci_* are exp() of them.
   if (!is.null(ci)) {
     out$ci_lo <- round(ci[match(out$term, rownames(ci)), 1], 6)
     out$ci_hi <- round(ci[match(out$term, rownames(ci)), 2], 6)
@@ -819,9 +723,8 @@ tidy_one <- function(m) {
 }
 coefs <- do.call(rbind, lapply(MODELS, tidy_one))
 
-# ICU fixed effects are site-local nuisance: `location_name` is free text and an
-# `icuMICU` coefficient at one site names nothing at another. They are BLANKED
-# rather than dropped so the pooled table can still see that they were fitted.
+# ICU fixed effects are site-local nuisance -- `location_name` is free text. BLANKED
+# rather than dropped, so the pooled table can see they were fitted.
 is_icu <- grepl("^icu", coefs$term)
 coefs$poolable <- !is_icu
 coefs$estimate[is_icu] <- NA; coefs$std_error[is_icu] <- NA
@@ -836,8 +739,7 @@ show <- coefs[coefs$poolable, c("model", "term", "estimate", "std_error",
                                "n_admissions")]
 print(show, row.names = FALSE)
 
-# The 2x2 between the two exposures, so the centre can test them jointly rather
-# than only one at a time. Shipping SEs alone forecloses that.
+# The 2x2 between the exposures, so the centre can test them jointly.
 vcov_rows <- do.call(rbind, lapply(MODELS, function(m) {
   V <- tryCatch(stats::vcov(m$fit), error = function(e) NULL)
   if (is.null(V)) return(NULL)
@@ -851,52 +753,108 @@ vcov_rows <- do.call(rbind, lapply(MODELS, function(m) {
              n_admissions = m$n, stringsAsFactors = FALSE)
 }))
 
-# PROPORTIONAL ODDS IS TESTED, NOT ASSUMED. With half the cohort at VFD = 0 the
-# assumption is exactly where this model is most likely to fail, and a violated
-# PO assumption makes a single odds ratio per exposure the wrong summary.
-#
-# The table CARRIES ITS OWN STATUS, because the way this diagnostic fails is by
-# succeeding in appearance. nominal_test() returns a fully formed table -- the
-# `<none>` row populated from the existing fit, one row per term -- and NA's the
-# terms when the per-term refits fail. Counting "terms with p < 0.05" over that
-# gives 0 and reads as "the assumption holds", which is the opposite of what
-# happened. An untestable model must be distinguishable from a passing one in
-# the shipped file, not just in the console.
+# Proportional odds is tested, not assumed, ONE TERM AT A TIME via
+# nominal_test(scope = ): the all-terms call dies under R >= 4.3, since clm can
+# return a length-2 convergence code and ordinal guards its refit with `&&`.
 po_rows <- do.call(rbind, lapply(MODELS, function(m) {
-  nt <- tryCatch(ordinal::nominal_test(m$fit), error = function(e) NULL)
-  if (is.null(nt)) {
-    return(data.frame(model = m$label, term = NA_character_, df = NA_integer_,
-                      logLik = NA_real_, AIC = NA_real_, LRT = NA_real_,
-                      p_value = NA_real_, status = "errored",
-                      stringsAsFactors = FALSE))
+  terms_in <- attr(stats::terms(m$fit), "term.labels")
+  base <- data.frame(
+    model = m$label, term = "<none>", df = NA_integer_,
+    logLik = round(as.numeric(stats::logLik(m$fit)), 3),
+    AIC = round(stats::AIC(m$fit), 3), LRT = NA_real_, p_value = NA_real_,
+    status = "reference", note = NA_character_, stringsAsFactors = FALSE)
+  if (!length(terms_in)) {
+    base$status <- "errored"
+    base$note <- "the fit exposes no model terms to test"
+    return(base)
   }
-  nt <- as.data.frame(nt)
-  terms_only <- rownames(nt) != "<none>"
-  n_tested <- sum(!is.na(nt[["Pr(>Chi)"]][terms_only]))
-  data.frame(model = m$label, term = rownames(nt),
-             df = nt[["Df"]], logLik = round(nt[["logLik"]], 3),
-             AIC = round(nt[["AIC"]], 3),
-             LRT = round(nt[["LRT"]], 4),
-             p_value = signif(nt[["Pr(>Chi)"]], 4),
-             status = if (n_tested == 0L) "not_testable" else "tested",
-             stringsAsFactors = FALSE)
+  rows <- lapply(terms_in, function(tm) {
+    # nominal_test swallows the refit's warnings into an NA row; collected here.
+    warns <- character(0)
+    res <- withCallingHandlers(
+      tryCatch({
+        nt <- as.data.frame(ordinal::nominal_test(
+          m$fit, scope = stats::as.formula(paste("~", tm))))
+        r <- nt[rownames(nt) == tm, , drop = FALSE]
+        if (!nrow(r)) stop("the scoped table carries no row for this term")
+        list(df = r[["Df"]], logLik = r[["logLik"]], AIC = r[["AIC"]],
+             LRT = r[["LRT"]], p = r[["Pr(>Chi)"]], err = NA_character_)
+      }, error = function(e) list(df = NA, logLik = NA, AIC = NA, LRT = NA,
+                                  p = NA, err = conditionMessage(e))),
+      warning = function(w) {
+        warns <<- c(warns, conditionMessage(w)); invokeRestart("muffleWarning")
+      })
+    p <- suppressWarnings(as.numeric(res$p))
+    note <- if (!is.na(res$err)) res$err
+            else if (is.na(p) && length(warns))
+              paste(unique(trimws(warns)), collapse = " | ")
+            else NA_character_
+    data.frame(
+      model = m$label, term = tm,
+      df = suppressWarnings(as.integer(res$df)),
+      logLik = round(suppressWarnings(as.numeric(res$logLik)), 3),
+      AIC = round(suppressWarnings(as.numeric(res$AIC)), 3),
+      LRT = round(suppressWarnings(as.numeric(res$LRT)), 4),
+      p_value = signif(p, 4),
+      status = if (is.na(p)) "not_testable" else "tested",
+      note = note, stringsAsFactors = FALSE)
+  })
+  do.call(rbind, c(list(base), rows))
 }))
+
+GATE_PASSED <- TRUE
+gate_rows <- NULL
 if (!is.null(po_rows)) {
-  untestable <- unique(po_rows$model[po_rows$status != "tested"])
-  tested <- po_rows[po_rows$status == "tested" & po_rows$term != "<none>", ]
-  bad <- tested[!is.na(tested$p_value) & tested$p_value < 0.05, ]
-  cat(sprintf("\nProportional-odds test: %d of %d model(s) testable, %d term(s) with p < 0.05\n",
-              length(MODELS) - length(untestable), length(MODELS), nrow(bad)))
-  if (length(untestable)) {
-    cat(sprintf("  NOT TESTABLE: %s\n", paste(untestable, collapse = ", ")),
-        " The per-term refits returned nothing, so the proportional-odds\n",
-        " assumption is UNTESTED for those models -- not confirmed. Do not read\n",
-        " a zero count above as the assumption holding.\n", sep = "")
+  tested <- po_rows[po_rows$status == "tested", ]
+  untested <- po_rows[po_rows$status == "not_testable", ]
+  bad <- tested[tested$p_value < GATE_ALPHA, ]
+  cat(sprintf(paste0("\nProportional-odds test: %d term(s) tested, %d not ",
+                     "testable, %d with p < %.2f\n"),
+              nrow(tested), nrow(untested), nrow(bad), GATE_ALPHA))
+  if (nrow(untested)) {
+    cat(sprintf("  NOT TESTABLE: %s\n",
+                paste(sprintf("%s/%s", untested$model, untested$term),
+                      collapse = ", ")),
+        "  The per-term refit returned nothing, so proportional odds is\n",
+        "  UNTESTED for those terms -- which is not the same as satisfied.\n",
+        "  A zero violation count is not a pass.\n", sep = "")
   }
   if (nrow(bad)) {
     print(bad[, c("model", "term", "LRT", "p_value")], row.names = FALSE)
     cat("  A violated PO assumption means ONE odds ratio does not describe that\n",
         "  term across all cut points. Report it; do not quietly keep the OR.\n")
+  }
+
+  # ---- The proportional-odds gate --------------------------------------------
+  # The partial-PO sensitivity was dropped conditional on both exposures passing,
+  # so this is enforced at the VERY END, after every output is on disk. Scope is
+  # the primary -- see protocol.json proportional_odds_gate._scope_why.
+  GATE_SCOPE <- as.character(GATE$scope)
+  stopifnot("only proportional_odds_gate.scope = primary is implemented" =
+              identical(GATE_SCOPE, "primary"))
+  gr <- po_rows[po_rows$model == GATE_SCOPE & po_rows$term %in% GATE_MODEL_TERMS, ]
+  absent <- setdiff(GATE_MODEL_TERMS, gr$term)
+  gate_rows <- rbind(
+    if (nrow(gr)) data.frame(
+      model = GATE_SCOPE, term = gr$term, status = gr$status,
+      p_value = gr$p_value, alpha = GATE_ALPHA,
+      passed = gr$status == "tested" & !is.na(gr$p_value) &
+        gr$p_value >= GATE_ALPHA, stringsAsFactors = FALSE),
+    if (length(absent)) data.frame(
+      model = GATE_SCOPE, term = absent, status = "absent",
+      p_value = NA_real_, alpha = GATE_ALPHA, passed = FALSE,
+      stringsAsFactors = FALSE))
+  GATE_PASSED <- !is.null(gate_rows) && nrow(gate_rows) > 0 &&
+    all(gate_rows$passed)
+  cat(sprintf("\nProportional-odds gate on the exposures, %s model (alpha %.2f): %s\n",
+              GATE_SCOPE, GATE_ALPHA,
+              if (GATE_PASSED) "PASSED" else "*** FAILED ***"))
+  print(gate_rows[, c("term", "status", "p_value", "passed")], row.names = FALSE)
+
+  other_bad <- bad[bad$model != GATE_SCOPE & bad$term %in% GATE_MODEL_TERMS, ]
+  if (nrow(other_bad)) {
+    cat("  WARNING, not a halt: an exposure violates PO in a SENSITIVITY model.\n")
+    print(other_bad[, c("model", "term", "p_value")], row.names = FALSE)
   }
 }
 
@@ -925,6 +883,267 @@ if (any(!diagnostics$converged)) {
 }
 
 
+# ---- 10b. The adjusted prediction, and the unadjusted comparison -------------
+# Adjusted mean VFD-28 across plausible exposure levels, with the unadjusted bins
+# beside it. The day-scale expectation works only because a level IS a day.
+
+pred_model <- Filter(function(m) identical(m$label, "primary"), MODELS)
+stopifnot("the primary model is required for the adjusted prediction" =
+            length(pred_model) == 1)
+pred_model <- pred_model[[1]]
+pfit   <- pred_model$fit
+pframe <- pred_model$frame
+DVALS  <- as.numeric(levels(pframe$vfd_ord))
+N_ALPHA <- length(pfit$alpha)
+stopifnot(
+  "the outcome levels must be numeric days" = !any(is.na(DVALS)),
+  "the lowest level must be day 0, or p_zero does not mean VFD = 0" =
+    isTRUE(all.equal(DVALS[1], 0)),
+  "there must be one threshold per gap between levels" =
+    N_ALPHA == length(DVALS) - 1)
+
+# Design matrix rebuilt from the fit's own terms and xlevels: the bootstrap
+# evaluates at a DRAWN coefficient vector, which predict.clm cannot. Column names
+# are ASSERTED, or a reordered contrast multiplies the wrong column by a beta.
+design_of <- function(fit, nd) {
+  tt <- stats::delete.response(stats::terms(fit))
+  X <- stats::model.matrix(tt, data = nd, xlev = fit$xlevels)
+  X <- X[, setdiff(colnames(X), "(Intercept)"), drop = FALSE]
+  stopifnot("the rebuilt design matrix does not match the fitted coefficients" =
+              identical(colnames(X), names(fit$beta)))
+  X
+}
+
+# Full band probabilities for a proportional-odds clm: P(Y <= k) =
+# plogis(alpha_k - X beta), differenced across the thresholds.
+po_probs <- function(X, alpha, beta) {
+  eta <- as.vector(X %*% beta)
+  cum <- stats::plogis(outer(eta, alpha, function(e, a) a - e))
+  cbind(cum, 1) - cbind(0, cum)
+}
+
+# ONE plogis call over a (thresholds x admissions) outer difference -- a per-threshold
+# loop is the entire runtime. Averaging cumulatively then differencing equals
+# averaging the band probabilities, both steps being linear.
+std_summary <- function(X, par) {
+  alpha <- par[seq_len(N_ALPHA)]
+  beta  <- par[-seq_len(N_ALPHA)]
+  eta   <- as.vector(X %*% beta)
+  cm    <- rowMeans(stats::plogis(outer(alpha, eta, "-")))
+  c(mean_vfd = unname(DVALS[length(DVALS)] - sum(diff(DVALS) * cm)),
+    p_zero = unname(cm[1]))
+}
+
+# Three routes to the same quantity at the fitted coefficients -- predict.clm, the
+# explicit band matrix, and the cumulative shortcut -- must agree before any draw.
+X0 <- design_of(pfit, pframe)
+P_manual <- po_probs(X0, pfit$alpha, pfit$beta)
+nd0 <- pframe[, setdiff(names(pframe), "vfd_ord"), drop = FALSE]
+# predict.clm returns P(Y = the OBSERVED y) when the response is present in newdata
+# and the full band matrix only when it is absent. Dropping the column is required.
+P_ref <- stats::predict(pfit, newdata = nd0, type = "prob")$fit
+if (!is.matrix(P_ref)) P_ref <- matrix(P_ref, nrow = nrow(X0))
+stopifnot(
+  "the hand-built band probabilities disagree with predict.clm" =
+    max(abs(P_manual - P_ref)) < 1e-9,
+  "the band probabilities must sum to 1 per admission" =
+    max(abs(rowSums(P_manual) - 1)) < 1e-9,
+  "the cumulative shortcut disagrees with the explicit band matrix" =
+    max(abs(std_summary(X0, c(pfit$alpha, pfit$beta)) -
+            c(mean(as.vector(P_manual %*% DVALS)), mean(P_manual[, 1])))) < 1e-9)
+cat(sprintf("\n  prediction machinery verified against predict.clm (max |diff| %.2e)\n",
+            max(abs(P_manual - P_ref))))
+
+# STANDARDISATION, not at-means: each admission is set to the grid value with all
+# other covariates observed, then averaged. An average sex or ICU does not exist.
+PRED_GRID_SHARE <- PRED_GRID_PCT / 100
+X_grid <- lapply(PRED_GRID_SHARE, function(sh) {
+  nd <- nd0
+  nd[[PRED_MODEL_EXPOSURE]] <- sh / EXP_SCALE
+  design_of(pfit, nd)
+})
+
+set.seed(SEED)
+cf0 <- c(pfit$alpha, pfit$beta)
+V0  <- stats::vcov(pfit)
+stopifnot(
+  "vcov() is not ordered as (thresholds, coefficients)" =
+    identical(rownames(V0), names(cf0)),
+  "vcov() is not square over the whole parameter vector" =
+    all(dim(V0) == length(cf0)))
+Rchol <- tryCatch(chol(V0), error = function(e) NULL)
+stopifnot("the covariance matrix is not positive definite -- cannot draw" =
+            !is.null(Rchol))
+DRAWS <- sweep(matrix(stats::rnorm(PRED_DRAWS * length(cf0)), nrow = PRED_DRAWS)
+               %*% Rchol, 2, cf0, "+")
+cat(sprintf("  %s bootstrap draws at seed %s\n",
+            format(PRED_DRAWS, big.mark = ","), format(SEED)))
+
+t_pred <- proc.time()[3]
+adj_rows <- do.call(rbind, lapply(seq_along(PRED_GRID_SHARE), function(i) {
+  X <- X_grid[[i]]
+  point <- std_summary(X, cf0)
+  reps <- vapply(seq_len(PRED_DRAWS), function(b) std_summary(X, DRAWS[b, ]),
+                 numeric(2))
+  q <- function(v) stats::quantile(v, c(0.025, 0.975), names = FALSE)
+  qm <- q(reps["mean_vfd", ]); qp <- q(reps["p_zero", ])
+  data.frame(
+    model = pred_model$label,
+    exposure = PRED_EXPOSURE,
+    exposure_pct = PRED_GRID_PCT[i],
+    exposure_share = PRED_GRID_SHARE[i],
+    mean_vfd_28 = round(point[["mean_vfd"]], 4),
+    mean_vfd_28_lo = round(qm[1], 4), mean_vfd_28_hi = round(qm[2], 4),
+    pct_vfd_zero = round(100 * point[["p_zero"]], 2),
+    pct_vfd_zero_lo = round(100 * qp[1], 2),
+    pct_vfd_zero_hi = round(100 * qp[2], 2),
+    n_admissions = nrow(X), n_draws = PRED_DRAWS, seed = SEED,
+    stringsAsFactors = FALSE)
+}))
+cat(sprintf("  standardised over %s admissions in %.1fs\n",
+            format(nrow(X0), big.mark = ","), proc.time()[3] - t_pred))
+stopifnot(
+  "a standardised interval does not bracket its own point estimate" =
+    all(adj_rows$mean_vfd_28_lo <= adj_rows$mean_vfd_28 &
+        adj_rows$mean_vfd_28 <= adj_rows$mean_vfd_28_hi),
+  "a standardised mean fell outside the attainable VFD range" =
+    all(adj_rows$mean_vfd_28 >= 0 & adj_rows$mean_vfd_28 <= VFD_CEILING_D))
+cat("\nAdjusted predicted VFD-28, standardised over the covariate distribution\n")
+print(adj_rows[, c("exposure_pct", "mean_vfd_28", "mean_vfd_28_lo",
+                   "mean_vfd_28_hi", "pct_vfd_zero", "pct_vfd_zero_lo",
+                   "pct_vfd_zero_hi")], row.names = FALSE)
+
+# Exactly zero is its own bin -- a 0-20 bin would mix the point mass with a level of
+# exposure. Each bin sits at its OBSERVED MEAN (_bins_plotted_at_observed_mean).
+pframe$.bin <- cut(pframe[[PRED_EXPOSURE]], breaks = BIN_BREAKS,
+                   labels = BIN_LABELS, ordered_result = TRUE)
+stopifnot("an exposure value fell outside the declared bin breaks" =
+            !any(is.na(pframe$.bin)))
+# Wilson, not Wald: the zero share runs from near 0 to near 1 across these bins.
+wilson <- function(k, n, z = 1.959964) {
+  if (n == 0) return(c(NA_real_, NA_real_))
+  p <- k / n; d <- 1 + z^2 / n
+  c <- (p + z^2 / (2 * n)) / d
+  h <- z * sqrt(p * (1 - p) / n + z^2 / (4 * n^2)) / d
+  c(max(0, c - h), min(1, c + h))
+}
+bin_rows <- do.call(rbind, lapply(BIN_LABELS, function(lb) {
+  s <- pframe[pframe$.bin == lb, ]
+  n <- nrow(s); k <- sum(s$vfd_28 == 0)
+  w <- wilson(k, n)
+  se <- if (n > 1) stats::sd(s$vfd_28) / sqrt(n) else NA_real_
+  data.frame(
+    exposure = PRED_EXPOSURE, bin = lb, n_admissions = n,
+    exposure_mean = if (n) round(mean(s[[PRED_EXPOSURE]]), 4) else NA_real_,
+    exposure_pct_mean = if (n) round(100 * mean(s[[PRED_EXPOSURE]]), 2) else NA_real_,
+    mean_vfd_28 = if (n) round(mean(s$vfd_28), 4) else NA_real_,
+    mean_vfd_28_lo = if (!is.na(se)) round(mean(s$vfd_28) - 1.959964 * se, 4) else NA_real_,
+    mean_vfd_28_hi = if (!is.na(se)) round(mean(s$vfd_28) + 1.959964 * se, 4) else NA_real_,
+    median_vfd_28 = if (n) round(stats::median(s$vfd_28), 4) else NA_real_,
+    n_vfd_zero = k,
+    pct_vfd_zero = if (n) round(100 * k / n, 2) else NA_real_,
+    pct_vfd_zero_lo = round(100 * w[1], 2), pct_vfd_zero_hi = round(100 * w[2], 2),
+    stringsAsFactors = FALSE)
+}))
+# Small-cell suppression, the phase's own rule: the counts stay, the statistics go.
+thin <- bin_rows$n_admissions < MIN_CELL
+if (any(thin)) {
+  cat(sprintf("  %d bin(s) below %d admissions -- statistics suppressed, counts kept\n",
+              sum(thin), MIN_CELL))
+  for (cl in c("exposure_mean", "exposure_pct_mean", "mean_vfd_28",
+               "mean_vfd_28_lo", "mean_vfd_28_hi", "median_vfd_28",
+               "pct_vfd_zero", "pct_vfd_zero_lo", "pct_vfd_zero_hi")) {
+    bin_rows[[cl]][thin] <- NA_real_
+  }
+}
+bin_rows$suppressed <- thin
+stopifnot("the bins must partition the model frame" =
+            sum(bin_rows$n_admissions) == nrow(pframe))
+cat("\nUnadjusted, by exposure bin\n")
+print(bin_rows[, c("bin", "n_admissions", "exposure_pct_mean", "mean_vfd_28",
+                   "n_vfd_zero", "pct_vfd_zero")], row.names = FALSE)
+
+
+# ---- 10c. The prediction figure ----------------------------------------------
+# Two panels on a shared exposure axis; only the top needs the day scale.
+
+# ADJUSTED CURVE ONLY: a bin is an interval at its own observed mean and a grid
+# value is a point, so drawing both reads as one series measured two ways; the bins
+# ship as unadjusted_bins.csv. No legend and no colour AESTHETIC -- one series.
+PRED_COL <- PREDICTION_COLOURS[["adjusted"]]
+x_lab <- "% Fentanyl Increases with a Documented Indication"
+
+panel <- function(y, ylo, yhi, y_title, show_x) {
+  adj <- data.frame(x = adj_rows$exposure_pct, y = adj_rows[[y]],
+                    lo = adj_rows[[ylo]], hi = adj_rows[[yhi]])
+  p <- ggplot(adj, aes(x = x)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), fill = PRED_COL, alpha = 0.16) +
+    geom_line(aes(y = y), colour = PRED_COL, linewidth = 0.8) +
+    geom_point(aes(y = y), colour = PRED_COL, size = 2.1) +
+    # The axis ends where the grid does, now that no bin series needs the room.
+    scale_x_continuous(limits = c(min(PRED_GRID_PCT) - 3, max(PRED_GRID_PCT) + 3),
+                       breaks = PRED_GRID_PCT, expand = c(0, 0)) +
+    labs(x = if (show_x) x_lab else NULL, y = y_title)
+  p <- house(p) + theme(legend.position = "none")
+  if (!show_x) p <- p + theme(axis.text.x = element_blank(),
+                              axis.ticks.x = element_blank())
+  p
+}
+
+# KEEP THESE SHORT. A y axis title is set in the panel's own height, so a longer one
+# overflows into the neighbouring panel's title. The denominator is in the caption.
+p_top <- panel("mean_vfd_28", "mean_vfd_28_lo", "mean_vfd_28_hi",
+               "Adjusted Mean VFD-28, Days", show_x = FALSE)
+p_bot <- panel("pct_vfd_zero", "pct_vfd_zero_lo", "pct_vfd_zero_hi",
+               "Adjusted % Admissions with VFD-28 = 0", show_x = TRUE)
+
+# EQUAL PANEL HEIGHTS, SET EXPLICITLY: with heights = NULL the bottom grob carries
+# the x axis and its title, so the two plotting regions differ in height.
+g_pred <- stack_panels(list(p_top, p_bot), c(2.8, 2.8))
+ggsave(file.path(dirs$phase, "vfd_vs_pindicated.png"), g_pred,
+       width = 7.2, height = 6.8, dpi = 300, bg = PAPER)
+cat("written: vfd_vs_pindicated.png\n")
+
+register_caption(
+  "vfd_vs_pindicated.png",
+  "Does documenting an indication for a fentanyl increase track ventilator-free days?",
+  sprintf(paste0(
+    "Top: adjusted mean VFD-28 in days. Bottom: the adjusted share of ",
+    "admissions with VFD-28 exactly zero. Both are the primary ",
+    "proportional-odds model (n = %s admissions, %d ICU fixed effects) ",
+    "STANDARDISED over the observed covariate distribution: every admission is ",
+    "set to the exposure value on the x axis with age, sex, CCI, ",
+    "pre-intubation SOFA, unit AND the other exposure (P(bolus)) left at their ",
+    "observed values, and the predictions are averaged over admissions. NOT an ",
+    "average patient -- sex and unit are factors and an average one does not ",
+    "exist. NO LEGEND: there is one series, and \'adjusted\' is in the axis ",
+    "titles because it describes the quantity rather than distinguishing a ",
+    "mark; the bottom panel's denominator is the %s admissions in the model ",
+    "frame, stated here because the axis title is set in the panel height and a ",
+    "longer one overflows into the panel above. Points are the %d declared grid values, the line joins them, and the ",
+    "band is a %s-draw percentile interval from MVN(coef, vcov) at seed %s. THE GRID STOPS AT ",
+    "%d%% because the top of the exposure range is thinly populated and the ",
+    "fixed effects would be extrapolated beyond it. THE UNADJUSTED ",
+    "COMPARISON IS A TABLE, NOT A SERIES HERE -- see unadjusted_bins.csv, ",
+    "which gives mean VFD-28, the share at zero and the admission count for ",
+    "each of %d exposure bins (%s). It is deliberately not plotted on these ",
+    "axes: a bin is an interval summarised at its own observed mean and a grid ",
+    "value is a point, so drawing them together reads as one series measured ",
+    "two ways. THE TOP PANEL EXISTS ONLY BECAUSE AN OUTCOME LEVEL IS A DAY -- ",
+    "VFD-28 is modelled at whole-day resolution (%d observed levels, 0 to %d), ",
+    "so the expected value needs no representative value assigned to a band; ",
+    "the four-band cut this study previously used would have required one. THE ",
+    "BOTTOM PANEL IS NOT DERIVED AT ALL: it is the model's own first level. AN ",
+    "ASSOCIATION, NOT AN EFFECT -- confounding by indication is unaddressed, ",
+    "and a frequently titrated patient is a patient someone was worried about."),
+    format(nrow(X0), big.mark = ",", trim = TRUE), pred_model$n_units,
+    format(nrow(X0), big.mark = ",", trim = TRUE),
+    length(PRED_GRID_PCT), format(PRED_DRAWS, big.mark = ",", trim = TRUE),
+    format(SEED), as.integer(max(PRED_GRID_PCT)),
+    nrow(bin_rows), paste(bin_rows$bin, collapse = ", "),
+    length(DVALS), as.integer(max(DVALS))))
+
+
 # ---- 11. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
@@ -944,15 +1163,19 @@ write_out(dist_rows, "exposure_distribution.csv")
 write_out(by_unit, "exposure_by_unit.csv")
 write_out(corr, "exposure_correlation.csv")
 write_out(vfd_tab, "vfd_ordinal.csv")
+write_out(day_tab, "vfd_day_distribution.csv")
+write_out(adj_rows, "adjusted_prediction.csv")
+write_out(bin_rows, "unadjusted_bins.csv")
 write_out(coefs, "model_coefficients.csv")
 write_out(vcov_rows, "model_covariance.csv")
 write_out(diagnostics, "model_diagnostics.csv")
 write_out(po_rows, "proportional_odds_test.csv")
+write_out(gate_rows, "proportional_odds_gate.csv")
 
-# PHI handoff: one row per admission, so the model can be refitted or extended
-# without re-deriving the exposures. Stays PHI-side -- it is per-patient.
+# PHI handoff, one row per admission, so the model can be refitted. Stays PHI-side.
 keep <- c("encounter_block", "n_increase", "n_paired", "n_indicated",
           "n_uptitration", "Pbolus", "Pindicated", "vfd_28", "vfd_ord",
+          "vfd_band",
           "age", "sex", "cci", "sofa_baseline", "sofa_baseline_n_components",
           "location_name", "extubation_event", "died", ".complete")
 write_parquet(d[, intersect(keep, names(d))],
@@ -988,3 +1211,24 @@ cat(sprintf("\nDone. %s admissions analysed, %s complete on every covariate.\n",
 cat("THIS IS AN ASSOCIATION. No randomisation, no instrument, and confounding by\n")
 cat("indication is unaddressed -- a frequently titrated patient is a patient\n")
 cat("someone was worried about. Say 'associated with', never 'improves'.\n")
+
+
+# ---- 13. The gate, enforced --------------------------------------------------
+# Last statement, deliberately: every output is already on disk when this fires.
+if (!GATE_PASSED) {
+  failed <- if (is.null(gate_rows)) "the exposures" else
+    paste(gate_rows$term[!gate_rows$passed], collapse = " and ")
+  stop(sprintf(paste0(
+    "PROPORTIONAL-ODDS GATE FAILED for %s.\n",
+    "  The partial-proportional-odds sensitivity was dropped on 2026-10-28 ",
+    "CONDITIONAL on the exposures passing this test -- see protocol.json ",
+    "model.outcome_model.proportional_odds_gate. That condition no longer ",
+    "holds here, so a single odds ratio is not a valid summary of the ",
+    "exposure and model_coefficients.csv does not mean what its column names ",
+    "say.\n",
+    "  Every output HAS been written. Read diagnostics/",
+    "proportional_odds_test.csv and diagnostics/proportional_odds_gate.csv, ",
+    "and DO NOT POOL this bundle. Reinstate a partial-PO model -- fit_one() ",
+    "still takes `nominal` -- or raise it with the coordinating centre."),
+    failed))
+}
