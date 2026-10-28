@@ -65,6 +65,24 @@ LABEL_COLS <- unlist(SPEC$label_columns)
 NOT_POOLABLE <- unlist(SPEC$not_poolable_columns)
 OUT <- here("output", "pooled")
 dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+# CLEARED EVERY RUN, and it has to be. This script owns every file in here and
+# writes each one from the bundles, so anything left behind is from a previous
+# pool -- a different k, a different protocol, or a path that has since moved.
+# The summary step re-READS these files by name (`file.exists` at step 6), so a
+# stale twin is not inert: it is read back and rendered as though it were this
+# run's number, with nothing to distinguish it.
+#
+# MEASURED 2026-10-27: relocating four method checks into
+# 05_titration/diagnostics/ left 05_titration__window_sensitivity.csv and three
+# siblings in here, holding a two-site v0.7.1 pool, beside the new
+# 05_titration__diagnostics__*.csv from a one-site v0.8.0 pool. Clearing is the
+# only fix that does not require a retired-path list to be kept accurate by hand.
+# Safe at this point and nowhere later: nothing has been written yet.
+stale <- list.files(OUT, full.names = TRUE)
+if (length(stale)) {
+  unlink(stale, recursive = TRUE)
+  message(sprintf("  cleared %d file(s) from a previous pool", length(stale)))
+}
 
 
 # ---- 1. Read the bundles -----------------------------------------------------
