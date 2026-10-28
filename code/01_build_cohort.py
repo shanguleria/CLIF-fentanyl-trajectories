@@ -1976,17 +1976,32 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     # not: a death recorded AFTER day 28 still leaves the patient alive at it.
     died_in = (death_hr.reindex(idx.index) <= horizon_h).fillna(False)
 
-    # Discharged alive before the horizon: extend ONLY if off IMV at discharge.
-    # A trached patient discharged to an LTACH on a ventilator is still on IMV,
-    # and the naive reading of "assume alive and IMV-free" would credit them days
-    # they did not have. They keep anything earned earlier -- the rule stops
-    # accrual, it does not zero the total.
-    tail = iv.groupby("encounter_block").tail(1)
-    tail = tail[~tail["is_imv"]]
-    ok = (~died_in & (disc_h < horizon_h)).reindex(
-        tail["encounter_block"]).fillna(False).to_numpy()
-    iv.loc[tail.index[ok], "t_end_hr"] = horizon_h
-    extended = set(tail.loc[tail.index[ok], "encounter_block"])
+    # Discharged alive before the horizon, split on the state AT discharge.
+    #   OFF IMV  -> assume alive and IMV-free through day 28; extend the spell.
+    #   ON IMV   -> SCORE ZERO. SG, 2026-10-27: "most of the censored patients
+    #               left to a SNF or LTACH on a vent. Our definition of VFD
+    #               should count these patients as 0 VFD28 as they almost
+    #               certainly would not liberate that quickly and are lost to
+    #               follow up."
+    # This is STRICTER than 0.9.0, which stopped accrual but let them keep what
+    # they had earned earlier. SG's original trach example said "gets 0 VFDs" and
+    # the two readings agree whenever the patient was never liberated, which is
+    # why the difference went unnoticed; they diverge for a patient liberated
+    # once, reintubated, and then sent out on the ventilator.
+    last = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable") \
+             .groupby("encounter_block").tail(1)
+    early_alive = (~died_in & (disc_h < horizon_h))
+
+    off = last[~last["is_imv"]]
+    ok = early_alive.reindex(off["encounter_block"]).fillna(False).to_numpy()
+    iv.loc[off.index[ok], "t_end_hr"] = horizon_h
+    extended = set(off.loc[off.index[ok], "encounter_block"])
+
+    on = last[last["is_imv"]]
+    lost_on_vent = pd.Series(False, index=idx.index)
+    lost_on_vent.loc[list(set(on.loc[
+        early_alive.reindex(on["encounter_block"]).fillna(False).to_numpy(),
+        "encounter_block"]))] = True
 
     free = iv[~iv["is_imv"]].copy()
     free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
@@ -2016,12 +2031,16 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     out["vfd_hours"] = (qual.groupby("encounter_block")["accrued_h"].sum()
                             .reindex(idx.index).fillna(0.0))
     out.loc[died_in, "vfd_hours"] = 0.0
+    # Lost to follow-up ON a ventilator: zero, like death. Applied AFTER the sum
+    # so it overrides anything earned earlier rather than merely halting accrual.
+    out.loc[lost_on_vent, "vfd_hours"] = 0.0
     out["vfd_28"] = (out["vfd_hours"] / 24.0).round(2)
+    out["vfd_zero_lost_on_vent"] = lost_on_vent & ~died_in
     out["vfd_extended_from_discharge"] = out.index.isin(extended) & ~died_in
     out["vfd_zero_for_death"] = died_in
     out["vfd_liberations"] = (qual.groupby("encounter_block").size()
                                   .reindex(idx.index).fillna(0).astype(int))
-    out.loc[died_in, "vfd_liberations"] = 0
+    out.loc[died_in | lost_on_vent, "vfd_liberations"] = 0
     return out.reset_index()
 
 
@@ -2045,9 +2064,37 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     succ_h = COV["outcomes"]["successful_extubation_hours"]
     horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
 
-    at_T = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
-    eligible = set(at_T.loc[at_T["imv_status"] == 1, "encounter_block"])
-    flow(f"LANDMARK COHORT -- time_to_event (ventilated at T={T}h)", len(eligible),
+    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T.
+    # SG, 2026-10-27: "landmark eligibility must be the state at 72h."
+    #
+    # Until 0.10.0 this read `imv_status == 1` off the window grid, which is
+    # max(device_category == "IMV") OVER [T-4, T). A patient with an IMV record at
+    # hour 69 who was extubated at hour 70 was therefore "ventilated at T" while
+    # already off the ventilator. MEASURED at UCMC: 238 blocks (3.6% of the old
+    # 6,728) were eligible on that reading but NOT on IMV at hour 72, and they
+    # were the source of a VFD-28 ceiling of 27.3 days against a definition that
+    # allows 25. Reading the state off the same interval series the outcome uses
+    # makes "ventilated at T" mean one thing.
+    assert COV["cohort"]["landmark_definition"] == "state_at_T", (
+        f"protocol.json cohort.landmark_definition is "
+        f"{COV['cohort']['landmark_definition']!r}, which this script does not "
+        f"implement. The only rule here is state_at_T; a declared value nothing "
+        f"honours would read as policy.")
+    iv_all = _imv_intervals(resp, cohort, horizon_h)
+    span = iv_all[(iv_all["t_start_hr"] <= T) & (iv_all["t_end_hr"] > T)]
+    eligible = set(span.loc[span["is_imv"], "encounter_block"])
+    # An interval covering T is clipped to followup_end, so covering T already
+    # implies alive and admitted at T. Asserted rather than assumed.
+    grid = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
+    grid_eligible = set(grid.loc[grid["imv_status"] == 1, "encounter_block"])
+    assert eligible <= grid_eligible, (
+        "a block is on IMV at T by the interval series but was not even charted "
+        "as ventilated in the window ending at T -- the two series disagree")
+    note("eligible on the OLD rule (any IMV record in the window)", len(grid_eligible))
+    note("  of those, NOT on IMV at T -- now excluded",
+         len(grid_eligible - eligible))
+
+    flow(f"LANDMARK COHORT -- time_to_event (on IMV at T={T}h)", len(eligible),
          f"extubated, died or discharged before T={T}h")
 
     tte = cohort[cohort["encounter_block"].isin(eligible)].copy()
@@ -2064,7 +2111,10 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     tte["died"] = tte["died"].fillna(False).astype(bool)
 
     # ---- liberation: the first QUALIFYING one at or after T ------------------
-    iv = _imv_intervals(resp, tte, horizon_h)
+    # Reuses the intervals built for eligibility: _imv_intervals() merges the
+    # whole waterfalled respiratory_support and doing it twice doubles the cost
+    # of the most expensive join in Phase 0.
+    iv = iv_all[iv_all["encounter_block"].isin(eligible)].copy()
     free = iv[~iv["is_imv"]].copy()
     free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
     qual = free[(free["dur_h"] >= succ_h) & (free["t_end_hr"] > T)]

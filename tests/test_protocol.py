@@ -504,6 +504,25 @@ def test_the_titration_analysis_never_reads_the_hourly_grid():
             f"timestamps would mean the grid leaked in")
 
 
+def test_the_landmark_rule_is_declared_and_honoured():
+    """SG, 2026-10-27: "landmark eligibility must be the state at 72h." The rule
+    is named in the protocol so two sites cannot silently use different ones, and
+    01 asserts the name it implements -- a declared value nothing honours would
+    read as policy, which is the failure CLAUDE.md names first."""
+    c = COV["cohort"]
+    assert c.get("landmark_definition") == "state_at_T", (
+        "the landmark rule must be declared, not left implicit in the code")
+    build = (REPO / "code" / "01_build_cohort.py").read_text()
+    assert 'COV["cohort"]["landmark_definition"]' in build, (
+        "01 must READ landmark_definition, not merely agree with it by accident")
+    assert "state_at_T" in build
+
+    # The old reading must be gone from the selection path. It may still appear
+    # as the cross-check that the new rule is a strict subset of the old.
+    assert build.count('at_T["imv_status"] == 1') == 0, (
+        "the window-grid reading must no longer select the landmark cohort")
+
+
 def test_the_table1_stratification_is_cohort_membership():
     """Table 1 is stratified on COHORT MEMBERSHIP as of 2026-10-27, replacing
     predominant fentanyl intensity. Three things must hold or the columns mean

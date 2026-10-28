@@ -203,11 +203,27 @@ def test_discharge_alive_ON_imv_accrues_nothing_further():
     assert got["ltach_trach"] == 0.0
 
 
-def test_a_discharge_on_imv_keeps_what_was_earned_earlier():
-    """'The rule stops accrual, it does not zero the total.' Liberated for 100h,
-    reintubated, then discharged on the vent: the 100h stands."""
+def test_a_discharge_on_imv_scores_zero_even_if_days_were_earned_earlier():
+    """SG, 2026-10-27: "most of the censored patients left to a SNF or LTACH on a
+    vent. Our definition of VFD should count these patients as 0 VFD28 as they
+    almost certainly would not liberate that quickly and are lost to follow up."
+
+    REVERSES 0.9.0, which stopped accrual but let them keep what they had earned.
+    The two readings agree whenever the patient was never liberated -- which is
+    most of them, and why the difference went unnoticed. They diverge exactly
+    here: liberated for 100h, reintubated, then sent out on the ventilator.
+    """
     got = _vfd({"b": (300, [(0, "IMV"), (100, "Room Air"), (200, "IMV")])})
-    assert got["b"] == days(100)
+    assert got["b"] == 0.0, (
+        "lost to follow-up on a ventilator scores zero, like death -- it does not "
+        "merely stop accruing")
+
+    # The zeroing is conditional on leaving EARLY. A patient still on IMV whose
+    # follow-up reaches day 28 is observed, not lost, and keeps what they earned.
+    got = _vfd({"b": (900, [(0, "IMV"), (100, "Room Air"), (200, "IMV")])})
+    assert got["b"] == days(100), (
+        "a patient observed to day 28 is not lost to follow-up; only an EARLY "
+        "discharge on the ventilator zeroes the total")
 
 
 def test_the_extension_is_applied_before_the_48h_filter_not_after():
@@ -230,6 +246,16 @@ def test_a_death_discharge_is_never_extended():
     -- which is exactly what a terminal extubation looks like in the series."""
     got = _vfd({"b": (200, [(0, "IMV"), (190, "Room Air")])}, {"b": 200.0})
     assert got["b"] == 0.0
+
+
+def test_only_a_ventilated_discharge_is_zeroed_not_every_early_discharge():
+    """The rule keys on the STATE at discharge, not on leaving early. A patient
+    extubated and sent home keeps -- and gains -- days; one sent out on the vent
+    gets nothing. Conflating the two would zero most of the cohort."""
+    got = _vfd({"home":  (200, [(0, "IMV"), (100, "Room Air")]),
+                "ltach": (200, [(0, "IMV"), (100, "Room Air"), (150, "IMV")])})
+    assert got["home"] == days(HORIZON_H - 100), "off IMV at discharge: extended"
+    assert got["ltach"] == 0.0, "on IMV at discharge: zeroed"
 
 
 # --------------------------------------------------------- tracheostomy
@@ -289,6 +315,29 @@ def _tte(blocks, categories, death_dttm_hr=None):
     cohort = cohort.merge(B.resolve_death(cohort, patient),
                           on="encounter_block", how="left")
     return B.build_time_to_event(cohort, long, resp).set_index("encounter_block")
+
+
+def test_eligibility_is_the_state_at_T_not_any_record_in_the_window():
+    """SG, 2026-10-27: "landmark eligibility must be the state at 72h."
+
+    Until 0.10.0 eligibility read `imv_status == 1` off the window grid, which is
+    max(device_category == "IMV") OVER [T-4, T). A patient charted on IMV at hour
+    69 and extubated at hour 70 was therefore "ventilated at T" while already off
+    the ventilator. MEASURED at UCMC: 238 blocks (3.6% of the old 6,728), and
+    they were the source of a VFD-28 ceiling of 27.3 days where the definition
+    allows 25.
+    """
+    T = B.COV["cohort"]["landmark_hours"]
+    got = _tte({
+        # On IMV at T -- in the cohort.
+        "on":  (500, [(0, "IMV"), (T - 3, "IMV")]),
+        # IMV charted inside the window, extubated BEFORE T. The old rule let this
+        # block in; the state at T is Room Air, so it must now be excluded.
+        "off": (500, [(0, "IMV"), (T - 3, "IMV"), (T - 2, "Room Air")]),
+    }, {"on": "Home", "off": "Home"})
+    assert "on" in got.index
+    assert "off" not in got.index, (
+        "a block extubated inside the window ending at T is not ventilated AT T")
 
 
 def test_a_successful_liberation_survives_a_later_death():
