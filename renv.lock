@@ -9,6 +9,42 @@
     ]
   },
   "Packages": {
+    "MASS": {
+      "Package": "MASS",
+      "Version": "7.3-65",
+      "Source": "Repository",
+      "Priority": "recommended",
+      "Date": "2025-02-19",
+      "Revision": "$Rev: 3681 $",
+      "Depends": [
+        "R (>= 4.4.0)",
+        "grDevices",
+        "graphics",
+        "stats",
+        "utils"
+      ],
+      "Imports": [
+        "methods"
+      ],
+      "Suggests": [
+        "lattice",
+        "nlme",
+        "nnet",
+        "survival"
+      ],
+      "Authors@R": "c(person(\"Brian\", \"Ripley\", role = c(\"aut\", \"cre\", \"cph\"), email = \"Brian.Ripley@R-project.org\"), person(\"Bill\", \"Venables\", role = c(\"aut\", \"cph\")), person(c(\"Douglas\", \"M.\"), \"Bates\", role = \"ctb\"), person(\"Kurt\", \"Hornik\", role = \"trl\", comment = \"partial port ca 1998\"), person(\"Albrecht\", \"Gebhardt\", role = \"trl\", comment = \"partial port ca 1998\"), person(\"David\", \"Firth\", role = \"ctb\", comment = \"support functions for polr\"))",
+      "Description": "Functions and datasets to support Venables and Ripley, \"Modern Applied Statistics with S\" (4th edition, 2002).",
+      "Title": "Support Functions and Datasets for Venables and Ripley's MASS",
+      "LazyData": "yes",
+      "ByteCompile": "yes",
+      "License": "GPL-2 | GPL-3",
+      "URL": "http://www.stats.ox.ac.uk/pub/MASS4/",
+      "Contact": "<MASS@stats.ox.ac.uk>",
+      "NeedsCompilation": "yes",
+      "Author": "Brian Ripley [aut, cre, cph], Bill Venables [aut, cph], Douglas M. Bates [ctb], Kurt Hornik [trl] (partial port ca 1998), Albrecht Gebhardt [trl] (partial port ca 1998), David Firth [ctb] (support functions for polr)",
+      "Maintainer": "Brian Ripley <Brian.Ripley@R-project.org>",
+      "Repository": "CRAN"
+    },
     "Matrix": {
       "Package": "Matrix",
       "Version": "1.7-5",
@@ -1314,6 +1350,44 @@
       "Repository": "https://packagemanager.posit.co/cran/latest",
       "Encoding": "UTF-8"
     },
+    "ordinal": {
+      "Package": "ordinal",
+      "Version": "2026.7-26",
+      "Source": "Repository",
+      "Type": "Package",
+      "Title": "Regression Models for Ordinal Data",
+      "Date": "2026-07-26",
+      "Authors@R": "person(given=\"Rune Haubo Bojesen\", family=\"Christensen\", email=\"rune.haubo@gmail.com\", role=c(\"aut\", \"cre\"),  comment = c(ORCID = \"0000-0002-4494-3399\"))",
+      "LazyData": "true",
+      "ByteCompile": "yes",
+      "Depends": [
+        "R (>= 2.13.0)",
+        "stats",
+        "methods"
+      ],
+      "Imports": [
+        "ucminf",
+        "MASS",
+        "Matrix",
+        "numDeriv",
+        "nlme"
+      ],
+      "Suggests": [
+        "lme4",
+        "nnet",
+        "xtable",
+        "testthat (>= 0.8)",
+        "tools"
+      ],
+      "Description": "Implementation of cumulative link (mixed) models also known as ordered regression models, proportional odds models, proportional hazards models for grouped survival times and ordered logit/probit/... models. Estimation is via maximum likelihood and mixed models are fitted with the Laplace approximation and adaptive Gauss-Hermite quadrature. Multiple random effect terms are allowed and they may be nested, crossed or partially nested/crossed. Restrictions of symmetry and equidistance can be imposed on the thresholds (cut-points/intercepts). Standard model methods are available (summary, anova, drop-methods, step, confint, predict etc.) in addition to profile methods and slice methods for visualizing the likelihood function and checking convergence.",
+      "License": "GPL (>= 2)",
+      "NeedsCompilation": "yes",
+      "URL": "https://github.com/runehaubo/ordinal",
+      "BugReports": "https://github.com/runehaubo/ordinal/issues",
+      "Author": "Rune Haubo Bojesen Christensen [aut, cre] (ORCID: <https://orcid.org/0000-0002-4494-3399>)",
+      "Maintainer": "Rune Haubo Bojesen Christensen <rune.haubo@gmail.com>",
+      "Repository": "CRAN"
+    },
     "pillar": {
       "Package": "pillar",
       "Version": "1.11.1",
@@ -1918,6 +1992,29 @@
       "Author": "Lionel Henry [aut, cre], Hadley Wickham [aut], Posit Software, PBC [cph, fnd]",
       "Maintainer": "Lionel Henry <lionel@posit.co>",
       "Repository": "https://packagemanager.posit.co/cran/latest"
+    },
+    "ucminf": {
+      "Package": "ucminf",
+      "Version": "1.2.3",
+      "Source": "Repository",
+      "Title": "General-Purpose Unconstrained Non-Linear Optimization",
+      "Authors@R": "c( person(\"K Hervé\", \"Dakpo\", email = \"k-herve.dakpo@inrae.fr\",  role = c(\"ctb\", \"cre\")), person(\"Hans Bruun\", \"Nielsen\", role = \"aut\"), person(\"Stig Bousgaard\", \"Mortensen\", role = \"aut\") )",
+      "Description": "An algorithm for general-purpose unconstrained non-linear optimization. The algorithm is of quasi-Newton type with BFGS updating of the inverse Hessian and soft line search with a trust region type monitoring of the input to the line search algorithm. The interface of 'ucminf' is designed for easy interchange with 'optim'.",
+      "License": "GPL (>= 2)",
+      "URL": "https://github.com/hdakpo/ucminf",
+      "BugReports": "https://github.com/hdakpo/ucminf/issues",
+      "Encoding": "UTF-8",
+      "RoxygenNote": "7.3.3",
+      "Depends": [
+        "R (>= 3.5.0)"
+      ],
+      "Suggests": [
+        "numDeriv"
+      ],
+      "NeedsCompilation": "yes",
+      "Author": "K Hervé Dakpo [ctb, cre], Hans Bruun Nielsen [aut], Stig Bousgaard Mortensen [aut]",
+      "Maintainer": "K Hervé Dakpo <k-herve.dakpo@inrae.fr>",
+      "Repository": "CRAN"
     },
     "utf8": {
       "Package": "utf8",

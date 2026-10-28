@@ -40,7 +40,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
 # excluded. They carry no step number: the number line is this list.
 # outcomes.R is
 # an unconditional stop(). Run a tabled script by hand if you need it.
-$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_titration","06_unit_variation")
+$steps = @("02_descriptive_cohort","03_exemplar","04_delivery_states","05_titration","06_unit_variation","07_outcome_model")
 foreach ($s in $steps) {
   Write-Host "== $s (R) =="
   & Rscript "code/$s.R"
@@ -56,6 +56,14 @@ Write-Host "== Verifying the shareable outputs =="
 & $py tests/test_pooling.py
 if ($LASTEXITCODE -ne 0) {
   Write-Error "the federated-pooling exports did not pass their checks. Do NOT upload output/final_no_phi/ until this is resolved."
+}
+# Same reasoning, same place: tests/test_outcome_model.py reads step 7's output.
+# Its load-bearing check is that the proportional-odds test produced a VERDICT --
+# on 2026-10-27 it shipped every term NA while the console reported zero
+# violations, which is what a pass looks like.
+& $py tests/test_outcome_model.py
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "the outcome model's outputs did not pass their checks. Do NOT upload output/final_no_phi/ until this is resolved."
 }
 Write-Host ""
 

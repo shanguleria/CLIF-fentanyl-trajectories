@@ -1588,6 +1588,100 @@ def score_sofa(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def baseline_sofa(t: dict, mapping: pd.DataFrame,
+                  cohort: pd.DataFrame) -> pd.DataFrame:
+    """Worst SOFA in the N hours BEFORE intubation. Config: time_invariant.sofa_baseline.
+
+    SG, 2026-10-27, specified the covariate for the outcome model as "SOFA
+    calculated using the worst values in the preceding 24h before intubation".
+
+    WHY NOT THE WINDOW-0 SOFA WE ALREADY HAVE. sofa_total at window 0 covers
+    hours 0-4 AFTER the anchor, so it is measured after intubation and after
+    sedation starts. Fentanyl and propofol both drop blood pressure, which is the
+    cardiovascular component; adjusting the outcome model for a value the exposure
+    helped cause would sit on the causal path and bias the exposure coefficient
+    toward the null. The baseline has to precede the exposure.
+
+    REUSES EVERY EXISTING EXTRACTOR BY SHIFTING THE COHORT, which is the only
+    reason this is short. oxygenation_covariate() alone carries FiO2
+    normalisation, the Severinghaus SpO2 fallback and the plateau rule; a second
+    copy cut to a pre-anchor window would be a federation-critical derivation
+    maintained twice. Instead the anchor is moved back by the lookback and
+    follow-up is set to the real anchor, so _to_windows() maps the pre-intubation
+    period onto windows 0..L/window_hours-1 and every downstream helper works
+    unchanged. Scoring then goes through the SAME score_sofa() as the windowed
+    version, so not one threshold is restated.
+
+    WORST, not last: min for map / platelets / GCS / P-F ratio, max for
+    creatinine / bilirubin / each vasopressor. on_vent is FALSE by construction --
+    the anchor is the first IMV record, so the patient is not invasively
+    ventilated before it. A patient transferred in already ventilated is the known
+    exception (cohort._comment_anchor) and will score the lower, not-ventilated
+    respiratory band.
+    """
+    spec = COV["time_invariant"]["sofa_baseline"]
+    L = float(spec["lookback_hours"])
+    assert L % WINDOW_H == 0, (
+        f"sofa_baseline.lookback_hours ({L:g}) must be a whole number of "
+        f"{WINDOW_H}h windows, or the shifted grid clips the oldest hours")
+    assert L / WINDOW_H <= N_WINDOWS, (
+        f"the lookback needs {L / WINDOW_H:.0f} windows but the grid has "
+        f"{N_WINDOWS}; _to_windows would silently drop the earliest ones")
+
+    pre = cohort[["encounter_block", "anchor_dttm"]].copy()
+    pre["followup_end_dttm"] = pre["anchor_dttm"]
+    pre["anchor_dttm"] = pre["anchor_dttm"] - pd.Timedelta(hours=L)
+
+    parts = [_sofa_inputs(t, pre), lab_covariates(t, pre),
+             oxygenation_covariate(t, pre), _sofa_pressors(t, mapping, pre)]
+    d = None
+    for part in parts:
+        if part is None or not len(part):
+            continue
+        keep = [c for c in part.columns if c in
+                {"encounter_block", "window_idx", "map", "platelet_count",
+                 "creatinine", "gcs_total", "bilirubin_total", "oxygenation"}
+                or c.endswith("_mcg_kg_min")]
+        part = part[keep]
+        d = part if d is None else d.merge(part, on=["encounter_block", "window_idx"],
+                                           how="outer")
+    if d is None or not len(d):
+        note("no pre-intubation data in the lookback window", 0)
+        out = cohort[["encounter_block"]].copy()
+        for c in ("sofa_baseline", "sofa_baseline_n_components"):
+            out[c] = np.nan
+        return out
+
+    WORST = {"map": "min", "platelet_count": "min", "gcs_total": "min",
+             "oxygenation": "min", "creatinine": "max", "bilirubin_total": "max"}
+    agg = {c: how for c, how in WORST.items() if c in d.columns}
+    agg.update({c: "max" for c in d.columns if c.endswith("_mcg_kg_min")})
+    worst = d.groupby("encounter_block", as_index=False).agg(agg)
+
+    # Not ventilated before the first IMV record, by construction.
+    worst["imv_status"] = 0
+    scored = score_sofa(worst)
+    out = pd.concat([worst[["encounter_block"]],
+                     scored[["sofa_total", "sofa_n_components"]]], axis=1)
+    out = out.rename(columns={"sofa_total": "sofa_baseline",
+                              "sofa_n_components": "sofa_baseline_n_components"})
+    out = cohort[["encounter_block"]].merge(out, on="encounter_block", how="left")
+    out["sofa_baseline_n_components"] = out["sofa_baseline_n_components"].fillna(0)
+
+    note(f"blocks with any SOFA input in the {L:g}h before intubation",
+         int((out["sofa_baseline_n_components"] > 0).sum()))
+    for k in range(7):
+        n = int((out["sofa_baseline_n_components"] == k).sum())
+        if n:
+            note(f"  with {k} of 6 components", n)
+    have = out["sofa_baseline"].notna()
+    if have.any():
+        print(f"    baseline SOFA median {out.loc[have, 'sofa_baseline'].median():.1f}, "
+              f"IQR {out.loc[have, 'sofa_baseline'].quantile(.25):.1f}-"
+              f"{out.loc[have, 'sofa_baseline'].quantile(.75):.1f}")
+    return out
+
+
 def status_covariates(t: dict, cohort: pd.DataFrame) -> pd.DataFrame:
     rs = _to_windows(t["resp"], cohort, "recorded_dttm")
     imv = (rs.assign(v=rs["device_category"].eq("IMV"))
@@ -2677,6 +2771,14 @@ def main() -> None:
                           on="encounter_block", how="left")
     bmi = bmi_admission(t, cohort)
 
+    # BEFORE the window grid, deliberately: this reads the period PRECEDING the
+    # anchor, so it cannot come from `long`. Merged onto the cohort so it reaches
+    # both trajectory_long (via time_invariant) and time_to_event (via the
+    # landmark subset), which is what code/07 reads.
+    print("\n  Baseline SOFA (pre-intubation)")
+    cohort = cohort.merge(baseline_sofa(t, mapping, cohort),
+                          on="encounter_block", how="left")
+
     print("\nWindows")
     windows = window_grid(cohort)
 
@@ -2710,7 +2812,8 @@ def main() -> None:
     long = long.merge(ti.drop(columns=["patient_id"]), on="encounter_block", how="left")
     long = long.merge(
         cohort[["encounter_block", "weight_kg", "first_imv_episode_hours",
-                "n_imv_episodes", "discharge_category"]],
+                "n_imv_episodes", "discharge_category",
+                "sofa_baseline", "sofa_baseline_n_components"]],
         on="encounter_block", how="left")
 
     # died comes from resolve_death() on the cohort, so the mortality rule lives

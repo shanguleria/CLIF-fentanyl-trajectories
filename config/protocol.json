@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.11.0",
+    "definition_version": "0.12.0",
     "_date": "2026-09-05",
     "_purpose": "PROTOCOL ONLY. Every value here is identical at every site; anything that legitimately differs by site belongs in config/config.json. This file is the definition_version stamped onto every shareable output, so any change is a protocol amendment that bumps the version. It is TRACKED IN GIT, unlike config/config.json, precisely because a protocol that cannot be shared or version-stamped is not a protocol.",
     "_protocol_test": "The test for whether a value belongs here: if two sites set this differently, is the pooled result still meaningful? If no, it is protocol. (Adopted from CRRT-dose-lmtp/CLAUDE.md:212-213.)",
@@ -99,7 +99,55 @@
         "min_exposed_windows": 1,
         "seed": 20260905,
         "spline_df": 4,
-        "_spline_df": "Natural-spline df for the Phase 5 clock terms (window_start_hr, hours_in_state, cumulative_dose). 4 = 3 interior knots at the quartiles. Linear time forced the adjusted hazard curve to contradict the observed one; see code/06_transition_model.R section 6."
+        "_spline_df": "Natural-spline df for the Phase 5 clock terms (window_start_hr, hours_in_state, cumulative_dose). 4 = 3 interior knots at the quartiles. Linear time forced the adjusted hazard curve to contradict the observed one; see code/06_transition_model.R section 6.",
+        "outcome_model": {
+            "_role": "code/07_outcome_model.R. The first analysis in this study that moves from EVENTS to ADMISSIONS and asks whether titration practice is associated with an outcome. Everything before it is descriptive. SG, 2026-10-27.",
+            "family": "ordinal_logistic_proportional_odds",
+            "_family_why": "VFD-28 is 53% exactly zero at UCMC with a ceiling at 25 and a gap in between -- a point mass at each end and little in the middle. A linear model on that is indefensible and a binary cut throws away the gradient. Proportional-odds ordinal regression is the convention for VFD for exactly this reason (Yehya/Harhay, docs/references.md). THE ASSUMPTION IS NOT ASSUMED: nominal_test() is run and reported in model_diagnostics.csv.",
+            "link": "logit",
+            "exposures": [
+                "Pbolus",
+                "Pindicated"
+            ],
+            "_exposure_definition": "Per admission, over INCREASE events (initiation union uptitration) in the first 72h -- which is the whole event window, since titration events are bounded there and asserted to be. Pbolus = increases paired with a fentanyl bolus / increases. Pindicated = increases with a qualifying pain or agitation score / increases. The two share the IDENTICAL denominator, verified in code.",
+            "covariates": [
+                "age",
+                "sex",
+                "cci",
+                "sofa_baseline",
+                "icu"
+            ],
+            "_covariates_why": "SG's explicit list, 2026-10-27: age, sex, CCI, SOFA total, plus ICU fixed effects. All measured at or before intubation. An earlier draft of the model included intubation_indication; SG withdrew it -- the pipeline does not derive one and inventing one was never agreed.",
+            "_n_events_is_NOT_a_covariate": "DELIBERATELY EXCLUDED, and I proposed it before SG corrected me. The event count is measured INSIDE the exposure window, so it is post-exposure, and titration intensity is plausibly a MEDIATOR between practice and VFDs -- adjusting for it would block part of the very effect being estimated. It is also the denominator of both exposures, and conditioning on the denominator of a ratio is its own trap. The measurement-error problem it was meant to address is real and is handled by the sensitivity analysis instead, not by adjustment.",
+            "icu_attribution": "interval_containing_hour_0",
+            "_icu_attribution_why": "The ICU is the attributed care location containing hour 0 -- the unit the patient was intubated in. NOT the modal unit over the exposure window, which would be partly determined by the exposure itself and would make a baseline covariate post-exposure. Differs on purpose from 06_unit_variation.R, which attributes each EVENT to the unit it was charted in because its question is about where practice happens, not who the patient is. MEASURED at UCMC: 9 distinct location_name values, 8 with 50 or more landmark admissions, so fixed effects are estimable; units below min_admissions_per_unit are collapsed to 'other'.",
+            "min_admissions_per_unit": 20,
+            "sensitivity_min_increase_events": 4,
+            "_sensitivity_why": "SG, 2026-10-27: 'change the sensitivity to be more than 3 events per admission', i.e. 4 or more. WHY IT MATTERS: the shared denominator is SMALL. MEASURED at UCMC on the analysis set of 2,897 admissions, median 4 increase events (IQR 2-6, max 20); 9.4% have exactly one event, where Pbolus can only be 0 or 1, and only 55 distinct Pbolus values exist across the whole set. A proportion on a denominator of 1-3 is mostly denominator noise, which biases the coefficient toward the null by regression dilution. The threshold keeps 1,625 of 2,897 (56.1%). SG chose to keep the full set as PRIMARY and this as the sensitivity.",
+            "missing_data": "complete_case",
+            "_missing_data_why": "clm() drops incomplete cases by default; declaring it makes that a decision rather than a default. The binding covariate is sofa_baseline, whose coverage depends on how much pre-intubation data a block has. 07 reports the complete-case n beside the eligible n so the loss is visible, and the STROBE step names it. No imputation -- a multiply-imputed ordinal model pooled across sites is a bigger method than this abstract needs.",
+            "pooling": "inverse_variance_on_coefficients",
+            "_pooling_why": "Each site ships the exposure coefficients, their standard errors and the 2x2 covariance between them; the centre combines by inverse variance. A two-stage approach, not pooled individual data -- the ICU fixed effects are site-local nuisance parameters and are NOT comparable across sites, so only the exposure coefficients travel. The pooled estimand is therefore the within-site, ICU-adjusted association. With k below heterogeneity_min_k the fixed-effect estimate is primary and tau-squared is descriptive only, the same rule the rest of the pooling already follows.",
+            "vfd_ordinal_breaks": [
+                -0.001,
+                0,
+                14,
+                21,
+                25.001
+            ],
+            "vfd_ordinal_labels": [
+                "0",
+                "(0,14]",
+                "(14,21]",
+                "(21,25]"
+            ],
+            "_vfd_ordinal_why": "FOUR LEVELS, cut to the shape of the data rather than to round numbers. MEASURED on the UCMC analysis set (n = 2,897): VFD-28 is 53.2% exactly zero, then 3.0% in (0,7], 6.2% in (7,14], 14.3% in (14,21] and 23.3% in (21,25]. The obvious five-level weekly cut puts only 88 admissions in (0,7], so (0,7] and (7,14] are merged, giving 53.2 / 9.2 / 14.3 / 23.3%. ZERO IS ITS OWN LEVEL and must stay that way -- it is a point mass holding half the cohort and it means two different things (died, or never liberated), so collapsing it into a bottom band would hide the only part of the distribution that is sharply defined. The breaks are declared because two sites cutting at different days are not estimating the same parameter; the first break is below zero so that exactly 0 falls in the first level under cut()'s right-closed intervals.",
+            "sensitivity_models": {
+                "min_events": "Restrict to admissions with at least sensitivity_min_increase_events increase events. SG's choice, 2026-10-27, for the small-denominator problem.",
+                "partial_po": "PARTIAL PROPORTIONAL ODDS: age, sex and cci take cut-point-specific (nominal) effects; both exposures and sofa_baseline keep a single odds ratio. ADDED BECAUSE THE PO TEST FAILED FOR THEM -- MEASURED on the primary model, age p = 1.26e-08, cci p = 9.89e-05, sex p = 0.028, against Pbolus p = 0.836 and Pindicated p = 0.200. A single OR is not a valid summary for a term that violates PO, so the three adjustment terms are freed rather than the assumption being asserted. A SENSITIVITY AND NOT THE PRIMARY: the violations are in adjustment terms, not in the estimands, and the exposure coefficient is what travels to the pool. MEASURED: Pindicated OR 2.0329 here against 2.0323 in the primary, so the exposure estimate does not depend on the assumption that failed. If that ever stops being true, the primary is the one to doubt. The PO test is run on this model too -- freeing a term does not exempt the rest."
+                "sofa_coverage": "PRIMARY PLUS sofa_baseline_n_components. NOT in the primary covariate set: SG said on 2026-10-27 to use the covariates explicitly provided, and this is not one of them. It is offered as a sensitivity because the baseline SOFA is measurably confounded with HOW MUCH WAS MEASURED -- MEASURED at UCMC, corr(sofa_baseline, n_components) = +0.514, with median score rising from 3 at one component to 8 at six. Absent components score zero by the conventional SOFA rule, so a sparsely measured patient looks well. DISTINCT FROM THE REJECTED n_events ADJUSTMENT: component count is measured BEFORE intubation, so it is pre-exposure and cannot be a mediator of titration practice. SG's two objections to adjusting for n_events -- post-exposure, and on the causal path -- do not apply. It is still a sensitivity rather than the primary because it was not asked for."
+            }
+        }
     },
     "reporting": {
         "small_cell_min_den": 10
@@ -250,6 +298,19 @@
             "role": "membership predictor",
             "summary": "n/a (time-invariant)",
             "_report_the_lag": "bmi_lag_hours must be emitted alongside the value, not discarded. The fallback's cost is stated rather than buried. Height is charted once and rarely repeated, so the lag is usually driven by weight."
+        },
+        "sofa_baseline": {
+            "label": "SOFA at baseline (worst in the 24h before intubation)",
+            "lookback_hours": 24,
+            "source": {
+                "table": "labs + vitals + patient_assessments + medication_admin_continuous",
+                "window": "[anchor_dttm - lookback_hours, anchor_dttm)"
+            },
+            "algorithm": "The WORST value of each SOFA component in the lookback window -- min for map, platelet_count, gcs_total and the P/F ratio; max for creatinine, bilirubin_total and each of the four SOFA vasopressors -- then scored through the SAME score_sofa() the per-window SOFA uses, so no threshold is restated. Implemented by SHIFTING THE COHORT ANCHOR back by lookback_hours and setting follow-up to the real anchor, which lets every existing extractor run unchanged on the pre-intubation period. That matters most for oxygenation_covariate(), which carries FiO2 normalisation, the Severinghaus SpO2 fallback and the plateau rule; a hand-cut pre-anchor copy would be a federation-critical derivation maintained twice.",
+            "role": "Outcome-model covariate (code/07). SG, 2026-10-27.",
+            "_why_not_window_0": "sofa_total at window 0 covers hours 0-4 AFTER the anchor, so it is measured after intubation and after sedation starts. Fentanyl and propofol both drop blood pressure, which is the cardiovascular component, so adjusting the outcome model for it would condition on a variable the EXPOSURE helped cause -- a collider/mediator on the causal path, biasing the exposure coefficient. The baseline must precede the exposure window, which is why this is derived at all rather than reusing what was already there.",
+            "_on_vent_is_false": "The respiratory component is scored with on_vent = FALSE. The anchor IS the first IMV record, so the patient is not invasively ventilated before it. A patient transferred in already ventilated is the known anchor exception (cohort._comment_anchor) and scores the lower, not-ventilated band -- conservative, and reported via sofa_baseline_n_components rather than hidden.",
+            "missing": "Report sofa_baseline_n_components (0-6) beside it. A block admitted less than lookback_hours before intubation has a partial window and fewer components; that is a coverage fact, not an imputation target. 07 declares its own complete-case policy -- do NOT impute here."
         }
     },
     "time_varying": {

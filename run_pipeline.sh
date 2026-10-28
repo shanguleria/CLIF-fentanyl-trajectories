@@ -64,7 +64,7 @@ echo "== Phase 0: build cohort (Python) =="
 # unconditional stop(), so with `set -e` its presence in this list made the whole
 # pipeline exit non-zero every time -- the documented one-command build could not
 # succeed. Run a tabled script by hand if you need it: Rscript code/tabled/gbmt_classes.R
-for s in 02_descriptive_cohort 03_exemplar 04_delivery_states 05_titration 06_unit_variation; do
+for s in 02_descriptive_cohort 03_exemplar 04_delivery_states 05_titration 06_unit_variation 07_outcome_model; do
   echo "== ${s} (R) =="
   Rscript "code/${s}.R"
 done
@@ -79,6 +79,15 @@ done
 echo "== Verifying the shareable outputs =="
 if ! "$PY" tests/test_pooling.py; then
   echo "ERROR: the federated-pooling exports did not pass their checks." >&2
+  echo "       Do NOT upload output/final_no_phi/ until this is resolved." >&2
+  exit 1
+fi
+# Same reasoning, same place: tests/test_outcome_model.py reads step 7's output.
+# Its load-bearing check is that the proportional-odds test produced a VERDICT --
+# on 2026-10-27 it shipped every term NA while the console reported zero
+# violations, which is what a pass looks like.
+if ! "$PY" tests/test_outcome_model.py; then
+  echo "ERROR: the outcome model's outputs did not pass their checks." >&2
   echo "       Do NOT upload output/final_no_phi/ until this is resolved." >&2
   exit 1
 fi

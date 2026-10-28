@@ -372,7 +372,22 @@ for (rel in claimed) {
     sufficient_stats = pool_sufficient(d, keys, unlist(spec[["stats"]])),
     sum_bins = pool_bins(d, keys, rel),
     count_matrix = pool_sum_counts(d, keys, spec, rel),
-    NULL)                                  # side_by_side, per_site_only, heterogeneity_source
+    # Everything else falls through to NULL, which ships the per-site rows with
+    # NO POOLED ROW. That is correct for side_by_side, per_site_only and
+    # heterogeneity_source, which are per-site by design.
+    #
+    # coefficient_meta IS NOT IMPLEMENTED AND FALLS THROUGH HERE ON PURPOSE.
+    # 07_outcome_model.R ships regression coefficients for inverse-variance
+    # meta-analysis, which is a different operation from summing numerators and
+    # denominators -- it needs the standard errors, a weighting scheme and a
+    # decision about metafor that is deliberately deferred (protocol.json
+    # model.outcome_model._pooling_why). Declaring the method in
+    # pooling_spec.json means the file is CLAIMED, so a bundle carrying it is not
+    # refused as unclaimed; landing here means the coefficients pass through
+    # per-site and a reader sees every site's estimate with no combined row,
+    # which is honest rather than wrong. Implement it before quoting a pooled
+    # odds ratio.
+    NULL)
 
   out <- if (is.null(pooled)) d else {
     common <- union(names(d), names(pooled))

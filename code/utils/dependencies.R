@@ -23,3 +23,9 @@ library(gbmt)       # group-based trajectory models (Phases 3, 5)
 library(lcmm)       # latent class mixed models (Phase 4)
 library(survival)   # competing risks (Phase 6)
 library(cmprsk)     # cumulative incidence, Gray's test (Phase 6)
+
+# code/07_outcome_model.R -- proportional-odds ordinal logistic regression.
+# The only new pinned dependency since the stack was fixed; clm() has no base-R
+# substitute. metafor is deliberately absent: the pooling is coordinating-centre
+# code and that choice is deferred, so no site installs it.
+library(ordinal)
