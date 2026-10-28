@@ -226,6 +226,35 @@ def test_the_pooling_spec_claims_every_csv_the_pipeline_writes():
     assert labels, "not_poolable_columns must be declared"
 
 
+def test_every_sum_bins_file_declares_a_bin_key_the_pooler_can_group_on():
+    """pool_bins() sums bins WITHIN the keys other than `bin`, and it used to
+    hardcode `variable` for that grouping. 07's exposure_distribution.csv is keyed
+    on `exposure` instead, so `tapply(out$n, out$variable, ...)` got a NULL second
+    argument and pool_sites.R DIED -- after writing 36 of the files, which is the
+    worst place to stop. Generalised to the declared keys; this is the check that
+    the declaration and the pooler still agree."""
+    spec = json.loads(SPEC.read_text())["files"]
+    for rel, entry in spec.items():
+        if entry.get("method") != "sum_bins":
+            continue
+        keys = entry.get("keys", [])
+        assert "bin" in keys, (
+            f"{rel} declares sum_bins but has no `bin` key; pool_bins() cannot "
+            f"tell which key indexes the bins")
+        assert len(set(keys) - {"bin"}) >= 1, (
+            f"{rel} is keyed only on `bin`, so there is no group to total within")
+        for col in entry.get("bin_edges", []):
+            assert col, f"{rel} declares an empty bin_edges entry"
+        f = OUT / rel
+        if not f.is_file():
+            continue
+        cols = set(pd.read_csv(f, nrows=1).columns)
+        missing = [k for k in keys if k not in cols]
+        assert not missing, (
+            f"{rel} is keyed on {missing} in the spec but does not ship those "
+            f"column(s) -- the pooler would group on nothing")
+
+
 def test_the_cohort_column_is_a_key_wherever_it_is_emitted():
     """`landmark` is a SUBSET of `all`. If cohort is emitted but not keyed, every
     sum_counts method adds the two rows and double-counts every landmark event --

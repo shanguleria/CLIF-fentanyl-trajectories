@@ -315,12 +315,28 @@ pool_sufficient <- function(d, keys, stats) {
 }
 
 pool_bins <- function(d, keys, rel) {
+  # THE GROUPING COMES FROM THE DECLARED KEYS, not from a hardcoded column name.
+  # Bins sum to a total WITHIN whatever the file is keyed on besides `bin`:
+  # `variable` for the pooling histograms, `exposure` for 07's exposure
+  # distribution. This hardcoded `variable` and crashed pool_sites.R outright on
+  # the first bundle carrying 07 -- tapply(out$n, out$variable, ...) with a NULL
+  # second argument -- after 36 of the files had already been written. The
+  # bin-edge fingerprint below had the same bug more quietly: a NULL column drops
+  # out of paste() silently, so the check still ran but compared less than it
+  # claimed to.
+  group_keys <- setdiff(keys, "bin")
+  stopifnot("a sum_bins file must declare a `bin` key" = "bin" %in% keys)
+  grp_of <- function(x) if (!length(group_keys)) rep("__all__", nrow(x))
+                        else key_of(x, group_keys)
+
   # Summing bins is valid ONLY if they partition identically. They are
   # config-declared and protocol agreement is already asserted, so this can
   # only fail if a site edited the protocol -- but the exactness claim rests on
   # it, so it is checked rather than assumed.
+  edge_cols <- intersect(c(group_keys, "bin", "bin_lo", "bin_hi"), names(d))
   edges <- unique(vapply(split(d, d$site), function(s)
-    paste(s$variable, s$bin, s$bin_lo, s$bin_hi, collapse = ";"), character(1)))
+    paste(do.call(paste, c(unname(as.list(s[, edge_cols, drop = FALSE])),
+                           list(sep = "\u001f"))), collapse = ";"), character(1)))
   if (length(edges) > 1L)
     stop(rel, ": histogram bin edges differ between sites, so the bins do not ",
          "partition the data identically and summing them would be wrong.",
@@ -332,8 +348,9 @@ pool_bins <- function(d, keys, rel) {
   rownames(kd) <- k[first]
   out <- cbind(kd[names(n), , drop = FALSE],
                data.frame(site = "POOLED", n = as.vector(n), stringsAsFactors = FALSE))
-  tot <- tapply(out$n, out$variable, sum, na.rm = TRUE)
-  out$n_total <- as.vector(tot[as.character(out$variable)])
+  g <- grp_of(out)
+  tot <- tapply(out$n, g, sum, na.rm = TRUE)
+  out$n_total <- as.vector(tot[as.character(g)])
   # Same precision rule as the counts pooler: match what the sites shipped.
   dec <- max(c(0L, vapply(as.character(d$pct), function(v) {
     v <- sub("^.*\\.", "", v[grepl("\\.", v)])
