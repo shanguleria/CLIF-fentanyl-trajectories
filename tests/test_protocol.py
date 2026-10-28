@@ -510,12 +510,22 @@ def test_the_landmark_rule_is_declared_and_honoured():
     01 asserts the name it implements -- a declared value nothing honours would
     read as policy, which is the failure CLAUDE.md names first."""
     c = COV["cohort"]
-    assert c.get("landmark_definition") == "state_at_T", (
+    assert c.get("landmark_definition") == "state_at_T_observed", (
         "the landmark rule must be declared, not left implicit in the code")
     build = (REPO / "code" / "01_build_cohort.py").read_text()
     assert 'COV["cohort"]["landmark_definition"]' in build, (
         "01 must READ landmark_definition, not merely agree with it by accident")
-    assert "state_at_T" in build
+    assert "state_at_T_observed" in build
+
+    # The second half of the rule: the state must be OBSERVED, not forward-filled.
+    assert c.get("landmark_record_lookback_hours") == c["imv_episode_gap_hours"], (
+        "the lookback and the episode gap answer the same question and are the "
+        "same number by design -- see cohort._landmark_record_lookback_why")
+    assert 'COV["cohort"]["landmark_record_lookback_hours"]' in build, (
+        "the lookback must be READ, or it is a policy declaration nothing honours")
+    assert "is_scaffold" in build, (
+        "the lookback must distinguish a real record from a waterfall-imputed "
+        "one, or it silently admits the rows it exists to exclude")
 
     # The old reading must be gone from the selection path. It may still appear
     # as the cross-check that the new rule is a strict subset of the old.

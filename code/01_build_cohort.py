@@ -2075,11 +2075,11 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     # were the source of a VFD-28 ceiling of 27.3 days against a definition that
     # allows 25. Reading the state off the same interval series the outcome uses
     # makes "ventilated at T" mean one thing.
-    assert COV["cohort"]["landmark_definition"] == "state_at_T", (
+    assert COV["cohort"]["landmark_definition"] == "state_at_T_observed", (
         f"protocol.json cohort.landmark_definition is "
         f"{COV['cohort']['landmark_definition']!r}, which this script does not "
-        f"implement. The only rule here is state_at_T; a declared value nothing "
-        f"honours would read as policy.")
+        f"implement. The only rule here is state_at_T_observed; a declared value "
+        f"nothing honours would read as policy.")
     iv_all = _imv_intervals(resp, cohort, horizon_h)
     span = iv_all[(iv_all["t_start_hr"] <= T) & (iv_all["t_end_hr"] > T)]
     eligible = set(span.loc[span["is_imv"], "encounter_block"])
@@ -2108,6 +2108,46 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     note("  NEW only -- nothing charted in the window, waterfall carries IMV to T",
          len(eligible - grid_eligible))
 
+    # THE STATE AT T MUST BE OBSERVED, NOT IMPUTED. SG, 2026-10-27, chose a
+    # lookback after seeing what the bare state-at-T rule admitted: 444 blocks
+    # whose "on IMV at T" was the waterfall forward-filling across a MEDIAN 34.5h
+    # of no real charting (p90 57.6h), of which 0.2% were ever liberated and
+    # 93.7% scored zero VFDs as lost-on-a-ventilator. Two imputations compounding
+    # -- an imputed status at T admitted them, an imputed status at discharge
+    # zeroed them.
+    #
+    # L = imv_episode_gap_hours, DELIBERATELY THE SAME NUMBER. That constant is
+    # already justified as roughly the 98.5th percentile of normal IMV charting
+    # gaps at UCMC (p50 1.00h, p75 3.33h, p90 4.37h, p95 5.00h, p98 7.07h), i.e.
+    # the point beyond which silence is not routine charting. "Do consecutive
+    # records belong to one episode" and "does this record still support the state
+    # at T" are the same question, so inventing a second number would be two
+    # copies of one threshold waiting to drift. Declared separately so a site can
+    # see it applies here, and the note on each names the other.
+    #
+    # IT ALSO EXCLUDES BLOCKS THE OLD RULE ACCEPTED, which is the point:
+    # imv_status is computed over `t["resp"]`, which CONTAINS SCAFFOLD ROWS, so
+    # `imv_status == 1` could be satisfied by an imputed row. MEASURED at UCMC:
+    # 1,047 of 6,893 excluded, only 409 of them from the 444 -- the other 638 were
+    # grid-confirmed on scaffold alone.
+    lookback_h = float(COV["cohort"]["landmark_record_lookback_hours"])
+    if "is_scaffold" not in resp.columns:
+        raise SystemExit(
+            "respiratory_support has no is_scaffold column, so a real record "
+            "cannot be told from a waterfall-imputed one and "
+            "landmark_record_lookback_hours would silently be a no-op. clifpy's "
+            "waterfall emits it; check the pinned version.")
+    rr = resp.loc[~resp["is_scaffold"].fillna(False).astype(bool),
+                  ["encounter_block", "recorded_dttm"]].merge(
+        cohort[["encounter_block", "anchor_dttm"]], on="encounter_block", how="inner")
+    rr["hr"] = (rr["recorded_dttm"] - rr["anchor_dttm"]).dt.total_seconds() / 3600
+    rr = rr[(rr["hr"] >= 0) & (rr["hr"] <= T)]
+    last_real = rr.groupby("encounter_block")["hr"].max()
+    supported = set(last_real.index[(T - last_real) <= lookback_h])
+    note(f"  on IMV at T but no REAL record within {lookback_h:g}h of T -- excluded",
+         len(eligible - supported))
+    eligible &= supported
+
     # What DOES have to hold: being on IMV at T means follow-up extends past T,
     # because every interval is clipped to followup_end_dttm. If the grid
     # disagrees about ADMISSION the two series are inconsistent about something
@@ -2119,7 +2159,8 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
         f"says they were not alive and admitted then; intervals are clipped to "
         f"followup_end_dttm so this cannot happen")
 
-    flow(f"LANDMARK COHORT -- time_to_event (on IMV at T={T}h)", len(eligible),
+    flow(f"LANDMARK COHORT -- time_to_event (on IMV at T={T}h, observed)",
+         len(eligible),
          f"extubated, died or discharged before T={T}h")
 
     tte = cohort[cohort["encounter_block"].isin(eligible)].copy()
@@ -2180,6 +2221,16 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
                                          tte.set_index("encounter_block")["death_hr"]),
                     on="encounter_block", how="left")
     note("  VFD-28 = 0", int((tte["vfd_28"] == 0).sum()))
+    note("    of which zeroed by death within the horizon",
+         int(tte["vfd_zero_for_death"].sum()))
+    note("    of which zeroed LOST ON A VENTILATOR (discharged alive on IMV)",
+         int(tte["vfd_zero_lost_on_vent"].sum()))
+    # The headline of that rule is how many it CHANGES, not how many it covers:
+    # a block with no qualifying liberation after T scored zero regardless. Only
+    # an observed liberation followed by a ventilated discharge actually moves.
+    note("      of those, with an observed liberation -- the only ones whose "
+         "value the rule changes",
+         int((tte["vfd_zero_lost_on_vent"] & (tte["extubation_event"] == 1)).sum()))
     note("  VFD-28 extended from an off-IMV discharge",
          int(tte["vfd_extended_from_discharge"].sum()))
     print(f"    VFD-28 median {tte['vfd_28'].median():.1f}d, "

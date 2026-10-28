@@ -40,17 +40,25 @@ def days(hours: float) -> float:
 
 
 def _frames(blocks):
-    """blocks: {name: (discharge_hr, [(hr, device), ...])} -> (cohort, resp)."""
+    """blocks: {name: (discharge_hr, [(hr, device[, scaffold]), ...])}.
+
+    A record is REAL unless a third element says otherwise. Eligibility requires
+    a real record within cohort.landmark_record_lookback_hours of T, so a fixture
+    of scaffold-only rows is excluded -- which is the point of the rule and the
+    reason the flag is settable here.
+    """
     co, rs = [], []
     for name, (disc_h, recs) in blocks.items():
         co.append({"encounter_block": name, "patient_id": f"p_{name}",
                    "anchor_dttm": T0,
                    "followup_end_dttm": T0 + pd.Timedelta(hours=disc_h),
                    "block_discharge_dttm": T0 + pd.Timedelta(hours=disc_h)})
-        for hr, dev in recs:
+        for rec in recs:
+            hr, dev = rec[0], rec[1]
             rs.append({"encounter_block": name,
                        "recorded_dttm": T0 + pd.Timedelta(hours=hr),
-                       "device_category": dev})
+                       "device_category": dev,
+                       "is_scaffold": bool(rec[2]) if len(rec) > 2 else False})
     return pd.DataFrame(co), pd.DataFrame(rs)
 
 
@@ -340,12 +348,50 @@ def test_eligibility_is_the_state_at_T_not_any_record_in_the_window():
         "a block extubated inside the window ending at T is not ventilated AT T")
 
 
+def test_the_state_at_T_must_be_observed_not_forward_filled():
+    """cohort.landmark_record_lookback_hours. SG chose a lookback on 2026-10-27
+    after seeing what the bare state-at-T rule admitted: 444 blocks whose "on IMV
+    at T" was the waterfall forward-filling across a MEDIAN 34.5h of no real
+    charting, of which 0.2% were ever liberated and 93.7% scored zero VFDs as
+    lost-on-a-ventilator. Two imputations compounding."""
+    T = B.COV["cohort"]["landmark_hours"]
+    L = B.COV["cohort"]["landmark_record_lookback_hours"]
+    got = _tte({
+        # Real IMV record comfortably inside the lookback.
+        "fresh": (500, [(0, "IMV"), (T - L + 1, "IMV")]),
+        # Last REAL record well outside it; the waterfall carries IMV to T, but
+        # nothing observed supports that.
+        "stale": (500, [(0, "IMV"), (T - L - 1, "IMV")]),
+        # Scaffold INSIDE the window does not count as observation -- this is the
+        # case that made the old grid rule admit 638 blocks on imputed rows alone.
+        "scaffold_only": (500, [(0, "IMV"), (T - L - 1, "IMV"), (T - 1, "IMV", True)]),
+    }, {k: "Home" for k in ("fresh", "stale", "scaffold_only")})
+    assert "fresh" in got.index
+    assert "stale" not in got.index, (
+        f"the last real record is more than {L}h before T; the state at T is "
+        f"forward-filled, not observed")
+    assert "scaffold_only" not in got.index, (
+        "a scaffold row is the waterfall's own imputation and cannot be the "
+        "evidence that the imputation is correct")
+
+
+def test_the_lookback_reuses_the_episode_gap_threshold_on_purpose():
+    """L and imv_episode_gap_hours answer the same question -- how long may
+    charting be silent before the last value stops being believable -- so they
+    are the same number by design. If someone changes one, this fails and makes
+    them look at the other."""
+    assert (B.COV["cohort"]["landmark_record_lookback_hours"]
+            == B.COV["cohort"]["imv_episode_gap_hours"]), (
+        "the lookback and the episode gap have diverged; that may be right, but "
+        "it must be a decision -- see cohort._landmark_record_lookback_why")
+
+
 def test_a_successful_liberation_survives_a_later_death():
     """THE REGRESSION THIS GUARDS. Before 2026-10-27 extubation_event = 2 erased
     the liberation entirely: MEASURED at UCMC, 399 blocks (5.9% of the landmark
     cohort) were liberated and died a median 9.8 days later, and every one was
     coded 'death' with the extubation discarded. Both facts are now kept."""
-    got = _tte({"b": (500, [(0, "IMV"), (100, "Room Air")])}, {"b": "Expired"})
+    got = _tte({"b": (500, [(0, "IMV"), (71, "IMV"), (100, "Room Air")])}, {"b": "Expired"})
     assert got.loc["b", "extubation_event"] == 1, "the liberation was erased again"
     assert got.loc["b", "mortality_event"] == 1, "the death was lost"
     assert got.loc["b", "vfd_28"] == 0.0, "death inside the horizon still scores 0"
@@ -356,16 +402,16 @@ def test_a_death_before_any_qualifying_liberation_is_the_competing_event():
     qualifying liberation, so there is nothing to protect and the block is a
     death. The competing-event rule is now implicit in the 48h filter rather
     than a separate `died within succ_h` branch -- one definition, not two."""
-    got = _tte({"b": (120, [(0, "IMV"), (100, "Room Air")])}, {"b": "Expired"})
+    got = _tte({"b": (120, [(0, "IMV"), (71, "IMV"), (100, "Room Air")])}, {"b": "Expired"})
     assert pd.isna(got.loc["b", "ext_hr"])
     assert got.loc["b", "extubation_event"] == 2
     assert got.loc["b", "vfd_28"] == 0.0
 
 
 def test_the_three_event_codes_are_exhaustive_and_distinct():
-    got = _tte({"lib":  (900, [(0, "IMV"), (100, "Room Air")]),
-                "dead": (300, [(0, "IMV")]),
-                "cens": (300, [(0, "IMV")])},
+    got = _tte({"lib":  (900, [(0, "IMV"), (71, "IMV"), (100, "Room Air")]),
+                "dead": (300, [(0, "IMV"), (71, "IMV")]),
+                "cens": (300, [(0, "IMV"), (71, "IMV")])},
                {"lib": "Home", "dead": "Expired", "cens": "Still Admitted"})
     assert got.loc["lib", "extubation_event"] == 1
     assert got.loc["dead", "extubation_event"] == 2
@@ -377,7 +423,7 @@ def test_death_dttm_establishes_death_without_a_terminal_discharge():
     """'death_dttm or, if unavailable, discharge_dttm when the category is
     hospice or expired.' MEASURED at UCMC: 3,066 patients carry a death_dttm with
     NO death discharge, so this branch is not hypothetical."""
-    got = _tte({"b": (900, [(0, "IMV"), (100, "Room Air")])}, {"b": "Home"},
+    got = _tte({"b": (900, [(0, "IMV"), (71, "IMV"), (100, "Room Air")])}, {"b": "Home"},
                death_dttm_hr={"b": 300})
     assert bool(got.loc["b", "died"]) is True
     assert got.loc["b", "mortality_event"] == 1
@@ -390,14 +436,14 @@ def test_death_dttm_establishes_death_without_a_terminal_discharge():
 def test_death_dttm_is_preferred_over_the_discharge_timestamp():
     """Both sources present and disagreeing: death_dttm wins, because it is the
     timestamp and the discharge is only a date of separation."""
-    got = _tte({"b": (500, [(0, "IMV")])}, {"b": "Expired"}, death_dttm_hr={"b": 400})
+    got = _tte({"b": (500, [(0, "IMV"), (71, "IMV")])}, {"b": "Expired"}, death_dttm_hr={"b": 400})
     assert got.loc["b", "death_hr"] == pytest.approx(400.0)
 
 
 def test_a_site_without_death_dttm_falls_back_to_the_discharge():
     """CLIF 2.1 makes death_dttm optional. A missing COLUMN must not raise -- the
     pipeline ships to sites whose patient table does not carry it."""
-    cohort, resp = _frames({"b": (500, [(0, "IMV")])})
+    cohort, resp = _frames({"b": (500, [(0, "IMV"), (71, "IMV")])})
     cohort["discharge_category"] = "Expired"
     long = pd.DataFrame([{"encounter_block": "b",
                           "window_start_hr": B.COV["cohort"]["landmark_hours"] - B.WINDOW_H,
