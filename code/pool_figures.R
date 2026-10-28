@@ -435,9 +435,107 @@ if (file.exists(file.path(POOL, ap_f))) {
   }
 }
 
+
+# ---- F8. Per-unit exposure caterpillars, mirroring F3 -------------------------
+# The site-side figure draws violins from one row per admission; that stays
+# PHI-side, so exposure_by_unit.csv ships n / n_at_zero / median / q1 / q3 / mean
+# / sd instead. A caterpillar is what those columns support.
+#
+# THE POINT IS THE MEAN, not the median, which F3 would otherwise suggest: about
+# half of each exposure is exactly zero, so most units have median = q1 = 0 and a
+# caterpillar of medians is a column on the floor. The mean also POOLS EXACTLY
+# from n and mean, so the reference line is the same quantity as the points.
+eu_f <- "07_outcome_model__exposure_by_unit.csv"
+if (file.exists(file.path(POOL, eu_f))) {
+  eu <- rd(eu_f)
+  eu <- eu[eu$site != "POOLED", , drop = FALSE]
+  for (nm in c("n_admissions", "n_at_zero", "median", "q1", "q3", "mean", "sd"))
+    eu[[nm]] <- suppressWarnings(as.numeric(eu[[nm]]))
+
+  for (ex in sort(unique(eu$exposure))) {
+    d <- eu[eu$exposure == ex, , drop = FALSE]
+    n_all <- nrow(d)
+    # A suppressed unit cannot be drawn; it is counted in the caption instead.
+    d <- d[is.finite(d$mean) & is.finite(d$n_admissions), , drop = FALSE]
+    if (!nrow(d)) next
+    n_suppressed <- n_all - nrow(d)
+
+    d$grp <- tolower(ifelse(is.na(d$location_category) |
+                              d$location_category == "", "unattributed",
+                            d$location_category))
+    # Numbered alphabetically by real name within site, so no label encodes a rate.
+    d <- d[order(d$site, d$location_name), ]
+    d$unit_lab <- sprintf("S%d-U%d (n = %s)",
+                          match(d$site, SITES),
+                          ave(seq_len(nrow(d)), d$site, FUN = seq_along),
+                          formatC(d$n_admissions, format = "d", big.mark = ","))
+    # Pooled mean over the units DRAWN, sharing their denominator.
+    ref <- 100 * sum(d$mean * d$n_admissions) / sum(d$n_admissions)
+    zero_pct <- 100 * d$n_at_zero / d$n_admissions
+
+    d <- d[order(d$mean), ]
+    d$unit_lab <- factor(d$unit_lab, levels = d$unit_lab)
+    pal <- grDevices::hcl.colors(length(unique(d$grp)), "Dark 3")
+    names(pal) <- sort(unique(d$grp))
+
+    panel <- if (ex == "Pindicated") "A" else "B"
+    fn <- sprintf("F8%s_%s_by_unit_pooled.png", panel, tolower(ex))
+    p <- house(
+      ggplot(d, aes(100 * mean, unit_lab, colour = grp)) +
+        geom_vline(xintercept = ref, colour = INK, linetype = "22",
+                   linewidth = 0.45) +
+        geom_errorbar(aes(xmin = 100 * q1, xmax = 100 * q3), orientation = "y",
+                      width = 0, linewidth = 0.5) +
+        geom_point(size = 2.1) +
+        scale_colour_manual(values = pal, name = NULL) +
+        guides(colour = guide_legend(nrow = 1)) +
+        annotate("text", x = ref, y = Inf,
+                 label = sprintf(" pooled mean %.1f%%", ref),
+                 hjust = 0, vjust = 1.4, colour = INK, size = 3.1) +
+        scale_x_continuous(expand = expansion(mult = c(0.06, 0.10)),
+                           labels = function(x) sprintf("%.0f%%", x)) +
+        labs(x = sprintf("%s, %% of an admission's fentanyl increases",
+                         if (ex == "Pindicated")
+                           "Increases with a documented indication" else
+                           "Increases paired with a fentanyl bolus"),
+             y = NULL))
+    ggsave(file.path(FIG, fn), p, width = 7.2,
+           height = max(3.4, 1.5 + 0.34 * nrow(d)), dpi = 300, bg = PAPER)
+    register_caption(
+      fn,
+      sprintf("Does %s differ between ICUs, across sites?",
+              if (ex == "Pindicated") "documented indication" else
+                "bolus pairing"),
+      sprintf(paste0(
+        "One row per ICU, %d unit(s) across %d site(s), ordered by the unit's ",
+        "MEAN exposure. POINTS ARE MEANS, not medians: about half of this ",
+        "exposure is exactly zero, so most units have median = Q1 = 0 and a ",
+        "caterpillar of medians is a column on the floor. The mean also pools ",
+        "exactly from n and mean, so the dashed reference line -- the pooled ",
+        "mean over the units drawn, %.1f%% -- is the same quantity as the ",
+        "points. BARS ARE THE INTERQUARTILE RANGE, which is the SPREAD OF ",
+        "ADMISSIONS WITHIN THE UNIT and NOT a confidence interval: unlike F3, ",
+        "overlap here says nothing about precision. Units are coloured by the ",
+        "mCIDE location_category, which means the same thing at every site ",
+        "where location_name is site-local free text. THE SHARE AT EXACTLY ZERO ",
+        "is what a violin would have shown and is not drawable from a summary; ",
+        "across the units drawn it runs %.0f%% to %.0f%% and ships per unit as ",
+        "n_at_zero in 07_outcome_model__exposure_by_unit.csv. %s Labels are ",
+        "S<site>-U<unit>, numbered alphabetically by real name within site so no ",
+        "label encodes a rate; n is the unit's admissions. NOT POOLED ACROSS ",
+        "SITES -- location_name is site-local, so every row is one site's unit."),
+        nrow(d), length(unique(d$site)), ref,
+        min(zero_pct, na.rm = TRUE), max(zero_pct, na.rm = TRUE),
+        if (n_suppressed)
+          sprintf("%d unit(s) are absent: below the site's small-cell floor, so their statistics were blanked at the site and only their counts ship.", n_suppressed)
+        else "Every unit shipped drawable statistics."))
+    cat(sprintf("  %s\n", fn))
+  }
+}
+
 # Only the figures this script drew; F1 registers its own caption in the Python
 # STROBE step.
-MINE <- grep("^(F2B|F3|F4|F5|F6|F7)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
+MINE <- grep("^(F2B|F3|F4|F5|F6|F7|F8)", list.files(FIG, pattern = "\\.png$"), value = TRUE)
 write_captions(file.path(FIG, "captions.md"), "pool_figures.R", MINE,
                list(site_name = sprintf("%d pooled", K),   # write_captions prefixes "Site "
                     clif_version = PROV$definition_versions$`protocol.json`,
