@@ -1,8 +1,5 @@
 # Where this run reads and writes, and the provenance stamped on what it shares.
-#
-# One site, one data source, one output tree -- the standard CLIF layout. The R
-# half is a transcription of code/utils/paths.py; the two must agree, because
-# Phase 0 (Python) writes what Phases 1-6 (R) read.
+# Transcription of code/utils/paths.py; the two must agree.
 
 PHI_LABEL <- paste(
   "# intermediate_phi",
@@ -14,8 +11,7 @@ PHI_LABEL <- paste(
   "transcript. Only `output/final_no_phi/` is shareable.",
   sep = "\n")
 
-# Create and return the directories this pipeline may write to. Per-script
-# subfolders of out_final come from phase_dir(), not from here.
+# Directories this pipeline may write to. Per-script subfolders: phase_dir().
 site_dirs <- function() {
   root <- here::here()
   d <- list(
@@ -33,9 +29,7 @@ site_dirs <- function() {
   d
 }
 
-# A per-script subfolder of the shareable output tree. Mirrors phase_dir() in
-# paths.py; the two must agree. The folder says which script produced the file,
-# the phaseN_ prefix says which phase it belongs to.
+# A per-script subfolder of the shareable output tree. Mirrors paths.py.
 phase_dir <- function(dirs, name) {
   d <- file.path(dirs$out_final, name)
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
@@ -43,9 +37,7 @@ phase_dir <- function(dirs, name) {
 }
 
 
-# Delete this script's own outputs before it starts, so a crash leaves nothing
-# rather than a stale file that still looks valid. Mirrors clear_owned_outputs()
-# in paths.py; the two must agree.
+# Delete this script's own outputs first, so a crash leaves nothing stale.
 clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
   n <- 0L
   for (key in names(owned)) {
@@ -60,18 +52,8 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
     f <- file.path(root, rel)
     if (file.exists(f)) { unlink(f); n <- n + 1L }
   }
-  # And a renumbered SCRIPT leaves the whole directory behind. Unlinking the
-  # files emptied it but left the folder standing in the shareable tree, which
-  # is a smaller version of the same problem: a reader finds an `03_states/`
-  # that nothing writes and cannot tell whether it matters. Remove a retired
-  # directory once it is empty -- never one that still holds anything, since
-  # that would delete a file nobody declared.
-  # NEVER a directory this run writes to. 02 retires old files that live in its
-  # OWN phase directory, so after clearing them the folder is legitimately empty
-  # and the rule above would delete the directory out from under the script --
-  # which it did, taking all twelve of 02's outputs with it before the first
-  # ggsave failed. A retired path may sit in a live directory; only the dead
-  # ones may be removed.
+  # A renumbered script leaves its directory behind. Remove a retired directory
+  # only once empty, and never one this run writes to (02 retires into its own).
   live <- normalizePath(unlist(dirs), mustWork = FALSE)
   for (d in unique(dirname(file.path(root, retired)))) {
     if (normalizePath(d, mustWork = FALSE) %in% live) next
@@ -83,36 +65,34 @@ clear_owned_outputs <- function(dirs, owned, retired = character(0)) {
 }
 
 
-# Mirrors paths.py. CODE_GLOBS, PROTOCOL_FILES and SITE_CONFIG must match it
-# exactly or the two languages stamp different digests for the same tree;
-# tests/test_paths.py asserts they agree.
+# Must match paths.py exactly or the two languages stamp different digests for
+# the same tree; tests/test_paths.py asserts they agree.
 CODE_GLOBS <- c("code/*.py", "code/*.R", "code/utils/*.py", "code/utils/*.R")
 PROTOCOL_FILES <- c("protocol.json", "outlier_config.json")
 SITE_CONFIG <- "config.json"
 
-# sha256 of a STRING. tools::sha256sum only takes file paths, and `digest` is not
-# in the renv library, so the string goes via a tempfile. Base R only, by design.
+# sha256 of a STRING, via a tempfile: tools::sha256sum takes paths only, and
+# `digest` is not in the renv library. Base R by design.
 .sha_string <- function(s) {
   tmp <- tempfile()
   on.exit(unlink(tmp), add = TRUE)
   # writeChar without the trailing NUL, so the bytes match Python's .encode()
   con <- file(tmp, "wb"); writeChar(s, con, eos = NULL); close(con)
-  substr(tools::sha256sum(tmp), 1, 16)
+  # unname() as in .sha_file(); the stray name here is the tempfile path.
+  unname(substr(tools::sha256sum(tmp), 1, 16))
 }
 
-.sha_file <- function(p) substr(tools::sha256sum(p), 1, 16)
+# unname() is LOAD-BEARING: sha256sum() returns a NAMED character and unlist()
+# folds that name into the key, which once disabled the config-drift guard.
+.sha_file <- function(p) unname(substr(tools::sha256sum(p), 1, 16))
 
 # Content fingerprint of the code that produced a run: list(overall, per_file).
-# Content-based rather than git-based -- see the docstring in paths.py.
 code_digests <- function(root = here::here()) {
   files <- unique(unlist(lapply(CODE_GLOBS,
                                 function(g) Sys.glob(file.path(root, g)))))
   rel <- substring(files, nchar(root) + 2L)
-  # method = "radix" is C-locale BYTE order, which is what Python's sorted()
-  # gives. R's DEFAULT sort uses locale collation and ordered paths.py before
-  # paths.R (collating case-insensitively, 'p' < 'r') where Python puts paths.R
-  # first ('R' = 0x52 < 'p' = 0x70). Identical tree, different overall digest --
-  # measured 2026-10-02, and invisible in the per-file digests, which matched.
+  # radix = C-locale BYTE order, matching Python's sorted(); R's default sort
+  # collates by locale and would order the same tree differently.
   o <- order(rel, method = "radix")
   files <- files[o]
   rel <- rel[o]
@@ -122,8 +102,7 @@ code_digests <- function(root = here::here()) {
   list(overall = .sha_string(joined), per_file = as.list(per))
 }
 
-# The protocol version each config declares. One field per file, not one
-# overall: they are bumped independently.
+# The protocol version each config declares, one field per file.
 definition_versions <- function(root = here::here()) {
   out <- list()
   for (n in PROTOCOL_FILES) {
@@ -136,29 +115,25 @@ definition_versions <- function(root = here::here()) {
   out
 }
 
-# SHA-256 of every file that governs what the outputs contain. Used by
-# require_manifest() for WITHIN-site staleness; provenance() splits the same
-# digests into protocol-vs-site for the CROSS-site check.
+# SHA-256 of every file that governs what the outputs contain: require_manifest()
+# checks it WITHIN site, provenance() splits it protocol-vs-site for ACROSS.
 config_digests <- function(root = here::here()) {
   out <- list()
   for (n in c(SITE_CONFIG, PROTOCOL_FILES)) {
     p <- file.path(root, "config", n)
-    # tools::sha256sum is base R; it matches Python's hashlib.sha256 of the same
-    # bytes, verified 2026-09-07.
+    # base R, and matches Python's hashlib.sha256 of the same bytes.
     if (file.exists(p)) out[[n]] <- .sha_file(p)
   }
   out
 }
 
-# The block stamped onto every shareable output. `code_digest` is the
-# authoritative answer to "did two sites run the same code?"; `code_version` is
-# the human-readable git label and may be "unknown".
+# The block stamped onto every shareable output. `code_digest` answers "did two
+# sites run the same code?"; `code_version` is the git label, maybe "unknown".
 provenance <- function(config) {
   root <- here::here()
-  # `git describe` exits non-zero outside a checkout AND in a repo with no commits
-  # yet. system(intern = TRUE) signals that as a WARNING, not an error, so
-  # tryCatch(error=) alone does not catch it -- it returns character(0) and prints
-  # a warning. Handle both, and treat an empty result as unknown.
+  # `git describe` fails outside a checkout and in a repo with no commits, which
+  # system(intern = TRUE) reports as a warning returning character(0), not an
+  # error. Treat empty as unknown.
   git_sha <- tryCatch(
     suppressWarnings(
       system("git describe --always --dirty", intern = TRUE, ignore.stderr = TRUE)),
@@ -181,7 +156,6 @@ provenance <- function(config) {
 
 
 # Fail loudly if the tables on disk were not produced by this code and config.
-# Mirrors require_manifest() in paths.py; the two must agree.
 require_manifest <- function(dirs, root) {
   f <- file.path(dirs$out_final, "manifest.json")
   if (!file.exists(f)) {
@@ -191,32 +165,38 @@ require_manifest <- function(dirs, root) {
   }
   m <- jsonlite::fromJSON(f)
   was <- unlist(m$config_digests)
-  # REQUIRED, not optional: a manifest with no digests cannot be checked against
-  # the config on disk, and treating an absent block as empty made this guard
-  # pass vacuously -- the same hole as a test that cannot fail.
+  # REQUIRED, not optional: treating an absent digest block as empty made this
+  # guard pass vacuously.
   if (!length(was)) {
     stop("manifest.json carries no config_digests, so the tables on disk ",
          "cannot be checked against the current config. ",
          "Re-run code/01_build_cohort.py.", call. = FALSE)
   }
-  now <- unlist(config_digests(root))
-  drift <- names(was)[!is.na(now[names(was)]) & now[names(was)] != was]
+  # vapply rather than unlist(), so one malformed element cannot reshape the
+  # names of all of them and turn every lookup into an unnoticed NA.
+  nowl <- config_digests(root)
+  now <- vapply(nowl, function(x) unname(as.character(x))[1], character(1))
+  # A manifest key with no current counterpart is NOT agreement: the config that
+  # governed Phase 0 is gone under that name.
+  missing_now <- setdiff(names(was), names(now))
+  if (length(missing_now)) {
+    stop("manifest.json records config file(s) that are no longer present: ",
+         paste(missing_now, collapse = ", "),
+         ". The tables on disk were built under a config this repo no longer ",
+         "has, so they cannot be checked. Re-run code/01_build_cohort.py.",
+         call. = FALSE)
+  }
+  drift <- names(was)[now[names(was)] != was]
   if (length(drift)) {
     stop("config has changed since Phase 0 ran: ", paste(drift, collapse = ", "),
          ". Re-run code/01_build_cohort.py rather than analysing stale tables.",
          call. = FALSE)
   }
-  # Code drift is RECORDED, never refused (SG, 2026-10-02): a site may have to
-  # edit _to_mcg_hr to run at all. The digest in each provenance.json is what
-  # the coordinating centre compares.
+  # Code drift is RECORDED, never refused: a site may have to edit _to_mcg_hr to
+  # run at all. The centre compares the digest in each provenance.json.
   if (!is.null(m$code_digest)) {
-    # unname() IS LOAD-BEARING. .sha_string() returns a NAMED character, so
-    # identical() compared the names attribute too and was FALSE for equal
-    # digests -- the NOTE fired on every run of every R script, printing the
-    # same hash twice ("424e4460bc02333e -> 424e4460bc02333e"). A guard that
-    # can never say "no drift" cannot report drift either. Measured and fixed
-    # 2026-10-05. The Python twin at paths.py:243 compares plain strings and
-    # was always correct, so the two mirrors had silently diverged.
+    # unname() is LOAD-BEARING: identical() would otherwise compare the names
+    # attribute too and report drift on equal digests.
     nowc <- unname(code_digests(root)$overall)
     if (!identical(as.character(m$code_digest), nowc)) {
       cat(sprintf("  NOTE code changed since Phase 0 ran (%s -> %s); these outputs mix two code versions\n",

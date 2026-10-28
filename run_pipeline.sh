@@ -47,6 +47,13 @@ if ! "$PY" tests/test_paths.py; then
   echo "ERROR: output locations failed their tests. Nothing was run." >&2
   exit 1
 fi
+# The R side of the same machinery. tests/test_paths.py cannot reach it, and the
+# config-drift guard in paths.R was INERT from the day it was written until
+# 2026-10-28 -- a changed protocol.json never stopped anything.
+if ! Rscript tests/test_require_manifest.R; then
+  echo "ERROR: the config-drift guard failed its tests. Nothing was run." >&2
+  exit 1
+fi
 if ! "$PY" tests/test_build_cohort.py; then
   echo "ERROR: Phase 0 logic failed its tests. Nothing was run." >&2
   exit 1

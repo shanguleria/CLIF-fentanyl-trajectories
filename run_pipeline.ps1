@@ -27,6 +27,9 @@ if ($LASTEXITCODE -ne 0) { Write-Error "the waterfall cache failed its tests. No
 if ($LASTEXITCODE -ne 0) { Write-Error "dose unit conversion failed its tests. Nothing was run." }
 & $py tests/test_paths.py
 if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Nothing was run." }
+# The R side of the same machinery -- see the comment in run_pipeline.sh.
+& Rscript tests/test_require_manifest.R
+if ($LASTEXITCODE -ne 0) { Write-Error "the config-drift guard failed its tests. Nothing was run." }
 & $py tests/test_build_cohort.py
 if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 logic failed its tests. Nothing was run." }
 & $py tests/test_vfd.py
