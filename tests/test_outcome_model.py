@@ -356,20 +356,24 @@ def test_the_unscaled_exposure_names_do_not_ship_as_coefficients():
 # ---- the outcome is modelled at whole-day resolution ------------------------
 
 def test_the_model_outcome_is_the_declared_scale():
-    """protocol.json 0.14.0 made integer days the primary outcome. The number of
-    levels the models actually fitted is written into model_diagnostics.csv, so
-    the declaration can be checked against the fit rather than against the
-    script's intentions."""
-    assert SPEC["outcome_scale"] == "integer_days", SPEC["outcome_scale"]
-    assert SPEC["day_rounding"] == "floor", SPEC["day_rounding"]
+    """0.16.0 made the declared bands the primary and whole days a sensitivity,
+    because the day scale's 22 proportional-odds thresholds are not satisfiable
+    across sites. The number of levels each model actually fitted is written into
+    model_diagnostics.csv, so the declaration is checked against the fit."""
+    assert SPEC["outcome_scale"] == "declared_bands", SPEC["outcome_scale"]
+    assert SPEC["band_values"] == "observed_within_band_mean", SPEC["band_values"]
     diag = {d["model"]: d for d in rows("diagnostics/model_diagnostics.csv")}
     assert "primary" in diag, "no primary model was fitted"
     n_levels = int(float(diag["primary"]["n_outcome_levels"]))
     n_bands = len(SPEC["vfd_ordinal_labels"])
-    assert n_levels > n_bands, (
-        f"the primary fitted {n_levels} outcome levels, which is not more than "
-        f"the {n_bands} descriptive bands -- the day-scale outcome did not reach "
-        f"the model. protocol.json declares outcome_scale = integer_days"
+    assert n_levels == n_bands, (
+        f"the primary fitted {n_levels} outcome levels against the {n_bands} "
+        f"declared bands in vfd_ordinal_breaks"
+    )
+    # The two scale sensitivities must be on their own scales, or they are
+    # duplicates of the primary wearing a sensitivity's name.
+    assert int(float(diag["sensitivity_day_scale"]["n_outcome_levels"])) > n_bands, (
+        "sensitivity_day_scale is not on the day scale"
     )
 
 
@@ -384,9 +388,9 @@ def test_the_four_band_sensitivity_still_reports_the_old_scale():
         "silently dropped the number this study has already reported"
     )
     got = int(float(diag["sensitivity_four_band"]["n_outcome_levels"]))
-    assert got == len(SPEC["vfd_ordinal_labels"]), (
+    assert got == len(SPEC["four_band_labels"]), (
         f"the four_band sensitivity fitted {got} levels, not "
-        f"{len(SPEC['vfd_ordinal_labels'])}"
+        f"{len(SPEC['four_band_labels'])}"
     )
 
 
@@ -458,6 +462,30 @@ def test_the_adjusted_prediction_is_on_the_declared_grid():
         assert r["exposure"] == SPEC["prediction"]["exposure"]
         assert int(float(r["n_draws"])) == SPEC["prediction"]["bootstrap_draws"]
         assert abs(float(r["exposure_share"]) * 100 - float(r["exposure_pct"])) < 1e-9
+
+
+def test_the_band_to_days_mapping_ships_with_the_curve():
+    """The adjusted mean is no longer mapping-free: a band carries no days, so
+    the expectation depends on a value assigned to each band. That assignment is
+    shipped, or the curve cannot be reproduced from the file."""
+    pred = rows("adjusted_prediction.csv")
+    assert pred and "band_values" in pred[0], (
+        "adjusted_prediction.csv does not ship band_values -- the mapping the "
+        "top panel rests on would be invisible"
+    )
+    vals = [float(v) for v in pred[0]["band_values"].split("|")]
+    assert len(vals) == len(SPEC["vfd_ordinal_labels"]), (
+        f"{len(vals)} band values against {len(SPEC['vfd_ordinal_labels'])} bands"
+    )
+    assert vals == sorted(vals) and len(set(vals)) == len(vals), \
+        f"band values are not strictly increasing: {vals}"
+    assert vals[0] == 0, f"the lowest band value is {vals[0]}, not 0"
+    # Every row must carry the same mapping -- it is a property of the fit.
+    assert len({r["band_values"] for r in pred}) == 1, \
+        "the band->days mapping differs between grid points"
+    # And it must agree with the descriptive table's own observed means.
+    tab = rows("vfd_ordinal.csv")
+    assert "mean_vfd_28" in tab[0], "vfd_ordinal.csv does not ship mean_vfd_28"
 
 
 def test_every_predicted_interval_brackets_its_point_estimate():

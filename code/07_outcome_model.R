@@ -84,11 +84,20 @@ stopifnot(
 # One ordinal level per whole day; see _outcome_scale_why and _day_rounding_why.
 OUTCOME_SCALE <- as.character(SPEC$outcome_scale)
 DAY_ROUNDING  <- as.character(SPEC$day_rounding)
+BAND_VALUES   <- as.character(SPEC$band_values)
+CUTS4   <- as.numeric(unlist(SPEC$four_band_breaks))
+LABELS4 <- unlist(SPEC$four_band_labels)
 stopifnot(
-  "this script implements outcome_scale = integer_days only" =
-    identical(OUTCOME_SCALE, "integer_days"),
+  "this script implements outcome_scale = declared_bands only" =
+    identical(OUTCOME_SCALE, "declared_bands"),
   "this script implements day_rounding = floor only" =
-    identical(DAY_ROUNDING, "floor"))
+    identical(DAY_ROUNDING, "floor"),
+  "only band_values = observed_within_band_mean is implemented" =
+    identical(BAND_VALUES, "observed_within_band_mean"),
+  "protocol.json must declare four_band_breaks and four_band_labels" =
+    length(CUTS4) > 1 && length(LABELS4) == length(CUTS4) - 1,
+  "the four-band breaks must be increasing" =
+    !is.unsorted(CUTS4, strictly = TRUE))
 
 # Declared with the UNSCALED exposure names and matched to the model terms below,
 # so the gate cannot drift from SPEC$exposures. Enforced at the end of the script.
@@ -284,30 +293,43 @@ stopifnot("the covariate merge changed the admission count" =
             all(c("age", "sex", "cci", "sofa_baseline") %in% names(d)))
 d$sex <- factor(d$sex)
 
-# vfd_ord is the MODEL outcome: whole days via floor(), observed levels only.
-# vfd_band is the four-band descriptive cut; cut() is right-closed, so the first
+# Three outcome columns. vfd_ord is the PRIMARY: the declared bands. vfd_band4
+# and vfd_day are the two scale sensitivities. cut() is right-closed, so the first
 # break sits BELOW zero to give exactly 0 its own level. Ceiling derived, not typed.
 VFD_CEILING_D <- as.numeric(COV$outcomes$vfd$horizon_days) - LANDMARK_H / 24
 stopifnot("the VFD ceiling must be a positive whole number of days" =
             VFD_CEILING_D > 0 && abs(VFD_CEILING_D - round(VFD_CEILING_D)) < 1e-9)
 
-d$vfd_band <- cut(d$vfd_28, breaks = CUTS, labels = LABELS, ordered_result = TRUE)
+d$vfd_ord   <- cut(d$vfd_28, breaks = CUTS,  labels = LABELS,  ordered_result = TRUE)
+d$vfd_band4 <- cut(d$vfd_28, breaks = CUTS4, labels = LABELS4, ordered_result = TRUE)
 day <- floor(d$vfd_28 + 1e-9)
-d$vfd_ord <- factor(day, levels = sort(unique(day)), ordered = TRUE)
+d$vfd_day <- factor(day, levels = sort(unique(day)), ordered = TRUE)
 stopifnot(
-  "a VFD-28 value fell outside the declared breaks" = !any(is.na(d$vfd_band)),
-  "the descriptive banding must be ordered" = is.ordered(d$vfd_band),
-  "a VFD-28 value produced no integer day" = !any(is.na(d$vfd_ord)),
+  "a VFD-28 value fell outside the declared breaks" = !any(is.na(d$vfd_ord)),
+  "a VFD-28 value fell outside the four-band breaks" = !any(is.na(d$vfd_band4)),
   "the model outcome must be ordered" = is.ordered(d$vfd_ord),
+  "the four-band sensitivity outcome must be ordered" = is.ordered(d$vfd_band4),
+  "a VFD-28 value produced no integer day" = !any(is.na(d$vfd_day)),
   "flooring must not invent a day above the VFD ceiling" =
     max(day) <= VFD_CEILING_D)
 
-vfd_tab <- as.data.frame(table(level = d$vfd_band), stringsAsFactors = FALSE)
+vfd_tab <- as.data.frame(table(level = d$vfd_ord), stringsAsFactors = FALSE)
 names(vfd_tab)[2] <- "n_admissions"
 vfd_tab$denominator <- nrow(d)
 vfd_tab$pct <- round(100 * vfd_tab$n_admissions / nrow(d), 1)
-cat("\nVFD-28 as the DESCRIPTIVE four-band cut (not the model outcome)\n")
+# The band -> days mapping for the adjusted expectation, measured here and
+# SHIPPED, because a band carries no days of its own. See protocol.json
+# band_values. A band with no admissions has no observed mean; the model cannot
+# fit an empty level either, so both are reported rather than imputed.
+vfd_tab$mean_vfd_28 <- round(as.numeric(tapply(d$vfd_28, d$vfd_ord, mean)), 4)
+cat("\nVFD-28 as the PRIMARY ordinal outcome\n")
 print(vfd_tab, row.names = FALSE)
+if (any(vfd_tab$n_admissions < MIN_CELL)) {
+  cat(sprintf("  NOTE %d band(s) below %d admissions. A thin band does not ",
+              sum(vfd_tab$n_admissions < MIN_CELL), MIN_CELL),
+      "destabilise the fit -- proportional-odds thresholds are estimated from\n",
+      "  CUMULATIVE splits, not cell counts -- but it is thin to report.\n", sep = "")
+}
 
 # One row per attainable day. The empty levels are information: a gap at day 1 is
 # the liberation threshold showing through, not missing data.
@@ -316,9 +338,9 @@ day_tab <- data.frame(day = seq.int(0L, as.integer(round(VFD_CEILING_D))),
 day_tab$n_admissions <- as.integer(table(factor(day, levels = day_tab$day)))
 day_tab$denominator <- nrow(d)
 day_tab$pct <- round(100 * day_tab$n_admissions / nrow(d), 2)
-day_tab$is_model_level <- day_tab$day %in% as.numeric(levels(d$vfd_ord))
-cat(sprintf("VFD-28 on the model scale: %d of %d day levels observed (absent: %s)\n",
-            nlevels(d$vfd_ord), nrow(day_tab),
+day_tab$is_model_level <- day_tab$day %in% as.numeric(levels(d$vfd_day))
+cat(sprintf("VFD-28 by whole day: %d of %d day levels observed (absent: %s)\n",
+            nlevels(d$vfd_day), nrow(day_tab),
             paste(day_tab$day[!day_tab$is_model_level], collapse = ", ")))
 
 # Scaling the COLUMN, not the coefficient afterwards, keeps estimate, SE, CI and
@@ -672,11 +694,16 @@ MODELS <- list(
                          "measurably sparser than dosing"), ICU_CAT)),
   # The previously shipped primary on the four-band outcome, so the resolution
   # change is visible: same frame and formula, only the response differs.
-  fit_one(local({ dd <- d; dd$vfd_ord <- dd$vfd_band; dd }), FORM_PRIMARY,
+  fit_one(local({ dd <- d; dd$vfd_ord <- dd$vfd_day; dd }), FORM_PRIMARY,
+          "sensitivity_day_scale",
+          paste0("VFD-28 at whole-day resolution, the primary until 0.16.0 -- ",
+                 "expect not_testable PO terms, which is a refit that will not ",
+                 "fit 22 cut-points, not a violation")),
+  fit_one(local({ dd <- d; dd$vfd_ord <- dd$vfd_band4; dd }), FORM_PRIMARY,
           "sensitivity_four_band",
           paste0("the primary refitted on the four-band cut declared in ",
-                 "vfd_ordinal_breaks -- the outcome scale this study used until ",
-                 "2026-10-28 -- so the resolution change is visible, not silent")),
+                 "four_band_breaks -- the primary from 0.14.0 to 0.15.0 -- so ",
+                 "the resolution change is visible, not silent")),
   fit_one(d, FORM_COVERAGE, "sensitivity_sofa_coverage",
           paste0("primary plus sofa_baseline_n_components; NOT a primary ",
                  "covariate, see protocol.json ",
@@ -893,12 +920,18 @@ stopifnot("the primary model is required for the adjusted prediction" =
 pred_model <- pred_model[[1]]
 pfit   <- pred_model$fit
 pframe <- pred_model$frame
-DVALS  <- as.numeric(levels(pframe$vfd_ord))
+# A BAND CARRIES NO DAYS. The expectation needs a days value per level, and it
+# is the observed within-band mean ON THE MODEL FRAME, so the mapping matches the
+# admissions actually fitted. Shipped in adjusted_prediction.csv.
+DVALS  <- as.numeric(tapply(pframe$vfd_28, pframe$vfd_ord, mean))
 N_ALPHA <- length(pfit$alpha)
 stopifnot(
-  "the outcome levels must be numeric days" = !any(is.na(DVALS)),
+  "every fitted band must have an observed mean to map to" = !any(is.na(DVALS)),
+  "the band values must increase with the band" = !is.unsorted(DVALS, strictly = TRUE),
   "the lowest level must be day 0, or p_zero does not mean VFD = 0" =
     isTRUE(all.equal(DVALS[1], 0)),
+  "a band value fell outside the attainable VFD range" =
+    DVALS[length(DVALS)] <= VFD_CEILING_D,
   "there must be one threshold per gap between levels" =
     N_ALPHA == length(DVALS) - 1)
 
@@ -997,6 +1030,7 @@ adj_rows <- do.call(rbind, lapply(seq_along(PRED_GRID_SHARE), function(i) {
     pct_vfd_zero = round(100 * point[["p_zero"]], 2),
     pct_vfd_zero_lo = round(100 * qp[1], 2),
     pct_vfd_zero_hi = round(100 * qp[2], 2),
+    band_values = paste(sprintf("%.4f", DVALS), collapse = "|"),
     n_admissions = nrow(X), n_draws = PRED_DRAWS, seed = SEED,
     stringsAsFactors = FALSE)
 }))
@@ -1129,11 +1163,13 @@ register_caption(
     "each of %d exposure bins (%s). It is deliberately not plotted on these ",
     "axes: a bin is an interval summarised at its own observed mean and a grid ",
     "value is a point, so drawing them together reads as one series measured ",
-    "two ways. THE TOP PANEL EXISTS ONLY BECAUSE AN OUTCOME LEVEL IS A DAY -- ",
-    "VFD-28 is modelled at whole-day resolution (%d observed levels, 0 to %d), ",
-    "so the expected value needs no representative value assigned to a band; ",
-    "the four-band cut this study previously used would have required one. THE ",
-    "BOTTOM PANEL IS NOT DERIVED AT ALL: it is the model's own first level. AN ",
+    "two ways. THE TOP PANEL RESTS ON A BAND-TO-DAYS MAPPING, because VFD-28 is ",
+    "modelled as %d ordered bands and a band carries no days of its own. Each ",
+    "band is assigned the OBSERVED MEAN VFD-28 of its own members on the model ",
+    "frame (%s days), shipped in adjusted_prediction.csv so the mapping is ",
+    "auditable. It moves the LEVEL of the curve by a fraction of a day, not its ",
+    "shape. THE BOTTOM PANEL NEEDS NO MAPPING: it is the model's own first ",
+    "level, and the lowest band holds exactly-zero and nothing else. AN ",
     "ASSOCIATION, NOT AN EFFECT -- confounding by indication is unaddressed, ",
     "and a frequently titrated patient is a patient someone was worried about."),
     format(nrow(X0), big.mark = ",", trim = TRUE), pred_model$n_units,
@@ -1141,7 +1177,7 @@ register_caption(
     length(PRED_GRID_PCT), format(PRED_DRAWS, big.mark = ",", trim = TRUE),
     format(SEED), as.integer(max(PRED_GRID_PCT)),
     nrow(bin_rows), paste(bin_rows$bin, collapse = ", "),
-    length(DVALS), as.integer(max(DVALS))))
+    length(DVALS), paste(sprintf("%.2f", DVALS), collapse = " / ")))
 
 
 # ---- 11. Write ---------------------------------------------------------------
@@ -1175,7 +1211,7 @@ write_out(gate_rows, "proportional_odds_gate.csv")
 # PHI handoff, one row per admission, so the model can be refitted. Stays PHI-side.
 keep <- c("encounter_block", "n_increase", "n_paired", "n_indicated",
           "n_uptitration", "Pbolus", "Pindicated", "vfd_28", "vfd_ord",
-          "vfd_band",
+          "vfd_band4", "vfd_day",
           "age", "sex", "cci", "sofa_baseline", "sofa_baseline_n_components",
           "location_name", "extubation_event", "died", ".complete")
 write_parquet(d[, intersect(keep, names(d))],
