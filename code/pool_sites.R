@@ -16,6 +16,7 @@ suppressMessages({
 })
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "pooling.R"))
+source(here("code", "utils", "abstract_values.R"))
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
@@ -579,6 +580,11 @@ prov <- list(
   files_written = written)
 write(toJSON(prov, auto_unbox = TRUE, pretty = TRUE),
       file.path(OUT, "pooled_provenance.json"))
+
+# Refresh the abstract source map's value table from what this run just wrote,
+# so the numbers and their addresses cannot drift apart (SG, 2026-10-29: refresh
+# it "with every new pool attempt").
+write_abstract_values(OUT, file.path(here(), "docs", "abstract_source_map.md"), sites)
 
 cat(sprintf("\n%d file(s) written to output/pooled/\n", length(written) + 1L))
 cat("Review before sharing. Site names are REAL in these files; anonymise at ",
