@@ -461,28 +461,46 @@ funnel_labels <- function(x, y, lab, xr, yr) {
   gap <- 1.6 * x_per_mm
   w <- nchar(lab) * CHAR_W_MM * x_per_mm
   h <- LINE_H_MM * y_per_mm
-  flip <- (x + gap + w) > xr[2]
-  out <- data.frame(
-    lab = lab, px = x, py = y,
-    tx = ifelse(flip, x - gap, x + gap), ty = y,
-    hjust = ifelse(flip, 1, 0), stringsAsFactors = FALSE)
-  out$x0 <- ifelse(flip, out$tx - w, out$tx)
-  out$x1 <- ifelse(flip, out$tx, out$tx + w)
+  flip0 <- (x + gap + w) > xr[2]
 
-  # Bounded vertical de-collision: labels whose x extents overlap cannot share a y
-  # band, so the upper one is pushed clear and the leader line keeps it attached. ALL
-  # labels are compared -- a left-flipped and a right-drawn label can still overlap.
+  # Greedy placement, lowest point first. Each label takes the first slot that clears
+  # the panel edge, EVERY other unit's point, and every label already placed: its own
+  # side first, then the other, each tried at 0, +1, -1, +2, ... label heights off the
+  # point. The leader line keeps a displaced label attached. Bounded: n steps a side.
   sep <- h * 1.15
-  i <- order(out$ty)
-  for (a in seq_along(i)[-1]) {
-    cur <- i[a]
-    for (b in seq_len(a - 1)) {
-      prev <- i[b]
-      x_overlap <- !(out$x1[cur] < out$x0[prev] || out$x1[prev] < out$x0[cur])
-      if (x_overlap && (out$ty[cur] - out$ty[prev]) < sep)
-        out$ty[cur] <- out$ty[prev] + sep
-    }
+  n <- length(x)
+  tx <- x0 <- x1 <- ty <- numeric(n)
+  flip <- logical(n)
+  placed <- logical(n)
+  blocked <- function(i, b0, b1, c0, c1) {
+    if (b0 < xr[1] || b1 > xr[2]) return(TRUE)
+    j <- setdiff(seq_len(n), i)
+    if (any(x[j] >= b0 & x[j] <= b1 & y[j] >= c0 & y[j] <= c1)) return(TRUE)
+    p <- which(placed)
+    any(!(x1[p] < b0 | b1 < x0[p] | ty[p] + h / 2 < c0 | c1 < ty[p] - h / 2))
   }
+  for (i in order(y)) {
+    done <- FALSE
+    for (f in c(flip0[i], !flip0[i])) {
+      t <- if (f) x[i] - gap else x[i] + gap
+      b0 <- if (f) t - w[i] else t
+      b1 <- if (f) t else t + w[i]
+      for (k in c(0, rbind(seq_len(n), -seq_len(n)))) {
+        yk <- y[i] + k * sep
+        if (!blocked(i, b0, b1, yk - h / 2, yk + h / 2)) {
+          flip[i] <- f; tx[i] <- t; x0[i] <- b0; x1[i] <- b1; ty[i] <- yk
+          placed[i] <- done <- TRUE
+          break
+        }
+      }
+      if (done) break
+    }
+    if (!done)
+      stop(sprintf("funnel label '%s' has no clear slot on either side", lab[i]))
+  }
+  out <- data.frame(
+    lab = lab, px = x, py = y, tx = tx, ty = ty,
+    hjust = ifelse(flip, 1, 0), x0 = x0, x1 = x1, stringsAsFactors = FALSE)
   out$y0 <- out$ty - h / 2
   out$y1 <- out$ty + h / 2
   # Draw a connector only where the label has actually left its point.
