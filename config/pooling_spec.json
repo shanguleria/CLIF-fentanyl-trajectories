@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.8.0",
+    "definition_version": "0.9.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -8,6 +8,11 @@
     "_heterogeneity_min_k_why": "tau-squared needs roughly 5-10 groups to be stable, and random-effects intervals are anti-conservative below that even with Hartung-Knapp. Below this k the statistics are COMPUTED AND SHIPPED but flagged reportable = FALSE: the numbers are never hidden, only their use is governed, so they can be watched stabilising as sites arrive and the day k reaches the threshold nothing needs building.",
     "site_label_rule": "alphabetical_on_site_name",
     "_site_label_rule_why": "Anonymised labels for audience-facing output: Site 1, Site 2, ... assigned by sorting site_name. Declared so the mapping is REPRODUCIBLE without being published, and stated in every caption. Real institution names appear only on a title page.",
+    "exposure_display_labels": {
+        "Pindicated": "Escalation Indicated by Pain/Agitation Score",
+        "Pbolus": "Bolus Co-Administration"
+    },
+    "_exposure_display_labels_why": "AUDIENCE-FACING NAMES for the two exposures, used as the panel titles on the pooled figures. 'P(indicated)' and 'P(bolus)' are working shorthand: they are not defined in a 400-word abstract and are not standard terms, so a reader meets them cold. The KEY ORDER IS THE DISPLAY ORDER -- Pindicated first, because it is the primary and the significant finding, and a reader should meet it before the null. Keyed on the UNSCALED exposure names so this cannot drift from protocol.json model.outcome_model.exposures; pool_figures.R asserts every declared exposure has a label.",
     "files": {
         "01_cohort/cohort_construction.csv": {
             "method": "sum_counts",

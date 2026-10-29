@@ -41,6 +41,24 @@ CS_GROUP <- SPEC$care_setting_display_groups
 rd <- function(f) utils::read.csv(file.path(POOL, f), stringsAsFactors = FALSE,
                                   check.names = FALSE)
 
+# ---- exposure panel titles ----------------------------------------------------
+# Declared in pooling_spec.json, not derived from the column name: "P(indicated)"
+# is working shorthand that a 400-word abstract never defines. The KEY ORDER is
+# the display order -- the primary, significant exposure is met before the null.
+EXP_LAB <- SPEC$exposure_display_labels
+stopifnot("pooling_spec.json must declare exposure_display_labels" =
+            !is.null(EXP_LAB) && length(EXP_LAB) > 0)
+EXP_ORDER <- unlist(EXP_LAB, use.names = FALSE)
+# Keyed on the UNSCALED exposure names, so a term like Pindicated_per10pp resolves
+# by prefix and the labels cannot drift from protocol.json's exposures list.
+exp_label <- function(term) {
+  bare <- sub("_per[0-9]+pp$", "", as.character(term))
+  miss <- setdiff(unique(bare), names(EXP_LAB))
+  stopifnot("an exposure has no declared display label" = !length(miss))
+  factor(unlist(EXP_LAB[bare], use.names = FALSE), levels = EXP_ORDER)
+}
+
+
 # ---- anonymisation -----------------------------------------------------------
 site_label <- setNames(sprintf("Site %d", seq_along(SITES)), SITES)
 cs_label <- function(v) {
@@ -262,9 +280,12 @@ if (file.exists(file.path(POOL, cf_f))) {
 
     # "Pbolus_per10pp" -> "P(bolus)": the unit is on the x axis, so repeating
     # per10pp in every strip adds ink without information.
-    cf$term_label <- sub("^P", "P(", sub("_per[0-9]+pp$", ")", cf$term))
+    cf$term_label <- exp_label(cf$term)
     het <- cf[cf$is_pool, c("term", "term_label", "k_sites", "Q", "Q_df", "Q_p", "I2_pct",
                             "tau2", "heterogeneity_role")]
+    # Caption order must follow PANEL order, or a reader matching one to the
+    # other reads the panels top-down and the stats in the opposite sequence.
+    het <- het[order(match(as.character(het$term_label), EXP_ORDER)), , drop = FALSE]
     rng <- range(c(cf$or_ci_lo, cf$or_ci_hi), na.rm = TRUE)
 
     p_f5 <- ggplot(cf, aes(x = odds_ratio, y = label)) +
@@ -330,7 +351,7 @@ ed_f <- "07_outcome_model__exposure_distribution.csv"
 if (file.exists(file.path(POOL, ed_f))) {
   ed <- rd(ed_f)
   for (nm in c("bin_lo", "bin_hi", "n", "n_total", "pct")) ed[[nm]] <- as.numeric(ed[[nm]])
-  ed$term_label <- sub("^P", "P(", paste0(ed$exposure, ")"))
+  ed$term_label <- exp_label(ed$exposure)
   pooled_ed <- ed[ed$site == "POOLED", , drop = FALSE]
   sites_ed  <- ed[ed$site != "POOLED", , drop = FALSE]
   sites_ed$label <- site_label[sites_ed$site]
