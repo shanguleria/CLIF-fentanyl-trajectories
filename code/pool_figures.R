@@ -507,6 +507,21 @@ if (file.exists(file.path(POOL, eu_f))) {
     ref <- 100 * sum(d$mean * d$n_admissions) / sum(d$n_admissions)
     zero_pct <- 100 * d$n_at_zero / d$n_admissions
 
+    # A 95% INTERVAL FOR THE MEAN, from the shipped sd and n -- not the IQR.
+    # The point is the mean (the median is 0 at most units), and an interquartile
+    # range brackets the MEDIAN: pairing the two let the bar miss its own point
+    # wherever q3 < mean -- 8 of 44 units on Pbolus -- and collapse to an
+    # invisible zero-length bar wherever q1 = q3 = 0.
+    # CLAMPED to [0, 1]: these are means of per-admission SHARES, so the normal
+    # approximation can put a bound past the limit at small n, and did.
+    d$se <- d$sd / sqrt(d$n_admissions)
+    d$ci_lo <- pmax(0, d$mean - 1.959964 * d$se)
+    d$ci_hi <- pmin(1, d$mean + 1.959964 * d$se)
+    stopifnot("a unit's interval must contain its own point estimate" =
+                all(is.na(d$se) | (d$ci_lo <= d$mean & d$mean <= d$ci_hi)))
+    n_clamped <- sum(!is.na(d$se) & (d$mean - 1.959964 * d$se < 0 |
+                                       d$mean + 1.959964 * d$se > 1))
+
     d <- d[order(d$mean), ]
     d$unit_lab <- factor(d$unit_lab, levels = d$unit_lab)
     # Three groups here (ed / icu / unattributed), so the validated ATS trio
@@ -523,8 +538,8 @@ if (file.exists(file.path(POOL, eu_f))) {
       ggplot(d, aes(100 * mean, unit_lab, colour = grp)) +
         geom_vline(xintercept = ref, colour = ATS_INK, linetype = "22",
                    linewidth = 0.45) +
-        geom_errorbar(aes(xmin = 100 * q1, xmax = 100 * q3), orientation = "y",
-                      width = 0, linewidth = 0.5) +
+        geom_errorbar(aes(xmin = 100 * ci_lo, xmax = 100 * ci_hi),
+                      orientation = "y", width = 0, linewidth = 0.5) +
         geom_point(size = 2.1) +
         scale_colour_manual(values = pal, name = NULL) +
         guides(colour = guide_legend(nrow = 1)) +
@@ -552,10 +567,12 @@ if (file.exists(file.path(POOL, eu_f))) {
         "caterpillar of medians is a column on the floor. The mean also pools ",
         "exactly from n and mean, so the dashed reference line -- the pooled ",
         "mean over the units drawn, %.1f%% -- is the same quantity as the ",
-        "points. BARS ARE THE INTERQUARTILE RANGE, which is the SPREAD OF ",
-        "ADMISSIONS WITHIN THE UNIT and NOT a confidence interval: unlike the ",
-        "unit-variation caterpillars, whose bars ARE bootstrap intervals, ",
-        "overlap here says nothing about precision. Units are coloured by the ",
+        "points. BARS ARE A 95%% INTERVAL FOR THAT MEAN, from the unit's shipped ",
+        "standard deviation and n, so a bar always contains its own point. It is ",
+        "PRECISION, not spread. The interquartile range still ships in the CSV ",
+        "and is deliberately NOT drawn: an IQR brackets the MEDIAN, so it misses ",
+        "the mean wherever the third quartile falls below it -- which happens ",
+        "wherever most admissions pair no bolus at all. %s Units are coloured by the ",
         "mCIDE location_category, which means the same thing at every site ",
         "where location_name is site-local free text. THE SHARE AT EXACTLY ZERO ",
         "is what a violin would have shown and is not drawable from a summary; ",
@@ -565,6 +582,11 @@ if (file.exists(file.path(POOL, eu_f))) {
         "label encodes a rate; n is the unit's admissions. NOT POOLED ACROSS ",
         "SITES -- location_name is site-local, so every row is one site's unit."),
         nrow(d), length(unique(d$site)), ref,
+        if (n_clamped)
+          sprintf(paste0("%d interval(s) are CLAMPED to the [0, 100%%] bound, ",
+                         "because a normal approximation on a mean of shares ",
+                         "can reach past it at small n."), n_clamped) else
+          "No interval needed clamping to the [0, 100%] bound.",
         min(zero_pct, na.rm = TRUE), max(zero_pct, na.rm = TRUE),
         if (n_suppressed)
           sprintf("%d unit(s) are absent: below the site's small-cell floor, so their statistics were blanked at the site and only their counts ship.", n_suppressed)
