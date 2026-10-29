@@ -533,43 +533,69 @@ def test_the_landmark_rule_is_declared_and_honoured():
         "the window-grid reading must no longer select the landmark cohort")
 
 
-def test_the_table1_stratification_is_cohort_membership():
-    """Table 1 is stratified on COHORT MEMBERSHIP as of 2026-10-27, replacing
-    predominant fentanyl intensity. Three things must hold or the columns mean
-    something other than what the text will claim."""
+def test_the_table1_columns_are_nested_scopes_with_no_test():
+    """Table 1 moved to 07 and became nested cohort scopes on 2026-10-28,
+    replacing the Landmark-versus-complement design. The invariants that matter
+    are different now, and one of them is a prohibition."""
     spec = COV.get("table1")
     assert spec is not None, "protocol.json must declare table1"
-    assert spec["stratify_on"] == "cohort_membership"
+    assert spec["stratify_on"] == "cohort_scope", spec["stratify_on"]
 
-    # 1. exactly two MUTUALLY EXCLUSIVE strata. Landmark is a subset of Overall,
-    #    so the complement column is what makes the p-value interpretable at all.
-    assert len(spec["strata"]) == 2, (
-        "a p-value between Overall and its own subset compares a group with "
-        "itself; the complement column is not decoration")
+    # 1. The scopes are declared, nested, and each carries a definition. Overall
+    #    is the whole analytic cohort INCLUDING admissions that never received
+    #    fentanyl, so it is deliberately wider than anything the model sees.
+    scopes = spec["scopes"]
+    assert list(scopes) == ["overall", "landmark_increase", "model"], list(scopes)
+    for k, v in scopes.items():
+        assert v.get("label"), f"scope {k} has no label"
+        assert v.get("_definition"), f"scope {k} has no definition"
 
-    # 2. the test matches the design. Two unordered groups take a rank sum, not
-    #    the Spearman trend the ORDERED dose bands carried until 2026-10-27 --
-    #    run across two groups that is the same number claiming a gradient.
-    assert spec["test_continuous"] == "wilcoxon"
-    assert spec["test_categorical"] == "chi-square"
+    # 2. THE PROHIBITION. Every displayed column is a nested subset of Overall,
+    #    so any test between them compares a group with itself -- which is why
+    #    the old design needed a complement column. A declared test here would
+    #    be applied to an illegal contrast, so there must not be one.
+    assert "test_continuous" not in spec and "test_categorical" not in spec, (
+        "a p-value between a cohort and its own subset compares a group with "
+        "itself; see table1._why_no_p_value"
+    )
+    assert spec.get("_why_no_p_value"), "the absence of a test must be explained"
 
-    build = (REPO / "code" / "02_descriptive_cohort.R").read_text()
-    # The declared name must NAME the operation, not sit beside a hardcoded one.
-    # 02 dispatches on it through T1_TESTS and labels the column from the same
-    # entry, so the test that runs and the test the table claims cannot diverge.
-    assert f'`{spec["test_categorical"]}`' in build or \
-           f'"{spec["test_categorical"]}"' in build, (
-        "02 must dispatch on the declared categorical test name")
-    assert "cor.test" not in build, (
-        "a leftover Spearman call would label a two-group difference as a trend")
-    assert "T1_CONT$label" in build and "T1_CAT$label" in build, (
-        "the `test` column must come from the same entry as the function that "
-        "ran, or a reader cannot tell which question a p-value answered")
+    # 3. Displayed columns must be real scopes, and all three ship regardless so
+    #    changing the display is a config edit rather than a re-run at every site.
+    assert set(spec["display_columns"]) <= set(scopes), spec["display_columns"]
+    assert len(spec["display_columns"]) == 2, spec["display_columns"]
 
-    # 3. every live key reaches the code
+    # 4. Rows that do not exist outside the analysed cohort are named, not
+    #    silently computed over a denominator that does not apply.
+    assert spec["model_scope_only"], "VFD and the exposures must be declared model-only"
+
+    # 5. Every live key reaches the generator, which is 07 now and not 02.
+    build = (REPO / "code" / "07_outcome_model.R").read_text()
+    helpers = (REPO / "code" / "utils" / "table1.R").read_text()
+    src = build + helpers
     live = {k for k in spec if not k.startswith("_")}
-    unread = {k for k in live if k not in build}
+    unread = {k for k in live if k not in src}
     assert not unread, f"table1 keys declared but read by nothing: {sorted(unread)}"
+
+    # 6. 02 must no longer BUILD it, or two scripts would claim one table. It
+    #    must still NAME it under RETIRED, though -- that is what clears a copy
+    #    left by an earlier run instead of letting it be read back as current.
+    #    A blunt "not in the file" check cannot tell writing from retiring.
+    import re
+    old = (REPO / "code" / "02_descriptive_cohort.R").read_text()
+    assert not re.search(r"write_out\([^)]*baseline_characteristics", old), (
+        "02 still writes baseline_characteristics.csv -- 07 is the sole generator"
+    )
+    owned = old[old.index("OWNED <- list("):old.index("RETIRED <- c(")]
+    for f in ("baseline_characteristics.csv", "pooling_categorical.csv"):
+        assert f not in owned, f"02 still claims {f} in OWNED"
+    retired = old[old.index("RETIRED <- c("):]
+    retired = retired[:retired.index("\n)")]
+    for f in ("baseline_characteristics.csv", "pooling_categorical.csv"):
+        assert f in retired, (
+            f"02 must RETIRE {f} so a stale copy from an earlier run is cleared "
+            f"rather than read back as current"
+        )
 
 
 def test_the_tabled_intensity_stratification_has_no_live_consumer():

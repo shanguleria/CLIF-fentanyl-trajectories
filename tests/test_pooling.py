@@ -20,7 +20,11 @@ REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "output" / "final_no_phi"
 # out_final is subdivided by the script that produced each file (2026-09-08).
 CONT = OUT / "02_descriptive" / "pooling_continuous.csv"
-CAT = OUT / "02_descriptive" / "pooling_categorical.csv"
+# Table 1's categorical half MOVED to 07 on 2026-10-28 (protocol 0.17.0), when 07
+# became the sole generator. 02 keeps pooling_continuous.csv for its by_window
+# rows; the baseline rows and all of the categorical rows are 07's now.
+CAT = OUT / "07_outcome_model" / "table1_categorical.csv"
+T1_CONT = OUT / "07_outcome_model" / "table1_continuous.csv"
 # Phases 1 and 2 shared one pooling contract and both were held to it, the second
 # through 06_landmark/ after the 2026-09-24 renumbers. This test caught the stale
 # path the first time and is the reason it is worth keeping accurate.
@@ -79,42 +83,59 @@ def test_sd_is_recoverable_from_the_two_sums():
         assert err < TOL, f"{f.name}: reconstructed sd disagrees by {err}"
 
 
-def test_the_strata_pool_back_to_the_overall_row():
-    """The whole point, demonstrated on real numbers: the Table 1 strata are
-    disjoint and exhaustive, so pooling them as if they were separate sites must
-    reproduce the overall row exactly.
+def test_the_table1_scopes_are_nested_not_a_partition():
+    """Table 1's columns stopped being a partition on 2026-10-28.
 
-    Deliberately agnostic to WHICH strata they are and HOW MANY. Table 1 was
-    stratified on landmark eligibility (two strata) until 2026-09-24 and on
-    predominant fentanyl intensity (four) after; a test that hardcodes the names
-    fails on a change of stratification rather than on a change of arithmetic,
-    which is not what it is for.
+    Until protocol 0.17.0 the strata were Landmark and its COMPLEMENT -- disjoint
+    and exhaustive -- so pooling them as separate sites reproduced the overall row
+    exactly, and this test checked that arithmetic. The scopes are now NESTED
+    (overall > landmark_increase > model), so they do not sum to overall and any
+    consumer that adds them is wrong. The invariant that replaces it: every scope
+    is a subset of overall, so its n never exceeds overall's and its quantiles
+    stay inside overall's observed range is NOT guaranteed -- a subset can be
+    shifted -- but the count relation must hold.
     """
-    d = _skip_if_absent(CONT)
+    f = OUT / "07_outcome_model" / "table1_continuous.csv"
+    d = _skip_if_absent(f)
     if d is None:
         return
-    base = d[d.scope == "baseline"]
     checked = 0
-    for var, g in base.groupby("variable"):
+    for var, g in d.groupby("variable"):
         rows = {r.stratum: r for r in g.itertuples()}
-        o = rows.pop("overall", None)
-        parts = list(rows.values())
-        if o is None or len(parts) < 2:
-            continue
-        if any(math.isnan(x.sum) or math.isnan(x.sum_sq) for x in parts) \
-                or math.isnan(o.mean):
-            continue
-        n = sum(x.n for x in parts)
-        if n == 0 or n != o.n:
-            # a stratum suppressed for a small cell cannot be pooled back
-            continue
-        tot = sum(x.sum for x in parts)
-        assert abs(tot / n - o.mean) < TOL, f"{var}: pooled mean differs"
-        q = sum(x.sum_sq for x in parts)
-        pooled_sd = math.sqrt(max((q - tot ** 2 / n) / (n - 1), 0.0))
-        assert abs(pooled_sd - o.sd) < TOL, f"{var}: pooled sd differs"
-        checked += 1
-    assert checked >= 5, f"only {checked} variables were poolable"
+        o = rows.get("overall")
+        if o is None:
+            continue          # a model-only row has no overall by design
+        for name, r in rows.items():
+            if name == "overall":
+                continue
+            assert r.n <= o.n, (
+                f"{var}/{name} has n={r.n} against overall n={o.n}; the scopes "
+                f"are nested, so a subset cannot be larger than its superset"
+            )
+            checked += 1
+    assert checked >= 3, f"only {checked} nested-scope comparisons were made"
+
+
+def test_the_table1_scopes_do_not_sum_to_overall():
+    """The converse, stated as a test so nobody re-adds the old assumption.
+
+    If a future change made the scopes disjoint again this would fail loudly,
+    which is the point: summing nested scopes double-counts every admission in
+    the narrower one.
+    """
+    f = OUT / "07_outcome_model" / "table1_continuous.csv"
+    d = _skip_if_absent(f)
+    if d is None:
+        return
+    g = d[d.variable == "Age, years"]
+    rows = {r.stratum: r for r in g.itertuples()}
+    if "overall" not in rows or len(rows) < 3:
+        return
+    parts = sum(r.n for k, r in rows.items() if k != "overall")
+    assert parts != rows["overall"].n, (
+        "the scopes summed to overall, which means they are disjoint again -- "
+        "if that is intended, restore the partition arithmetic test"
+    )
 
 
 def test_small_cells_are_suppressed_not_published():
@@ -205,7 +226,7 @@ def test_the_pooling_spec_claims_every_csv_the_pipeline_writes():
         print("  SKIP  no output/final_no_phi -- run the pipeline")
         return
     on_disk = {f.relative_to(OUT).as_posix() for f in OUT.rglob("*.csv")}
-    # Phase 0's strobe.csv and the tabled scripts' leftovers are not pooled.
+    # Phase 0's cohort_construction.csv and the tabled scripts' leftovers are not pooled.
     labels = set(json.loads(SPEC.read_text()).get("not_poolable_columns", []))
     unclaimed = sorted(on_disk - claimed)
     assert not unclaimed, (

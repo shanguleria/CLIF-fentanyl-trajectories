@@ -29,6 +29,8 @@ for (p in pkgs) {
 
 source(here("code", "utils", "paths.R"))
 source(here("code", "utils", "figures.R"))
+source(here("code", "utils", "pooling.R"))
+source(here("code", "utils", "table1.R"))
 
 
 # ---- 2. Config ---------------------------------------------------------------
@@ -161,6 +163,7 @@ OWNED <- list(
   # Reported directly.
   phase = c("exposure_distribution.csv", "exposure_by_unit.csv",
             "exposure_correlation.csv", "vfd_ordinal.csv",
+            "table1.csv", "table1_continuous.csv", "table1_categorical.csv",
             "vfd_day_distribution.csv", "adjusted_prediction.csv",
             "unadjusted_bins.csv",
             "model_coefficients.csv", "model_covariance.csv", "strobe.csv",
@@ -206,7 +209,9 @@ tte <- as.data.frame(read_parquet(
 base <- as.data.frame(read_parquet(
   file.path(dirs$out_phi, "trajectory_long.parquet"),
   col_select = c("encounter_block", "window_idx", "age", "sex", "cci",
-                 "sofa_baseline", "sofa_baseline_n_components")))
+                 "sofa_baseline", "sofa_baseline_n_components",
+                 # Table 1 only -- 07 is its sole generator as of 0.17.0.
+                 "race", "first_imv_episode_hours")))
 base <- base[base$window_idx == 0, setdiff(names(base), "window_idx")]
 stopifnot("trajectory_long must carry sofa_baseline -- re-run Phase 0" =
             "sofa_baseline" %in% names(base),
@@ -250,6 +255,11 @@ d <- merge(ex, tte[tte$landmark_eligible %in% TRUE, ], by = "encounter_block")
 flow(sprintf("Landmark cohort (VFD-28 defined, on IMV at %dh)", LANDMARK_H),
      nrow(d), "not in the landmark cohort")
 
+# Table 1's middle scope, captured BEFORE the up-titration restriction: this is
+# "on IMV at 72h with at least one fentanyl start or increase", which is NOT the
+# frame the regression fits. Covariates are merged on here rather than held by
+# reference, because the columns 07 adds later would not reach a stale copy.
+d_landmark <- merge(d, base, by = "encounter_block", all.x = TRUE)
 d <- d[d$n_uptitration >= 1, ]
 flow("With >= 1 UPTITRATION (not initiation alone)", nrow(d),
      "initiation only -- no titration decision to describe")
@@ -1180,6 +1190,169 @@ register_caption(
     length(DVALS), paste(sprintf("%.2f", DVALS), collapse = " / ")))
 
 
+# ---- 10d. Table 1 -------------------------------------------------------------
+# 07 is the SOLE GENERATOR (protocol.json table1._role). It reads trajectory_long
+# window 0 unrestricted, so it can describe the whole cohort, and it is the only
+# script holding the exposures and the fitted model frame -- so the table and the
+# model cannot end up describing different populations.
+#
+# THREE NESTED SCOPES ARE EXPORTED, two are displayed. Exporting all three makes
+# the displayed pair a config edit rather than another re-run at every site.
+T1 <- COV$table1
+stopifnot(
+  "protocol.json must declare table1" = !is.null(T1),
+  "Table 1 must be stratified on cohort_scope" =
+    identical(T1$stratify_on, "cohort_scope"),
+  "table1 must declare no test -- every column is a subset of Overall" =
+    is.null(T1$test_continuous) && is.null(T1$test_categorical))
+T1_SCOPES <- names(T1$scopes)
+T1_SHOW   <- unlist(T1$display_columns)
+T1_MODEL_ONLY <- unlist(T1$model_scope_only)
+T1_RACE   <- unlist(T1$race_levels)
+RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
+stopifnot(
+  "display_columns must name declared scopes" = all(T1_SHOW %in% T1_SCOPES),
+  "protocol.json must declare race.reporting_collapse" = !is.null(RACE_COLLAPSE))
+
+# The scope frames. `base` is window 0 for EVERY block, so it is the descriptive
+# denominator including admissions that never received fentanyl; `d_landmark` is
+# the cohort captured before the up-titration restriction; the model frame is the
+# one the primary model actually fitted, after complete-case and the unit
+# collapse. Their sizes differ by about a quarter and that is the point.
+t1_frames <- list(
+  overall = base,
+  landmark_increase = d_landmark,
+  model = pred_model$frame)
+t1_n <- lapply(t1_frames, nrow)
+cat("\nTable 1 scopes\n")
+for (sc in T1_SCOPES)
+  cat(sprintf("  %-20s %-46s %7s\n", sc, T1$scopes[[sc]]$label,
+              format(t1_n[[sc]], big.mark = ",")))
+
+# A column of values per scope. A variable absent from a frame yields NULL, which
+# the builders render as an empty cell rather than a number over the wrong
+# denominator -- that is how the model-only rows stay out of Overall.
+t1_vals <- function(col, scopes = T1_SCOPES) {
+  out <- lapply(scopes, function(sc) {
+    fr <- t1_frames[[sc]]
+    if (is.null(fr) || !(col %in% names(fr))) NULL else fr[[col]]
+  })
+  names(out) <- scopes
+  Filter(Negate(is.null), out)
+}
+t1_scopes_for <- function(label)
+  if (label %in% T1_MODEL_ONLY) "model" else T1_SCOPES
+
+t1_cont <- function(label, col, unit, digits = 1) {
+  t1_continuous(label, t1_vals(col, t1_scopes_for(label)), unit, digits,
+                MIN_CELL, T1_SHOW)
+}
+
+T1_PARTS <- list(
+  t1_cont("Age, years", "age", "years"),
+  t1_categorical("Sex", t1_vals("sex"), min_cell = MIN_CELL,
+                 scope_order = T1_SHOW, levels_shown = c("Female", "Male")),
+  # Race reports the DECLARED levels; a level present in the data but not listed
+  # still ships in the tidy export, so no pooled count is lost to a display choice.
+  t1_categorical("Race", t1_vals("race"), collapse = RACE_COLLAPSE,
+                 min_cell = MIN_CELL, scope_order = T1_SHOW,
+                 levels_shown = T1_RACE),
+  t1_cont("Charlson Comorbidity Index", "cci", "index", 0),
+  t1_cont("SOFA at baseline (24h pre-intubation)", "sofa_baseline", "points", 0),
+  t1_cont("First IMV episode, hours", "first_imv_episode_hours", "hours", 1),
+  t1_cont("Ventilator-free days to day 28", "vfd_28", "days", 1),
+  t1_cont("P(bolus)", "Pbolus", "share", 3),
+  t1_cont("P(indicated)", "Pindicated", "share", 3))
+
+t1_out <- t1_assemble(T1_PARTS, T1_SHOW,
+                      setNames(lapply(T1_SHOW, function(sc) T1$scopes[[sc]]$label), T1_SHOW),
+                      t1_n[T1_SHOW])
+table1 <- t1_out$display
+table1_continuous <- t1_out$continuous
+table1_categorical <- t1_out$categorical
+stopifnot(
+  "Table 1 produced no rows" = nrow(table1) > 0,
+  "the tidy continuous export must cover every displayed scope" =
+    all(T1_SHOW %in% table1_continuous$stratum),
+  "a model-only row must not carry an overall value" =
+    !any(table1_continuous$stratum == "overall" &
+         table1_continuous$variable %in% T1_MODEL_ONLY))
+cat(sprintf("Table 1: %d display row(s), %d tidy continuous, %d tidy categorical\n",
+            nrow(table1), nrow(table1_continuous), nrow(table1_categorical)))
+
+
+# THE STROBE. 07 ships it because it is the only script that can: the funnel ends
+# at the model frame, and the restrictions after the analytic cohort are 05's
+# titration events and 07's own complete-case and unit collapse, none of which
+# exist when 01 runs. 01's own funnel is cohort_construction.csv -- extract to
+# analytic cohort -- and is read here rather than re-derived.
+#
+# TWO BRANCHES, NOT ONE CHAIN, because there are two denominators. The practice
+# pattern results are per-escalation over every admission that escalated at all;
+# the model is over the complete-case frame. Collapsing them into one column
+# would imply both describe the same population.
+cc_f <- file.path(dirs$out_final, "01_cohort", "cohort_construction.csv")
+stopifnot("01_cohort/cohort_construction.csv is missing -- re-run Phase 0" =
+            file.exists(cc_f))
+cc <- utils::read.csv(cc_f, stringsAsFactors = FALSE)
+stopifnot("cohort_construction.csv must carry the exclusion-style columns" =
+            all(c("step", "n_before", "n_excluded", "reason", "n_after") %in% names(cc)))
+
+# The trunk's last row is the analytic cohort, and it must be the denominator
+# everything below descends from. A mismatch means 07 is reading a funnel from a
+# different Phase 0 run than the tables it analysed.
+analytic <- suppressWarnings(as.numeric(
+  cc$n_after[grepl("ANALYTIC COHORT", cc$step, fixed = TRUE)]))
+stopifnot("cohort_construction.csv names no ANALYTIC COHORT row" =
+            length(analytic) == 1 && is.finite(analytic))
+
+trunk <- data.frame(branch = "trunk", cc[, c("step", "n_before", "n_excluded",
+                                             "reason", "n_after")],
+                    stringsAsFactors = FALSE)
+# Drop 01's own landmark row from the trunk: it applies the landmark to the WHOLE
+# cohort, whereas the model branch below applies it after the escalation
+# restriction. Keeping both would show two different numbers for one step.
+trunk <- trunk[!grepl("LANDMARK COHORT", trunk$step, fixed = TRUE), , drop = FALSE]
+
+# FLOW holds 07's own steps as (step, n, dropped_because). Convert to the
+# exclusion shape so one schema describes the whole funnel: consecutive retained
+# counts give the exclusions.
+f07 <- do.call(rbind, FLOW)
+to_excl <- function(df, first_before, branch) {
+  before <- c(first_before, df$n[-nrow(df)])
+  data.frame(branch = branch, step = df$step, n_before = before,
+             n_excluded = before - df$n, reason = df$dropped_because,
+             n_after = df$n, stringsAsFactors = FALSE)
+}
+# The practice-pattern denominator is 07's first step: every admission that
+# escalated at all. It is a BRANCH off the analytic cohort, not a step toward
+# the model, which is why it is labelled and not chained.
+descr <- to_excl(f07[1, , drop = FALSE], analytic, "practice_patterns")
+descr$reason[1] <- "no fentanyl initiation or up-titration in the exposure window"
+model <- to_excl(f07[-1, , drop = FALSE], f07$n[1], "model")
+# The frame the model actually FITTED, after the unit collapse -- one more
+# admission than the complete-case count at UCMC, and it is the number every
+# coefficient is computed on.
+model <- rbind(model, data.frame(
+  branch = "model", step = "ANALYSED IN THE MODEL",
+  n_before = f07$n[nrow(f07)], n_excluded = f07$n[nrow(f07)] - pred_model$n,
+  reason = sprintf("in a unit below min_admissions_per_unit = %d", MIN_UNIT_N),
+  n_after = pred_model$n, stringsAsFactors = FALSE))
+
+strobe <- rbind(trunk, descr, model)
+stopifnot(
+  "the practice-pattern branch must descend from the analytic cohort" =
+    descr$n_before[1] == analytic,
+  "the model branch must descend from the escalation cohort" =
+    model$n_before[1] == f07$n[1],
+  "every step must retain no more than it started with" =
+    all(strobe$n_after <= strobe$n_before | is.na(strobe$n_before)),
+  "the fitted frame must be the last row" =
+    strobe$n_after[nrow(strobe)] == pred_model$n)
+cat(sprintf("\nSTROBE: %d trunk + %d practice-pattern + %d model row(s)\n",
+            nrow(trunk), nrow(descr), nrow(model)))
+print(strobe[, c("branch", "step", "n_after")], row.names = FALSE)
+
 # ---- 11. Write ---------------------------------------------------------------
 
 write_out <- function(x, name) {
@@ -1199,6 +1372,9 @@ write_out(dist_rows, "exposure_distribution.csv")
 write_out(by_unit, "exposure_by_unit.csv")
 write_out(corr, "exposure_correlation.csv")
 write_out(vfd_tab, "vfd_ordinal.csv")
+write_out(table1, "table1.csv")
+write_out(table1_continuous, "table1_continuous.csv")
+write_out(table1_categorical, "table1_categorical.csv")
 write_out(day_tab, "vfd_day_distribution.csv")
 write_out(adj_rows, "adjusted_prediction.csv")
 write_out(bin_rows, "unadjusted_bins.csv")
@@ -1219,8 +1395,7 @@ write_parquet(d[, intersect(keep, names(d))],
 cat(sprintf("written: outcome_model_frame.parquet (PHI -- %s admissions)\n",
             format(nrow(d), big.mark = ",")))
 
-write.csv(do.call(rbind, FLOW), file.path(dirs$phase, "strobe.csv"),
-          row.names = FALSE)
+write.csv(strobe, file.path(dirs$phase, "strobe.csv"), row.names = FALSE)
 cat("written: strobe.csv\n")
 
 write_json(prov, file.path(dirs$phase, "provenance.json"),

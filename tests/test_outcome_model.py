@@ -183,21 +183,65 @@ def test_every_shipped_model_converged():
 
 
 def test_the_primary_model_n_reconciles_with_strobe():
-    """STROBE ends at the complete-case count; the model then drops admissions in
-    units below min_admissions_per_unit. The difference must be exactly that drop
-    -- an unexplained gap between a published flow and a model n is the
-    denominator trap this repo has already hit three times."""
+    """The published flow and the fitted model n must agree, and since 2026-10-28
+    the flow states the unit drop as its own row rather than ending at the
+    complete-case count -- so this checks the row AND the diagnostic, which used
+    to be only arithmetic on the last row.
+
+    An unexplained gap between a published flow and a model n is the denominator
+    trap this repo has already hit three times.
+    """
     flow = rows("strobe.csv")
+    assert "branch" in flow[0], "strobe.csv lost its branch column"
+    model_rows = [r for r in flow if r["branch"] == "model"]
+    assert model_rows, "strobe.csv has no model branch"
+    last = model_rows[-1]
+    assert last["step"] == "ANALYSED IN THE MODEL", last["step"]
+
     primary = [d for d in rows("diagnostics/model_diagnostics.csv")
                if d["model"] == "primary"]
     assert primary, "no primary model in model_diagnostics.csv"
     p = primary[0]
-    complete_case = int(flow[-1]["n"])
-    dropped = int(p["n_dropped_small_unit"])
-    assert complete_case - dropped == int(p["n_admissions"]), (
-        f"STROBE ends at {complete_case} and the primary model fits "
-        f"{p['n_admissions']}, which {dropped} unit-drop(s) do not explain"
+
+    # 1. The published end of the funnel IS the fitted n -- no arithmetic.
+    assert int(last["n_after"]) == int(p["n_admissions"]), (
+        f"STROBE ends at {last['n_after']} but the primary model fits "
+        f"{p['n_admissions']}"
     )
+    # 2. And the drop it publishes is the one the model reported.
+    dropped = int(p["n_dropped_small_unit"])
+    assert int(last["n_excluded"]) == dropped, (
+        f"STROBE publishes {last['n_excluded']} unit-drop(s), the model reports "
+        f"{dropped}"
+    )
+    # 3. Every branch chains internally; across branches it must not be summed.
+    for br in {r["branch"] for r in flow}:
+        rs = [r for r in flow if r["branch"] == br]
+        for a, b in zip(rs, rs[1:]):
+            assert int(a["n_after"]) == int(b["n_before"]), (
+                f"{br}: {a['step']} ends at {a['n_after']} but {b['step']} "
+                f"starts from {b['n_before']}"
+            )
+
+
+def test_the_strobe_branches_descend_from_the_analytic_cohort():
+    """Both branches start from the trunk's analytic cohort, not from each other.
+    If they ever chained, one of the two denominators would be wrong -- the
+    practice-pattern rates are over every admission that escalated, the model is
+    over the complete-case frame."""
+    flow = rows("strobe.csv")
+    trunk = [r for r in flow if r["branch"] == "trunk"]
+    analytic = int(trunk[-1]["n_after"])
+    assert "ANALYTIC COHORT" in trunk[-1]["step"], trunk[-1]["step"]
+    starts = {br: [r for r in flow if r["branch"] == br][0]
+              for br in ("practice_patterns", "model")}
+    assert int(starts["practice_patterns"]["n_before"]) == analytic, (
+        "the practice-pattern branch must descend from the analytic cohort"
+    )
+    # The model branch descends from the escalation cohort, which is itself the
+    # practice-pattern branch's end -- that is the one legitimate link.
+    assert int(starts["model"]["n_before"]) == \
+        int(starts["practice_patterns"]["n_after"])
 
 
 def test_the_unit_fixed_effects_are_not_poolable():

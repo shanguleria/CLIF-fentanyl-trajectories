@@ -96,7 +96,12 @@ OWNED = {
                 "titration_rate_events.parquet", "titration_bolus_events.parquet",
                 "assessment_events.parquet"],
     "out_final": ["manifest.json"],
-    "phase": ["strobe.csv", "strobe.txt", "strobe.png",
+    # Renamed from strobe.* on 2026-10-28: 07 now ships the STROBE, the whole
+    # funnel including the analysis branch. This file is the COHORT CONSTRUCTION
+    # record -- extract to analytic cohort -- and two files called strobe.csv in
+    # one bundle was the ambiguity worth removing.
+    "phase": ["cohort_construction.csv", "cohort_construction.txt",
+              "cohort_construction.png",
               "provenance.json", "exemplar_selection.csv"],
     "diagnostics": ["missingness.csv", "missingness_patterns.csv",
                     "diagnostics.csv"],
@@ -121,6 +126,10 @@ RETIRED_OUTPUTS = [
     f"output/intermediate_phi/{'icu_'}intervals.parquet",
     # the phase0_ prefix itself
     f"output/final_no_phi/{_P0}manifest.json",
+    # Plain names retired 2026-10-28 when the funnel became cohort_construction.*
+    "output/final_no_phi/01_cohort/strobe.csv",
+    "output/final_no_phi/01_cohort/strobe.txt",
+    "output/final_no_phi/01_cohort/strobe.png",
     f"output/final_no_phi/01_cohort/{_P0}strobe.csv",
     f"output/final_no_phi/01_cohort/{_P0}strobe.txt",
     f"output/final_no_phi/01_cohort/{_P0}strobe.png",
@@ -2526,9 +2535,9 @@ def main() -> None:
     pd.DataFrame(STROBE, columns=["step", "n"]).to_csv(
         diag / "diagnostics.csv", index=False)
 
-    pd.DataFrame(FLOW).to_csv(dirs["phase"] / "strobe.csv", index=False)
-    (dirs["phase"] / "strobe.txt").write_text(render_text(FLOW) + "\n")
-    render_png(FLOW, dirs["phase"] / "strobe.png",
+    pd.DataFrame(FLOW).to_csv(dirs["phase"] / "cohort_construction.csv", index=False)
+    (dirs["phase"] / "cohort_construction.txt").write_text(render_text(FLOW) + "\n")
+    render_png(FLOW, dirs["phase"] / "cohort_construction.png",
                title=f"Phase 0 cohort flow -- {CONFIG['site_name']}")
     print()
     print(render_text(FLOW))

@@ -508,3 +508,60 @@ pool_covariance_meta <- function(d, spec, rel, coef_pooled) {
   cat(sprintf("  %s: pooled %d covariance cell(s)\n", rel, nrow(out)))
   out
 }
+
+# ---- Aggregate-data meta-analysis of medians (McGrath 2019) -------------------
+# references/Statistics in Medicine - 2018 - McGrath - One-sample aggregate data
+# meta-analysis of medians.pdf, section 2.2. Hand-rolled rather than taking
+# metamedian + Hmisc: this is fifteen lines of arithmetic against a definition in
+# print, and the pinned stack is the reproducibility guarantee.
+
+# Weighted quantile: McGrath's step definition with linear interpolation between
+# consecutive order statistics, on MIDPOINT plotting positions -- the cumulative
+# weight BEFORE x_i plus half of x_i's own weight.
+#
+# The midpoint is load-bearing, not a refinement. Interpolating on the plain
+# cumulative weight puts three equally weighted studies at 1.5 instead of the
+# middle value: cw = (1/3, 2/3, 1), q = 0.5 lands a third of the way between the
+# first and second. With midpoints the positions are (1/6, 1/2, 5/6), q = 0.5
+# sits exactly on the second, and two equally weighted studies interpolate to
+# their midpoint -- both matching the unweighted median they reduce to.
+weighted_quantile <- function(x, w, q) {
+  ok <- is.finite(x) & is.finite(w) & w > 0
+  x <- x[ok]; w <- w[ok]
+  if (!length(x)) return(NA_real_)
+  if (length(x) == 1L) return(x[1])
+  o <- order(x); x <- x[o]; w <- w[o] / sum(w[o])
+  pos <- cumsum(w) - w / 2
+  if (q <= pos[1]) return(x[1])
+  if (q >= pos[length(pos)]) return(x[length(x)])
+  j <- which(pos >= q)[1]
+  t <- (q - pos[j - 1]) / (pos[j] - pos[j - 1])
+  x[j - 1] + t * (x[j] - x[j - 1])
+}
+
+# Weighted median of medians, weights proportional to each study's n.
+# THE INTERVAL DEGENERATES AT SMALL k AND THAT IS NOT A BUG: the limits are the
+# 1/2 -+ min(1/2, z/(2*sqrt(k))) weighted quantiles, and z/(2*sqrt(k)) exceeds
+# 1/2 until k >= 5 -- so at k = 2, 3 or 4 the interval IS (essentially) the full
+# range of the study medians. Report it as a range at that k rather than as an
+# interval that narrows with evidence. McGrath's own simulations used k = 15 or
+# 50, so three sites is outside the range the method was evaluated on.
+wm_of_medians <- function(medians, n, conf = 0.95) {
+  ok <- is.finite(medians) & is.finite(n) & n > 0
+  m <- medians[ok]; nn <- n[ok]
+  k <- length(m)
+  if (!k) return(list(estimate = NA_real_, lo = NA_real_, hi = NA_real_,
+                      k = 0L, min = NA_real_, max = NA_real_, degenerate = NA))
+  z <- stats::qnorm(1 - (1 - conf) / 2)
+  half <- min(0.5, z / (2 * sqrt(k)))
+  lo <- weighted_quantile(m, nn, 0.5 - half)
+  hi <- weighted_quantile(m, nn, 0.5 + half)
+  list(estimate = weighted_quantile(m, nn, 0.5), lo = lo, hi = hi,
+       k = k, min = min(m), max = max(m),
+       # MEASURED, not predicted from k: with midpoint positions the interval
+       # stays pinned to the range for longer than the half < 1/2 condition
+       # suggests, because the requested quantile can still fall outside the
+       # first and last plotting positions.
+       degenerate = isTRUE(all.equal(lo, min(m))) &&
+                    isTRUE(all.equal(hi, max(m))))
+}

@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.6.0",
+    "definition_version": "0.8.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -9,7 +9,7 @@
     "site_label_rule": "alphabetical_on_site_name",
     "_site_label_rule_why": "Anonymised labels for audience-facing output: Site 1, Site 2, ... assigned by sorting site_name. Declared so the mapping is REPRODUCIBLE without being published, and stated in every caption. Real institution names appear only on a title page.",
     "files": {
-        "01_cohort/strobe.csv": {
+        "01_cohort/cohort_construction.csv": {
             "method": "sum_counts",
             "grain": "episode",
             "keys": [
@@ -20,7 +20,9 @@
                 "n_excluded",
                 "n_before"
             ],
-            "_why": "Section 8.4: sum counts per step. Identical steps are guaranteed by the shared code, and protocol agreement is asserted before pooling, so the steps cannot differ."
+            "_why": "Cohort CONSTRUCTION: the CLIF extract down to the analytic cohort. Renamed from strobe.csv on 2026-10-28, when 07 took over the STROBE -- two files called strobe.csv in one bundle was ambiguous, and this one only covers the trunk. Counts sum across sites.",
+            "_title": "Cohort construction",
+            "_caveat": "The landmark row here applies the landmark to the WHOLE analytic cohort. 07's STROBE applies it AFTER the escalation restriction, so the two report different numbers for what reads like the same step -- which is why 07 drops this row from its trunk rather than showing both."
         },
         "01_cohort/diagnostics/diagnostics.csv": {
             "method": "sum_counts",
@@ -80,29 +82,6 @@
             ],
             "_why": "Section 8.4: exact pooled mean and SD from n, sum and sum_sq. This is why sum_sq ships at all -- it assumes nothing about equal variances. Medians travel alongside and are NOT pooled; the histogram carries the pooled distribution."
         },
-        "02_descriptive/pooling_categorical.csv": {
-            "method": "sum_counts",
-            "grain": "episode",
-            "keys": [
-                "variable",
-                "level",
-                "stratum"
-            ],
-            "numerators": [
-                "n"
-            ],
-            "denominator": "denominator",
-            "_why": "Section 8.3 episode-level: one row per episode, so the interval pools honestly. Sum both and recompute the percentage; never average the percentages.",
-            "percents": {
-                "pct": "n"
-            },
-            "_order": 80,
-            "_title": "Table 1, categorical",
-            "_grain": "episode -- one row per episode, so intervals pool honestly",
-            "_numerator": "episodes with that level in that stratum (overall | Landmark | Not landmark)",
-            "_denominator": "episodes in that stratum. Landmark is a SUBSET of overall, so the three strata do not sum to the cohort and must never be added together.",
-            "_caveat": "Table 1 p-values are deliberately dropped from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n."
-        },
         "02_descriptive/pooling_histograms.csv": {
             "method": "sum_bins",
             "grain": "distribution",
@@ -129,11 +108,6 @@
             "_denominator": "n_total -- OBSERVED VALUES of that variable, not windows",
             "_caveat": "A median has no closed form across sites, so skewed and zero-inflated variables ship a histogram on config-declared absolute bins. Pair it with missingness.csv, never with a window count. Pooled quantiles are approximate to within a bin width, except where exact zero has its own bin."
         },
-        "02_descriptive/baseline_characteristics.csv": {
-            "method": "per_site_only",
-            "grain": "episode",
-            "_why": "Display strings with embedded Ns and a p-value column. The POOLABLE form of the same content is pooling_categorical.csv and pooling_continuous.csv. Section 8.4 also drops Table 1 p-values from the pooled table: a null is not strengthened by pooling and a pooled p tracks total n. STRATA CHANGED on 2026-10-27 from predominant dose band to COHORT MEMBERSHIP -- the columns are now Overall, Landmark and Not landmark, so `stratum` in the two poolable files takes those values instead of band labels. A bundle mixing the two vintages pools into strata that do not exist at every site; coordinate the tag rather than reconciling afterwards."
-        },
         "02_descriptive/retention.csv": {
             "method": "sum_counts",
             "grain": "episode_window",
@@ -144,7 +118,7 @@
                 "n_ventilated",
                 "n_alive_admitted"
             ],
-            "_why": "Section 8.3: the denominator is the anchor cohort FIXED at every window, so it comes from strobe.csv rather than from this file. Clustered within episodes.",
+            "_why": "Section 8.3: the denominator is the anchor cohort FIXED at every window, so it comes from cohort_construction.csv rather than from this file. Clustered within episodes.",
             "percents": {
                 "pct_of_anchor_cohort": "n_ventilated"
             },
@@ -231,7 +205,7 @@
             "numerators": [
                 "n"
             ],
-            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from strobe.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
+            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from cohort_construction.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
             "percents": {
                 "pct": "n"
             },
@@ -285,7 +259,7 @@
             "numerators": [
                 "n"
             ],
-            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from strobe.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
+            "_why": "Section 8.3: denominator is ALL anchor episodes with terminal states carried forward, so it is fixed and comes from cohort_construction.csv. Rows sum to 100% within a window -- verified -- which is also why a suppressed cell here would break the total.",
             "percents": {
                 "pct": "n"
             },
@@ -776,6 +750,61 @@
             },
             "_weighted_means_why": "mean_vfd_28 is the band's observed mean VFD-28, the value the adjusted expectation maps each band through (protocol.json band_values). It pools EXACTLY as sum(n_i * mean_i) / sum(n_i), because mean * n reconstructs the sum -- this is not an average of averages. The pooled mapping is what a centre-side curve would have to use; each site's own adjusted_prediction.csv keeps its own, which is why that file is heterogeneity_source."
         },
+        "07_outcome_model/table1.csv": {
+            "method": "per_site_only",
+            "grain": "admission",
+            "keys": [
+                "characteristic"
+            ],
+            "_why": "The FORMATTED Table 1, one column per displayed cohort scope with that scope's own N in the header. Per-site by construction: the cells are strings like '60.0 (46.0, 70.0)' and the N is in the column NAME, so there is nothing here a pooling engine can combine. The poolable twin is table1_continuous.csv and table1_categorical.csv, built by the same calls from the same numbers -- see code/utils/table1.R, where each builder returns both halves at once precisely so a table and its pooling export cannot drift.",
+            "_order": 23,
+            "_title": "Baseline characteristics (per site)",
+            "_grain": "admission",
+            "_numerator": "n/a -- a formatted display table",
+            "_denominator": "in each column header",
+            "_caveat": "NO P-VALUE, and there must not be one: every displayed column is a nested subset of Overall, so a test between them compares a group with itself. See protocol.json table1._why_no_p_value. Who was excluded is answered by 07_outcome_model/strobe.csv."
+        },
+        "07_outcome_model/table1_continuous.csv": {
+            "method": "median_of_medians",
+            "grain": "admission",
+            "keys": [
+                "variable",
+                "stratum"
+            ],
+            "median": "median",
+            "weight": "n",
+            "_why": "The poolable half of Table 1's continuous rows: median, Q1, Q3 and n per variable per cohort scope. POOLED BY THE SAMPLE-SIZE-WEIGHTED MEDIAN OF MEDIANS (McGrath et al., Statistics in Medicine 2019, section 2.2; the paper is in references/). A median does not pool by summing and the sites do not ship the order statistics a true pooled median would need, so the weighted median of the site medians is the estimator, with weights proportional to n. The mean DOES pool exactly from n/sum/sum_sq, which this file also carries, so pooled mean and sd are reported alongside and will not agree with the pooled median on skewed variables -- that disagreement is informative, not an error.",
+            "_interval_why": "THE 95% INTERVAL IS THE RANGE OF SITE MEDIANS AT OUR k, AND THAT IS THE METHOD, NOT A SHORTCUT. McGrath's limits are the 1/2 -+ min(1/2, z/(2*sqrt(k))) weighted quantiles; measured against this implementation the interval stays pinned to the full range until k = 6. So at three sites 'WM 95% CI' and 'range of site medians' are the same two numbers and must not be reported as though they were independent. The engine flags this per row in median_is_range. McGrath's own simulations used k = 15 or 50, so three sites is outside the range the method was evaluated on; report it as a weighted median of medians with a range, not as validated inference.",
+            "_order": 24,
+            "_title": "Baseline characteristics, poolable (continuous)",
+            "_grain": "admission",
+            "_numerator": "n/a -- quantiles, not counts",
+            "_denominator": "n, the admissions in that scope at that site",
+            "_caveat": "Cells below reporting.small_cell_min_den are blanked at the site, so a site can contribute an n without contributing a median; k_sites names how many medians actually backed each pooled row. Rows in protocol.json table1.model_scope_only exist only for the model scope."
+        },
+        "07_outcome_model/table1_categorical.csv": {
+            "method": "sum_counts",
+            "grain": "admission",
+            "keys": [
+                "variable",
+                "level",
+                "stratum"
+            ],
+            "numerators": [
+                "n"
+            ],
+            "denominator": "denominator",
+            "percents": {
+                "pct": "n"
+            },
+            "_why": "The poolable half of Table 1's categorical rows. Counts sum exactly and the percentage is recomputed from the sums, never averaged across sites. Both the collapsed levels the table displays and the raw mCIDE levels ship, so a pooled count is never lost to a display choice.",
+            "_order": 25,
+            "_title": "Baseline characteristics, poolable (categorical)",
+            "_grain": "admission",
+            "_numerator": "admissions in that level",
+            "_denominator": "admissions in that cohort scope",
+            "_caveat": "A suppressed cell takes the next-smallest with it, or the published denominator minus the rest would recover it. Race ships collapsed and raw; the collapsed levels are declared in protocol.json table1.race_levels."
+        },
         "07_outcome_model/vfd_day_distribution.csv": {
             "method": "sum_counts",
             "grain": "admission",
@@ -865,18 +894,22 @@
             "method": "sum_counts",
             "grain": "admission",
             "keys": [
+                "branch",
                 "step"
             ],
             "numerators": [
-                "n"
+                "n_before",
+                "n_excluded",
+                "n_after"
             ],
-            "_why": "The analysis-set flow for the outcome model, which starts from a different denominator than the Phase 0 STROBE: admissions with a fentanyl increase, not all ventilation episodes.",
+            "_why": "THE STROBE: the whole funnel, trunk plus both branches, in one file. 07 ships it because it is the only script that can -- the restrictions below the analytic cohort are 05's titration events and 07's own complete-case filter and unit collapse, none of which exist when 01 runs. The trunk is read from 01_cohort/cohort_construction.csv rather than re-derived.",
             "_order": 16,
-            "_title": "Outcome-model analysis set",
+            "_title": "STROBE: cohort to analysis",
             "_grain": "admission",
             "_numerator": "admissions remaining at that step",
             "_denominator": "n/a -- a flow, not a proportion",
-            "_caveat": "Steps are sequential; do not read any row as a denominator for another."
+            "_caveat": "Rows within a branch chain; rows ACROSS branches do not, and summing them double-counts. n_before on the first row of each branch is the analytic cohort it descends from. The last model row is the frame actually fitted, which is smaller than the complete-case count by the unit collapse.",
+            "_branch_why": "TWO BRANCHES, NOT ONE CHAIN, because there are two denominators: practice_patterns is every admission that escalated at all and is what the per-escalation rates are over; model is the complete-case frame the regression fits. They are not nested in sequence -- both descend from the analytic cohort -- so branch is part of the key and the rows must never be summed across branches."
         },
         "07_outcome_model/diagnostics/model_diagnostics.csv": {
             "method": "per_site_only",

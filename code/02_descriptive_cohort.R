@@ -51,10 +51,6 @@ SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Collapsed for display only; full CLIF granularity still reaches
-# pooling_categorical.csv.
-RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
-
 # Where a categorical ships in both a full and a collapsed form, the full form is
 # published at `overall` only: both views over the same strata subtract.
 FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
@@ -69,7 +65,6 @@ HIST_MINE <- names(HSPEC)[vapply(HSPEC, function(s)
   identical(as.character(s$owner), "02"), logical(1))]
 
 POOL <- list()
-POOL_CAT <- list()
 
 
 
@@ -90,10 +85,10 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(phase = c(
-  "baseline_characteristics.csv", "retention.csv",
+  "retention.csv",
   "dose_summary.csv", "balanced_panels.csv",
   "imv_encounter_duration.csv",
-  "pooling_continuous.csv", "pooling_categorical.csv",
+  "pooling_continuous.csv",
   "pooling_histograms.csv",
   "provenance.json",
   "fentanyl_curves.png", "fentanyl_balanced_panels.png",
@@ -101,6 +96,10 @@ OWNED <- list(phase = c(
 
 # Renames leave stale twins that clear_owned_outputs no longer names; retire them here.
 RETIRED <- c(
+  # Moved to 07_outcome_model/ on 2026-10-28 (protocol 0.17.0). Declared so a
+  # copy left by an earlier run is cleared rather than read back as current.
+  file.path("output", "final_no_phi", "02_descriptive",
+            c("baseline_characteristics.csv", "pooling_categorical.csv")),
   file.path("output", "final_no_phi",
             paste0("phase1_", c("dose_curves.png", "pct_receiving.png",
                                 "dose_distribution.png", "balanced_panels.png"))),
@@ -318,137 +317,12 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
             100 * mean(per_patient > 1)))
 
 
-# ---- 12. Baseline characteristics --------------------------------------------
-# gtsummary-like shape: __bold__ parent labels, indented sub-levels, N in the headers.
-
-base <- long[long$window_idx == 0, ]
-
-# Overall, Landmark (the outcome subset) and its complement. The complement is what
-# makes the test legal. See protocol.json table1._why_the_complement_column.
-T1 <- COV$table1
-stopifnot("protocol.json must declare table1" = !is.null(T1),
-          "Table 1 must be stratified on cohort membership" =
-            identical(T1$stratify_on, "cohort_membership"),
-          "table1.strata must name exactly two mutually exclusive groups" =
-            length(unlist(T1$strata)) == 2)
-STRATA <- unlist(T1$strata)
-# The declared test names the operation and labels the column; never hardcode either.
-T1_TESTS <- list(wilcoxon = list(label = "difference (Wilcoxon)",
-                                 fn = function(v, g) stats::wilcox.test(v ~ g, exact = FALSE)$p.value),
-                 `chi-square` = list(label = "heterogeneity (chi-square)",
-                                     fn = function(tab) stats::chisq.test(tab)$p.value))
-stopifnot("table1 declares a test this script cannot run" =
-            all(c(T1$test_continuous, T1$test_categorical) %in% names(T1_TESTS)))
-T1_CONT <- T1_TESTS[[T1$test_continuous]]
-T1_CAT  <- T1_TESTS[[T1$test_categorical]]
-base$landmark_eligible <- base$encounter_block %in% elig
-grp <- factor(ifelse(base$landmark_eligible, STRATA[1], STRATA[2]),
-              levels = STRATA)
-cat(sprintf("\nTable 1 stratified on cohort membership (%s of %s blocks reach T=%dh)\n",
-            format(sum(base$landmark_eligible), big.mark = ","),
-            format(nrow(base), big.mark = ","), LANDMARK))
-print(table(grp))
-
-hdr <- function(label, n) sprintf("%s (N = %s)", label, format(n, big.mark = ","))
-COLS <- c(hdr("Overall", nrow(base)),
-          vapply(STRATA, function(st) hdr(st, sum(grp == st)), character(1)))
-
-fmt_p <- function(p) {
-  if (is.na(p)) return("--")
-  if (p < 0.001) "<0.001" else sprintf("%.3f", p)
-}
-
-# `digits` is per-measure, not per-table; default 1 leaves an unspecified row as it was.
-fmt_iqr <- function(v, digits = 1) {
-  v <- v[!is.na(v)]
-  if (!length(v)) return("--")
-  q <- unname(quantile(v, c(0.25, 0.5, 0.75)))
-  f <- sprintf("%%.%df (%%.%df, %%.%df)", digits, digits, digits)
-  sprintf(f, q[2], q[1], q[3])
-}
-fmt_pct <- function(k, n) sprintf("%s (%.1f%%)", format(k, big.mark = ","),
-                                  100 * k / max(n, 1))
-
-row_continuous <- function(label, v, unit = NA_character_, digits = 1) {
-  for (st in c("overall", STRATA)) {
-    x <- if (st == "overall") v else v[grp == st]
-    POOL[[length(POOL) + 1]] <<- pool_row("baseline", label, unit, st, NA, NA, x, MIN_CELL)
-  }
-  p <- tryCatch(T1_CONT$fn(v, grp), error = function(e) NA_real_)
-  out <- data.frame(characteristic = sprintf("__%s__, median (IQR)", label),
-                    overall = fmt_iqr(v, digits), stringsAsFactors = FALSE)
-  for (st in STRATA) out[[st]] <- fmt_iqr(v[grp == st], digits)
-  out$p_value <- fmt_p(p)
-  out$test <- T1_CONT$label
-  out
-}
-
-row_categorical <- function(label, v, collapse = NULL, pool_raw = TRUE) {
-  raw <- ifelse(is.na(v), "Missing", as.character(v))
-  # With no collapsed twin this is the only view of itself, so it ships per stratum.
-  if (pool_raw) POOL_CAT[[length(POOL_CAT) + 1]] <<-
-    pool_cat(label, raw, grp, MIN_CELL,
-             strata_scope = if (is.null(collapse)) "all" else FULL_SCOPE)
-  v <- if (is.null(collapse)) raw else collapse_levels(raw, collapse)
-  if (!identical(v, raw)) POOL_CAT[[length(POOL_CAT) + 1]] <<-
-    pool_cat(paste(label, "(collapsed)"), v, grp, MIN_CELL)
-  lv <- sort(unique(v))
-  tab <- table(v, grp)
-  keep <- rownames(tab)[rownames(tab) != "Missing"]
-  p <- if (length(keep) > 1 && all(dim(tab[keep, , drop = FALSE]) > 1))
-    tryCatch(T1_CAT$fn(tab[keep, , drop = FALSE]), error = function(e) NA_real_)
-    else NA_real_
-  head <- data.frame(characteristic = sprintf("__%s__, n (%%)", label),
-                     overall = "", stringsAsFactors = FALSE)
-  for (st in STRATA) head[[st]] <- ""
-  head$p_value <- fmt_p(p)
-  head$test <- T1_CAT$label
-  body <- do.call(rbind, lapply(lv, function(l) {
-    r <- data.frame(characteristic = paste0("    ", l),
-                    overall = fmt_pct(sum(v == l), length(v)),
-                    stringsAsFactors = FALSE)
-    for (st in STRATA) r[[st]] <- fmt_pct(sum(v == l & grp == st), sum(grp == st))
-    r$p_value <- ""
-    r$test <- ""
-    r
-  }))
-  rbind(head, body)
-}
-
-baseline <- rbind(
-  row_continuous("Age, years", base$age, "years"),
-  row_categorical("Sex", base$sex),
-  row_categorical("Race", base$race, collapse = RACE_COLLAPSE),
-  row_continuous("Charlson Comorbidity Index", base$cci, "index", digits = 0),
-  row_continuous("BMI at admission, kg/m2", base$bmi_admission, "kg/m2"),
-  row_continuous("Weight, kg", base$weight_kg, "kg"),
-  row_continuous("SOFA, first window", base$sofa_total, "points"),
-  row_continuous("Norepinephrine equivalent, mcg/kg/min", base$nee, "mcg/kg/min",
-                 digits = 2),
-  row_continuous("P/F ratio, first window", base$oxygenation, "mmHg", digits = 0),
-  row_continuous("Lactate, mmol/L", base$lactate, "mmol/L"),
-  row_continuous(sprintf("Fentanyl dose, first window (%s)", UNITS[["fentanyl"]]),
-                 base$total_dose, UNITS[["fentanyl"]]),
-  do.call(rbind, lapply(SEDATIVES, function(d) row_continuous(
-    sprintf("%s dose, first window (%s)",
-            paste0(toupper(substring(d, 1, 1)), substring(d, 2)), UNITS[[d]]),
-    base[[DRUGS[[d]]]], UNITS[[d]]))),
-  row_continuous("First IMV episode, hours", base$first_imv_episode_hours, "hours")
-)
-names(baseline) <- c("Characteristic", COLS, "p-value", "test")
-
-stopifnot(
-  "the strata must partition the cohort" = sum(table(grp)) == nrow(base),
-  "every stratum must be non-empty -- check that time_to_event.parquet loaded" =
-    all(table(grp) > 0),
-  "the Landmark column must match the landmark cohort exactly" =
-    sum(grp == STRATA[1]) == length(intersect(elig, base$encounter_block)),
-  "window 0 must hold every analytic block exactly once" =
-    nrow(base) == anchor_n
-)
-
-cat("\nBaseline characteristics\n")
-print(baseline, row.names = FALSE)
+# ---- 12. Baseline characteristics -- MOVED TO 07 --------------------------
+# Table 1 is generated by code/07_outcome_model.R as of protocol 0.17.0: it is
+# the only script holding the exposures and the fitted model frame, and it
+# reads trajectory_long window 0 unrestricted so it can describe the whole
+# cohort too. One generator, so the table and the model cannot describe
+# different populations. Row builders live in code/utils/table1.R.
 
 
 # ---- 12b. Pooling histograms -------------------------------------------------
@@ -618,16 +492,13 @@ write_out <- function(x, name) {
 }
 
 cat("\n")
-write_out(baseline, "baseline_characteristics.csv")
 write_out(retention, "retention.csv")
 write_out(dose_summary, "dose_summary.csv")
 write_out(balanced_panels, "balanced_panels.csv")
 write_out(imv_encounter_duration, "imv_encounter_duration.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
-pooling_categorical <- do.call(rbind, POOL_CAT)
 write_out(pooling_continuous, "pooling_continuous.csv")
-write_out(pooling_categorical, "pooling_categorical.csv")
 write_out(pool_histograms, "pooling_histograms.csv")
 
 write_captions(file.path(dirs$phase, "captions.md"), "02_descriptive_cohort.R",

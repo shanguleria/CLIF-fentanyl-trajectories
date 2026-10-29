@@ -332,6 +332,30 @@ for (rel in claimed) {
     sufficient_stats = pool_sufficient(d, keys, unlist(spec[["stats"]])),
     sum_bins = pool_bins(d, keys, rel),
     count_matrix = pool_sum_counts(d, keys, spec, rel),
+    median_of_medians = {
+      mcol <- spec[["median"]]; wcol <- spec[["weight"]]
+      stopifnot("median_of_medians needs median and weight declared" =
+                  !is.null(mcol) && !is.null(wcol))
+      if (!all(c(mcol, wcol) %in% names(d))) NULL else {
+        k2 <- key_of(d, keys)
+        do.call(rbind, lapply(split(seq_len(nrow(d)), k2), function(i) {
+          med <- suppressWarnings(as.numeric(d[[mcol]][i]))
+          wt  <- suppressWarnings(as.numeric(d[[wcol]][i]))
+          r <- wm_of_medians(med, wt)
+          kd <- d[i[1], intersect(c(keys, LABEL_COLS), names(d)), drop = FALSE]
+          # n sums even where a median was suppressed, so the pooled row can
+          # report the admissions behind it AND how many medians it actually had.
+          data.frame(kd, site = "POOLED",
+                     n = sum(wt, na.rm = TRUE),
+                     median = round(r$estimate, 6),
+                     median_lo = round(r$lo, 6), median_hi = round(r$hi, 6),
+                     median_site_min = round(r$min, 6),
+                     median_site_max = round(r$max, 6),
+                     median_is_range = r$degenerate,
+                     k_sites = r$k, stringsAsFactors = FALSE)
+        }))
+      }
+    },
     coefficient_meta = {
       r <- pool_coefficient_meta(d, keys, spec, rel, min_k = MIN_K,
                                  label_cols = LABEL_COLS,
