@@ -264,3 +264,53 @@ add_third_axis <- function(p_main, donor, title = NULL, title_size = 11) {
 # The prediction figure (07_outcome_model.R) reuses the validated
 # initiation/uptitration hues. One entry, because it now draws one series.
 PREDICTION_COLOURS <- c("adjusted" = "#234e90")
+
+# ---- ATS presentation palette -------------------------------------------------
+# For the POOLED (audience-facing) figures. Brand values supplied 2026-10-28 and
+# VALIDATED rather than applied by eye -- dataviz scripts/validate_palette.js,
+# light surface #fcfcfb, --pairs all because a caterpillar sorts by value so
+# adjacency is arbitrary:
+#
+#   #0C0F36  chroma 0.075, L 0.196 -> measures as an INK, not a hue. 17.99:1
+#            against the paper (near-black is 19.17:1), so it carries type,
+#            spines and reference rules at no legibility cost.
+#   #1977F9  kept as categorical 1.
+#   #0FADEE  normal-vision dE 14.8 against #1977F9, BELOW the 15 floor: two blues
+#            a full-colour reader cannot separate. That is the one failure
+#            secondary encoding does not excuse, so this is FILL-ONLY (ribbons,
+#            low alpha) and never a categorical neighbour of #1977F9.
+#   #F1A41F  L 0.775 and 2.03:1 against the paper -> darkened to #C77F12
+#            (3.16:1, inside the band). SG approved the substitution.
+#   #863A68  kept as categorical 3.
+#
+# The surviving trio passes every check: worst all-pairs dE 22.6 (deutan), 25.8
+# (normal), all >= 3:1 contrast. Re-run the validator if any value moves.
+#
+# THREE HUES DOES NOT COVER EVERY POOLED FIGURE. The unit caterpillars and
+# funnels colour by care-setting display group (7 at k=2) and the delivery-state
+# prevalence draws 7 states. Cycling three hues over seven categories is
+# forbidden, so those two keep their existing qualitative ramps and only their
+# TYPOGRAPHY becomes ATS. Supply more brand hues, or collapse the groups, if they
+# should go on-brand.
+ATS_INK    <- "#0C0F36"
+ATS_SERIES <- c("#1977F9", "#C77F12", "#863A68")
+ATS_FILL   <- "#0FADEE"
+ATS_FONT   <- "Arial"
+
+# The house theme in ATS dress: same geometry and the same legend-at-the-foot
+# rule, with brand ink and Arial. Type still reads near-black-dark, never grey.
+house_ats <- function(p) {
+  house(p) +
+    theme(text = element_text(family = ATS_FONT, colour = ATS_INK),
+          plot.title = element_text(family = ATS_FONT, colour = ATS_INK,
+                                    face = "bold"),
+          plot.subtitle = element_text(family = ATS_FONT, colour = ATS_INK),
+          axis.title = element_text(family = ATS_FONT, colour = ATS_INK),
+          axis.text = element_text(family = ATS_FONT, colour = ATS_INK),
+          legend.text = element_text(family = ATS_FONT, colour = ATS_INK,
+                                     size = 9),
+          strip.text = element_text(family = ATS_FONT, colour = ATS_INK,
+                                    face = "bold"),
+          legend.background = element_rect(fill = PAPER, colour = ATS_INK,
+                                           linewidth = 0.3))
+}

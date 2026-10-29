@@ -65,7 +65,7 @@ tot <- tapply(sp$pct, sp$window_start_hr, sum)
 stopifnot("pooled prevalence does not sum to 100% within a window" =
             all(abs(tot - 100) < 0.5))
 
-p_prev <- house(
+p_prev <- house_ats(
   ggplot(sp, aes(window_start_hr, pct, fill = state)) +
     geom_area(colour = PAPER, linewidth = 0.2) +
     scale_fill_manual(values = STATE_COLOURS, name = NULL, drop = FALSE) +
@@ -131,15 +131,20 @@ draw_pair <- function(kind) {
     d$unit_lab <- mapply(function(s, i) sprintf("S%d-U%d", match(s, SITES), i),
                          d$site, ave(seq_len(nrow(d)), d$site, FUN = seq_along))
     ref <- pooled_rate(d)
+    # SEVEN care-setting display groups at k = 2, so this keeps a qualitative
+    # ramp: cycling the three validated ATS hues over seven categories is
+    # forbidden, and the ATS palette has no fourth categorical slot. Only the
+    # TYPOGRAPHY here is ATS. Collapse the groups or supply more brand hues if
+    # this should go on-brand -- and re-run the validator if so.
     pal <- grDevices::hcl.colors(length(unique(d$grp)), "Dark 3")
     names(pal) <- sort(unique(d$grp))
 
     if (kind == "caterpillar") {
       d <- d[order(d$pct_paired), ]
       d$unit_lab <- factor(d$unit_lab, levels = d$unit_lab)
-      p <- house(
+      p <- house_ats(
         ggplot(d, aes(pct_paired, unit_lab, colour = grp)) +
-          geom_vline(xintercept = ref, colour = INK, linetype = "22",
+          geom_vline(xintercept = ref, colour = ATS_INK, linetype = "22",
                      linewidth = 0.45) +
           geom_errorbar(aes(xmin = ci_lo, xmax = ci_hi), orientation = "y",
                         width = 0, linewidth = 0.5) +
@@ -147,7 +152,7 @@ draw_pair <- function(kind) {
           scale_colour_manual(values = pal, name = NULL) +
           guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
           annotate("text", x = ref, y = Inf, label = sprintf(" pooled %.1f%%", ref),
-                   hjust = 0, vjust = 1.4, colour = INK, size = 3.1) +
+                   hjust = 0, vjust = 1.4, colour = ATS_INK, size = 3.1) +
           scale_x_continuous(expand = expansion(mult = c(0.06, 0.10))) +
           labs(x = spec$x, y = NULL))
       h <- max(3.2, 1.3 + 0.34 * nrow(d))
@@ -160,11 +165,11 @@ draw_pair <- function(kind) {
                    band = "95%"),
         data.frame(n = grid_n, lo = ref - 3.09 * se, hi = ref + 3.09 * se,
                    band = "99.8%"))
-      p <- house(
+      p <- house_ats(
         ggplot() +
           geom_ribbon(data = band, aes(n, ymin = lo, ymax = hi, group = band),
                       fill = GRIDLINE, alpha = 0.55) +
-          geom_hline(yintercept = ref, colour = INK, linetype = "22",
+          geom_hline(yintercept = ref, colour = ATS_INK, linetype = "22",
                      linewidth = 0.45) +
           geom_point(data = d, aes(n_events, pct_paired, colour = grp),
                      size = 2.2) +
@@ -172,7 +177,7 @@ draw_pair <- function(kind) {
           guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
           annotate("text", x = max(d$n_events), y = ref,
                    label = sprintf("pooled %.1f%%", ref), hjust = 1.02,
-                   vjust = -0.6, colour = INK, size = 3.1) +
+                   vjust = -0.6, colour = ATS_INK, size = 3.1) +
           scale_x_continuous(labels = function(x) format(x, big.mark = ",")) +
           scale_y_continuous(expand = expansion(mult = c(0.08, 0.10))) +
           labs(x = "Events contributed by the unit (volume)", y = spec$y))
@@ -265,8 +270,8 @@ if (file.exists(file.path(POOL, cf_f))) {
     p_f5 <- ggplot(cf, aes(x = odds_ratio, y = label)) +
       geom_vline(xintercept = 1, colour = MUTED, linewidth = 0.4) +
       geom_errorbar(aes(xmin = or_ci_lo, xmax = or_ci_hi), orientation = "y",
-                    width = 0.18, linewidth = 0.5, colour = INK) +
-      geom_point(aes(size = wt_rel, shape = is_pool), colour = INK, fill = INK) +
+                    width = 0.18, linewidth = 0.5, colour = ATS_INK) +
+      geom_point(aes(size = wt_rel, shape = is_pool), colour = ATS_INK, fill = ATS_INK) +
       scale_shape_manual(values = c(`FALSE` = 22, `TRUE` = 23), guide = "none") +
       scale_size_area(max_size = 4.2, guide = "none", na.value = 3.6) +
       scale_x_continuous(trans = "log10",
@@ -277,7 +282,7 @@ if (file.exists(file.path(POOL, cf_f))) {
                        round(100 * fromJSON(here("config", "protocol.json"),
                                             simplifyVector = FALSE)$model$outcome_model$exposure_scale_per)),
            y = NULL)
-    p_f5 <- house(p_f5) + theme(panel.grid.major.y = element_blank(),
+    p_f5 <- house_ats(p_f5) + theme(panel.grid.major.y = element_blank(),
                                 panel.grid.major.x = element_line(colour = GRIDLINE,
                                                                   linewidth = 0.4))
     ggsave(file.path(FIG, "exposure_forest_pooled.png"), p_f5,
@@ -334,16 +339,16 @@ if (file.exists(file.path(POOL, ed_f))) {
     p_f6 <- ggplot() +
       geom_rect(data = pooled_ed,
                 aes(xmin = bin_lo, xmax = bin_hi, ymin = 0, ymax = pct),
-                fill = PREDICTION_COLOURS[["adjusted"]], alpha = 0.55,
+                fill = ATS_FILL, alpha = 0.55,
                 colour = NA) +
       geom_step(data = sites_ed, aes(x = bin_lo, y = pct, group = label),
-                colour = INK, linewidth = 0.35, direction = "hv") +
+                colour = ATS_INK, linewidth = 0.35, direction = "hv") +
       facet_wrap(~ term_label, ncol = 1) +
       scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2),
                          labels = function(x) sprintf("%.0f%%", 100 * x)) +
       labs(x = "Share of an admission's fentanyl increases meeting the condition",
            y = "% of admissions")
-    p_f6 <- house(p_f6) + theme(legend.position = "none")
+    p_f6 <- house_ats(p_f6) + theme(legend.position = "none")
     ggsave(file.path(FIG, "exposure_histogram_pooled.png"), p_f6,
            width = 7.0, height = 5.4, dpi = 300, bg = PAPER)
     register_caption(
@@ -396,15 +401,15 @@ if (file.exists(file.path(POOL, ap_f))) {
                                      "Adjusted % with VFD-28 = 0"))
     p_f7 <- ggplot(long, aes(x = x)) +
       geom_ribbon(aes(ymin = lo, ymax = hi),
-                  fill = PREDICTION_COLOURS[["adjusted"]], alpha = 0.16) +
-      geom_line(aes(y = y), colour = PREDICTION_COLOURS[["adjusted"]],
+                  fill = ATS_FILL, alpha = 0.16) +
+      geom_line(aes(y = y), colour = ATS_SERIES[1],
                 linewidth = 0.7) +
-      geom_point(aes(y = y), colour = PREDICTION_COLOURS[["adjusted"]], size = 1.7) +
+      geom_point(aes(y = y), colour = ATS_SERIES[1], size = 1.7) +
       facet_grid(metric ~ label, scales = "free_y", switch = "y") +
       scale_x_continuous(breaks = sort(unique(long$x))) +
       labs(x = "Increases with a documented indication, % of an admission's increases",
            y = NULL)
-    p_f7 <- house(p_f7) +
+    p_f7 <- house_ats(p_f7) +
       theme(legend.position = "none", strip.placement = "outside",
             panel.spacing.x = unit(0.9, "lines"))
     ggsave(file.path(FIG, "adjusted_prediction_by_site.png"), p_f7,
@@ -483,13 +488,19 @@ if (file.exists(file.path(POOL, eu_f))) {
 
     d <- d[order(d$mean), ]
     d$unit_lab <- factor(d$unit_lab, levels = d$unit_lab)
-    pal <- grDevices::hcl.colors(length(unique(d$grp)), "Dark 3")
-    names(pal) <- sort(unique(d$grp))
+    # Three groups here (ed / icu / unattributed), so the validated ATS trio
+    # fits without cycling. Assigned alphabetically so a group keeps its colour
+    # when a site with a different mix joins -- colour follows the entity, never
+    # its rank or the row count.
+    grps <- sort(unique(d$grp))
+    stopifnot("more care categories than the validated palette has hues" =
+                length(grps) <= length(ATS_SERIES))
+    pal <- stats::setNames(ATS_SERIES[seq_along(grps)], grps)
 
     fn <- sprintf("exposure_by_unit_%s.png", tolower(ex))
-    p <- house(
+    p <- house_ats(
       ggplot(d, aes(100 * mean, unit_lab, colour = grp)) +
-        geom_vline(xintercept = ref, colour = INK, linetype = "22",
+        geom_vline(xintercept = ref, colour = ATS_INK, linetype = "22",
                    linewidth = 0.45) +
         geom_errorbar(aes(xmin = 100 * q1, xmax = 100 * q3), orientation = "y",
                       width = 0, linewidth = 0.5) +
@@ -498,7 +509,7 @@ if (file.exists(file.path(POOL, eu_f))) {
         guides(colour = guide_legend(nrow = 1)) +
         annotate("text", x = ref, y = Inf,
                  label = sprintf(" pooled mean %.1f%%", ref),
-                 hjust = 0, vjust = 1.4, colour = INK, size = 3.1) +
+                 hjust = 0, vjust = 1.4, colour = ATS_INK, size = 3.1) +
         scale_x_continuous(expand = expansion(mult = c(0.06, 0.10)),
                            labels = function(x) sprintf("%.0f%%", x)) +
         labs(x = sprintf("%s, %% of an admission's fentanyl increases",
