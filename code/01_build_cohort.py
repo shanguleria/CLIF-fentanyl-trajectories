@@ -252,6 +252,7 @@ def _load_assessments(hid: dict) -> pd.DataFrame:
 
 def load_cohort_tables(hosp_ids: list[str]) -> dict:
     """Everything else, filtered at the read to the cohort's ids and categories."""
+    check_resp_vocabulary(hosp_ids)
     hid = {"hospitalization_id": hosp_ids}
     t = {
         "hospital_diagnosis": HospitalDiagnosis.from_file(**_kw(filters=hid)).df,
@@ -299,6 +300,62 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
     return t
 
 
+_DEVICE_COLS = ("device_category", "mode_category")
+
+
+def _resp_vocab(col: str) -> dict[str, str]:
+    """{lowercased: canonical} for one respiratory_support mCIDE column."""
+    import yaml
+
+    sch = yaml.safe_load(
+        (Path(__import__("clifpy").__file__).parent / "schemas"
+         / "respiratory_support_schema.yaml").read_text())
+    allowed = next((c.get("permissible_values", []) for c in sch["columns"]
+                    if c["name"] == col), [])
+    return {v.lower(): v for v in allowed}
+
+
+def _normalise_category(s: pd.Series, col: str) -> tuple[pd.Series, pd.Series]:
+    """(canonical values, lowercased values that the schema does not list).
+
+    A blank is a missing value, not an unlisted category, so it is nulled here
+    and takes the same path as NA. Shared by the pre-waterfall check and
+    _canonicalise_devices so the two cannot disagree about what is unlisted.
+    """
+    lowered = s.astype("string").str.lower().str.strip().replace("", pd.NA)
+    mapped = lowered.map(_resp_vocab(col))
+    return mapped, lowered[lowered.notna() & mapped.isna()]
+
+
+def check_resp_vocabulary(hosp_ids: list[str]) -> None:
+    """Fail in seconds, BEFORE the waterfall, on any value the schema does not list.
+
+    _canonicalise_devices raises the same error, but only after the waterfall
+    has run (about an hour at NU). The columns it checks are two, so read just
+    those for the cohort's hospitalizations. Every bad value in every column is
+    reported at once, with counts, so one fix does not just reveal the next.
+    """
+    raw = RespiratorySupport.from_file(**_kw(
+        columns=["hospitalization_id", *_DEVICE_COLS],
+        filters={"hospitalization_id": hosp_ids})).df
+    raw = _blank_to_na(raw)
+    problems = []
+    for col in _DEVICE_COLS:
+        _, bad = _normalise_category(raw[col], col)
+        if len(bad):
+            n_h = raw.loc[bad.index, "hospitalization_id"].nunique()
+            top = bad.value_counts().head(10)
+            problems.append(
+                f"{col}: {len(bad):,} rows in {n_h:,} hospitalization(s) carry "
+                f"values the schema does not list: "
+                + ", ".join(f"{v!r} x{n:,}" for v, n in top.items()))
+    if problems:
+        raise SystemExit(
+            "respiratory_support vocabulary check failed BEFORE the waterfall "
+            "(nothing expensive has run):\n  " + "\n  ".join(problems))
+    print(f"  {'respiratory_support vocabulary':.<52} ok ({len(raw):,} rows checked)")
+
+
 def _blank_to_na(df: pd.DataFrame) -> pd.DataFrame:
     """Turn '' / whitespace in the category columns into NA BEFORE the waterfall.
 
@@ -309,7 +366,7 @@ def _blank_to_na(df: pd.DataFrame) -> pd.DataFrame:
     _canonicalise_devices) instead of inheriting the prior device.
     """
     out = df.copy()
-    for col in ("device_category", "mode_category"):
+    for col in _DEVICE_COLS:
         if col in out.columns:
             # mask() on the ORIGINAL series: casting to the "string" dtype
             # here breaks clifpy's groupby cumsum inside the waterfall.
@@ -324,31 +381,15 @@ def _canonicalise_devices(df: pd.DataFrame) -> pd.DataFrame:
     clifpy returns 'imv' for 'IMV', so a comparison against the canonical value
     matches nothing and empties the cohort without raising.
     """
-    import yaml
-
-    sch = yaml.safe_load(
-        (Path(__import__("clifpy").__file__).parent / "schemas"
-         / "respiratory_support_schema.yaml").read_text())
     out = df.copy()
-    for col in ("device_category", "mode_category"):
+    for col in _DEVICE_COLS:
         if col not in out.columns:
             continue
-        allowed = next((c.get("permissible_values", []) for c in sch["columns"]
-                        if c["name"] == col), [])
-        lut = {v.lower(): v for v in allowed}
-        # The waterfall can emit '' (not NA) for a row with nothing charted. A
-        # blank is a missing value, not an unlisted category: null it so it
-        # takes the same path as NA downstream, and keep the raise for values
-        # that are genuinely absent from the schema.
-        lowered = (out[col].astype("string").str.lower().str.strip()
-                   .replace("", pd.NA))
-        mapped = lowered.map(lut)
-        unmapped = lowered.notna() & mapped.isna()
-        if unmapped.any():
+        mapped, bad = _normalise_category(out[col], col)
+        if len(bad):
             raise SystemExit(
                 f"{col}: values the schema does not list: "
-                f"{sorted(lowered[unmapped].unique())[:10]}"
-            )
+                f"{sorted(bad.unique())[:10]}")
         out[col] = mapped
     return out
 
