@@ -431,9 +431,8 @@ Three things make this work, and all three were broken before 2026-10-26:
    figure with no error. The axis title comes from
    `indication.instrument_display_names` ("CPOT", not `cpot_total`).
 
-`PAINAD` is charted at UCMC on 45.2% of episodes and is **deliberately excluded**:
-it scores pain in dementia, and mixing it into the pain class mixes two
-constructs. Raw scores are never pooled or averaged across instruments — the
+`PAINAD` is charted at some sites and is **deliberately excluded**: it scores
+pain in dementia, and mixing it into the pain class mixes two constructs. Raw scores are never pooled or averaged across instruments — the
 scales are not comparable. Dichotomising each at its own threshold is exactly
 what makes them combinable: after the cut, every instrument contributes the same
 yes/no.
@@ -686,8 +685,8 @@ CLIF-fentanyl-trajectories/
 ## Definitions and provenance
 
 - **Dose**: within-window total fentanyl (infusion + bolus), expressed
-  **mcg/hr** — the unit fentanyl is ordered in, and the unit 99.5% of UCMC rows
-  are already charted in, so weight does not enter the dominant path. Infusion
+  **mcg/hr** — the unit fentanyl is ordered in, and the unit almost every row
+  is already charted in, so weight does not enter the dominant path. Infusion
   uses LOCF then a time-weighted mean; boluses are summed over the window and
   divided by its hours, never carried forward. (Was mcg/kg/hr until 2026-09-07.)
 - **Successful extubation**: extubation not followed by reintubation within 72h.

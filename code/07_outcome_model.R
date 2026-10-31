@@ -223,7 +223,22 @@ stopifnot("trajectory_long must carry sofa_baseline -- re-run code/01_build_coho
             "sofa_baseline" %in% names(base),
           "window 0 must hold each block once" = !anyDuplicated(base$encounter_block))
 
-icu <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "care_intervals.parquet")))
+icu <- as.data.frame(read_parquet(
+  file.path(phi_dir(dirs, "01_cohort"), "care_intervals.parquet")))
+
+# Landmark membership and the OUTCOME AT EACH SWEPT T, both written by the
+# cohort build from the one eligibility rule and the one VFD implementation.
+# 07 refits, it does not re-derive: a second definition of either here would be
+# comparing the sensitivity against a reimplementation rather than against the
+# primary.
+SENS_T <- sort(unique(as.numeric(unlist(SPEC$sensitivity_landmark_hours))))
+lm_mem <- as.data.frame(read_parquet(
+  file.path(phi_dir(dirs, "01_cohort"), "landmark_membership.parquet")))
+stopifnot(
+  "protocol.json declares a sensitivity landmark the cohort build did not sweep" =
+    all(SENS_T %in% unique(lm_mem$T_hours)),
+  "landmark_membership must carry the outcome at each swept T" =
+    all(c("vfd_28", "vfd_ceiling_d") %in% names(lm_mem)))
 
 
 # ---- 6. The two exposures ----------------------------------------------------
@@ -724,6 +739,103 @@ MODELS <- list(
           paste0("primary plus sofa_baseline_n_components; NOT a primary ",
                  "covariate, see protocol.json ",
                  "model.outcome_model.sensitivity_models.sofa_coverage")))
+# ---- The landmark sensitivity: the PRIMARY model at another T ----------------
+# protocol.json model.outcome_model.sensitivity_landmark_hours. Does the 72h
+# requirement do work a reader would attribute to the exposure?
+#
+# THREE THINGS MOVE TOGETHER, and getting any one of them wrong would make the
+# comparison meaningless rather than merely noisy:
+#   1. THE COHORT   -- from landmark_membership.parquet, written by the one
+#                      eligibility rule (_landmark_eligible) the primary uses.
+#   2. THE OUTCOME  -- vfd_28 recomputed at that T, because VFD accrues FROM the
+#                      landmark. The attainable ceiling is horizon - T, so the
+#                      TOP BAND WIDENS (26d at 48h against 25d at 72h) while the
+#                      absolute cuts at 0/7/14/21 stay put. The bands are
+#                      therefore NOT identical across T and the top one must be
+#                      read as "(21, ceiling]".
+#   3. THE EXPOSURE -- windowed to [0, T). titration._adherence_landmark_why
+#                      argues the overall scope carries no immortal time BECAUSE
+#                      the landmark is 72h and events are bounded there; that
+#                      argument fails the moment the landmark moves earlier.
+#
+# 24h was swept and DROPPED, on a measured basis rather than a judgement: the
+# exposure share there rests on a median of 2 increase events. See
+# _sensitivity_landmark_why.
+sens_frame <- function(T_h) {
+  ids <- lm_mem$encounter_block[lm_mem$T_hours == T_h]
+  scope <- sprintf("first_%gh", T_h)
+  a <- adh[adh$scope == scope, c("encounter_block", "n_events", "n_paired")]
+  if (!nrow(a)) {
+    cat(sprintf("  SKIP landmark_%gh: 05 shipped no `%s` adherence scope\n",
+                T_h, scope))
+    return(NULL)
+  }
+  names(a)[names(a) == "n_events"] <- "n_increase"
+
+  # Pindicated over the SAME window, from the same events the primary uses.
+  # `<=`, NOT `<`, because 05's adherence scope is `ev$t_hr <= h` and the two
+  # handoffs must count the same events. The assertion below caught this as a
+  # real mismatch on 8 blocks with an increase charted at exactly t_hr == 48;
+  # the comparator belongs to 05, which owns the exposure definition, so it is
+  # matched here rather than changed there.
+  iw <- ind[ind$event_type == "increase" & ind$t_hr <= T_h, ]
+  pi_w <- aggregate(cbind(n_inc = rep(1, nrow(iw)),
+                          n_indicated = as.integer(iw$any_indicated)) ~
+                      encounter_block, data = iw, FUN = sum)
+  e <- merge(a, pi_w, by = "encounter_block")
+  stopifnot(
+    "the two handoffs disagree about the number of increase events in [0,T)" =
+      all(e$n_increase == e$n_inc),
+    "a numerator exceeds its denominator" =
+      all(e$n_paired <= e$n_increase) & all(e$n_indicated <= e$n_increase))
+  e$Pbolus     <- e$n_paired / e$n_increase
+  e$Pindicated <- e$n_indicated / e$n_increase
+
+  v <- lm_mem[lm_mem$T_hours == T_h,
+              c("encounter_block", "vfd_28", "vfd_ceiling_d")]
+  f <- merge(e[e$encounter_block %in% ids, ], v, by = "encounter_block")
+  f <- merge(f, base, by = "encounter_block", all.x = TRUE)
+  # The SAME hour-0 attribution the primary uses -- `icu` is built inside
+  # fit_one() by collapse_units(), so the frame carries the two location keys
+  # and nothing else. `unattributed` is a real level, not an NA.
+  f <- merge(f, icu, by = "encounter_block", all.x = TRUE)
+  f$location_name[is.na(f$location_name)] <- "unattributed"
+  f$location_category[is.na(f$location_category)] <- "unattributed"
+
+  # The top break follows the ceiling at THIS T; the cuts below it do not move.
+  ceil <- unique(f$vfd_ceiling_d)
+  stopifnot("a swept T must have one ceiling" = length(ceil) == 1)
+  cuts <- c(utils::head(CUTS, -1), ceil + 0.001)
+  f$vfd_ord <- cut(f$vfd_28, breaks = cuts, labels = LABELS,
+                   ordered_result = TRUE)
+  stopifnot("a VFD value fell outside the breaks at this T" = !any(is.na(f$vfd_ord)))
+
+  # The model terms carry their unit in their name; EXP_SCALE is the one place
+  # the [0,1] share becomes a per-10pp term, so it is reused, not restated.
+  for (v_ in MODEL_EXPOSURES) f[[v_]] <- f[[sub("_per[0-9]+pp$", "", v_)]] / EXP_SCALE
+  cat(sprintf(paste0("  landmark_%gh: %s admission(s), ceiling %.0fd, ",
+                     "median %g increase event(s) in [0,%gh]\n"),
+              T_h, format(nrow(f), big.mark = ","), ceil,
+              stats::median(f$n_increase), T_h))
+  f
+}
+
+cat("\nLandmark sensitivity -- the primary model refitted at another T\n")
+MODELS <- c(MODELS, Filter(Negate(is.null), lapply(SENS_T, function(T_h) {
+  f <- sens_frame(T_h)
+  if (is.null(f)) return(NULL)
+  fit_one(f, FORM_PRIMARY, sprintf("sensitivity_landmark_%gh", T_h),
+          sprintf(paste0("the PRIMARY model refitted on the %gh landmark ",
+                         "cohort, with exposure windowed to [0,%gh) and VFD ",
+                         "recomputed from that landmark (ceiling %gd, so the ",
+                         "top band is (21,%g] not (21,25]). Not comparable to ",
+                         "the primary coefficient-for-coefficient -- the ",
+                         "cohort, the outcome scale and the exposure window ",
+                         "all move together, which is the point"),
+                  T_h, T_h, (as.numeric(COV$outcomes$vfd$horizon_days) * 24 - T_h) / 24,
+                  (as.numeric(COV$outcomes$vfd$horizon_days) * 24 - T_h) / 24))
+})))
+
 MODELS <- Filter(Negate(is.null), MODELS)
 stopifnot("no model converged -- nothing to report" = length(MODELS) > 0)
 

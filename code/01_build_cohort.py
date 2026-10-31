@@ -738,13 +738,13 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame,
     # (outcomes.death_definition) and resolve_death() honours that, but
     # followup_end_dttm did not, so the cohort ran on two clocks: death_hr on
     # death_dttm, and everything gated by `alive_admitted` on the discharge
-    # stamp. MEASURED at UCMC 2026-10-30: 735 landmark blocks (12.5%) carry a
-    # death_dttm EARLIER than their discharge stamp (median 13.3h, max 110.9h --
-    # administrative discharge after death), 53 of them died before the 72h
-    # landmark and were admitted to the landmark cohort anyway, and 103
-    # window-grid rows across 37 blocks counted exposure after death. The guard
-    # that looks like it would catch this cannot: `assert eligible <= admitted`
-    # tests alive_admitted, which came off the same discharge-only clock.
+    # stamp. A death_dttm EARLIER than the discharge stamp is common -- the
+    # discharge is administrative and follows the death -- so some blocks were
+    # admitted to a cohort defined as alive at T despite having died, and some
+    # window-grid rows counted exposure after death. The guard that looks like
+    # it would catch this cannot: `assert eligible <= admitted` tests
+    # alive_admitted, which came off the same discharge-only clock. Counts in
+    # 01_cohort/diagnostics/diagnostics.csv.
     # NaT-safe: min(axis=1) skips NaN, so a survivor keeps the discharge stamp.
     c["death_dttm_resolved"] = c["anchor_dttm"] + pd.to_timedelta(c["death_hr"],
                                                                  unit="h")
@@ -2167,9 +2167,9 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
 
     RETURNS (per-block totals, the annotated intervals they were summed from).
     The intervals are exported so a figure can DECOMPOSE the VFD number rather
-    than re-derive it from `ext_hr`: 5.8% of blocks have more than one
-    qualifying liberation and 1,672 had a final spell extended from an off-IMV
-    discharge, neither of which a single first-liberation timestamp carries.
+    than re-derive it from `ext_hr`: a block may have more than one qualifying
+    liberation, and a final spell may be extended from an off-IMV discharge,
+    neither of which a single first-liberation timestamp carries.
     They are post-extension, so sum(accrued_h) per block IS vfd_hours before
     the death / lost-on-vent zeroing is applied.
     """
@@ -2642,6 +2642,16 @@ def landmark_sensitivity(cohort: pd.DataFrame, long: pd.DataFrame,
         v = vfd.set_index("encounter_block").reindex(sub["encounter_block"])
         dh = sub.set_index("encounter_block")["death_hr"].reindex(v.index)
         b = base.reindex(v.index)
+        # THE OUTCOME AT THIS T, per block. VFD accrues from the landmark, so a
+        # refit at another T needs its own vfd_28 -- reusing the 72h column
+        # would score the 48h cohort on a clock it does not have. Carried here
+        # rather than recomputed in 07, which would be a second implementation
+        # of the outcome. `vfd_ceiling_d` differs by T and ships beside it.
+        members[-1] = members[-1].merge(
+            v.reset_index()[["encounter_block", "vfd_28", "vfd_hours",
+                             "vfd_zero_for_death", "vfd_zero_lost_on_vent"]],
+            on="encounter_block", how="left")
+        members[-1]["vfd_ceiling_d"] = round((horizon_h - T) / 24.0, 2)
 
         def med(col):
             return round(float(b[col].median()), 1) if col in b else np.nan
@@ -2719,8 +2729,8 @@ def waterfall_diagnostic(raw: pd.DataFrame, resp: pd.DataFrame,
     rows: list[dict] = []
 
     # `n` and `denominator` are COUNTS and nothing else; a quantity with a unit
-    # goes in value/unit, and brings its own share through `pct`. Letting hours
-    # into a column called n is how a reader ends up quoting 196,393 patients.
+    # goes in value/unit and brings its own share through `pct`. Hours in a
+    # column called `n` get quoted as patients.
     def put(level, metric, stratum, n=np.nan, den=np.nan, value=np.nan, unit="",
             pct=None):
         if pct is None:

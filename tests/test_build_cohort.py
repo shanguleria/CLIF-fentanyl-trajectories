@@ -260,7 +260,7 @@ def test_plateau_is_distinguishable_from_no_measurement():
     """The flags must come from the UNFILTERED SpO2 series. Deriving both from the
     already-ceiling-filtered series makes n_spo2 == n_spo2_usable, so the plateau
     condition can never fire and every plateau window is misreported as 'nothing
-    measured'. That produced a spurious 0.00% plateau on real data."""
+    measured'. That made the plateau vanish entirely on real data."""
     plateau_only = _oxy(0, 5, 0)          # SpO2 present, none below the ceiling
     nothing = _oxy(0, 0, 0)
     c1, c2 = _reason_counts(plateau_only), _reason_counts(nothing)
@@ -316,9 +316,9 @@ def test_outcome_cannot_be_read_from_the_window_grid():
 
 # ------------------------------------------------------------- bolus units
 def test_bolus_bound_nulls_an_implausible_mcg_per_kg_dose():
-    """445 UCMC rows are charted mcg/kg with a median of 54.5, which converts to
-    ~3,800 mcg for a 70 kg adult. Rather than guess the label is wrong, convert
-    per the charted unit and let the bound decide."""
+    """Some rows are charted mcg/kg at doses that convert to thousands of mcg for
+    a 70 kg adult. Rather than guess the label is wrong, convert per the charted
+    unit and let the bound decide."""
     lo, hi = B.OUTLIERS["med_bolus_mcg"]["fentanyl"]
     assert 54.5 * 70 > hi, "the implausible case must exceed the bound"
     assert 0.5 * 70 < hi, "a genuine low mcg/kg dose must survive it"
@@ -326,8 +326,8 @@ def test_bolus_bound_nulls_an_implausible_mcg_per_kg_dose():
 
 def test_bolus_bound_catches_the_observed_mcg_outlier():
     hi = B.OUTLIERS["med_bolus_mcg"]["fentanyl"][1]
-    assert 22025.0 > hi, "the observed 22,025 mcg maximum must be nulled"
-    assert 50.0 < hi, "the median 50 mcg bolus must survive"
+    assert 22025.0 > hi, "an extreme charted bolus must be nulled"
+    assert 50.0 < hi, "a routine bolus must survive"
 
 
 # ------------------------------------------------------- clifpy waterfall casing
@@ -375,14 +375,14 @@ def _cohort_fixture(discharge_h, death_h=None, category="Home"):
 
 
 def test_follow_up_ends_at_death_when_death_precedes_the_discharge_stamp():
-    """SG, 2026-10-30, from the day-3 column of the liberation figure: 0.9% of a
-    cohort DEFINED as alive at 72h were dead.
+    """SG, 2026-10-30, from the day-3 column of the liberation figure: a cohort
+    DEFINED as alive at 72h contained dead patients.
 
     protocol.json declares death as death_dttm where present, and resolve_death()
     honours it -- but followup_end_dttm was `c[["block_discharge_dttm"]].min(axis=1)`,
-    a min over ONE column, so follow-up ran to the discharge stamp. At UCMC that
-    stamp lands a median of 13.3h after death, which is long enough to carry a
-    dead patient past the landmark."""
+    a min over ONE column, so follow-up ran to the discharge stamp. That stamp
+    can land hours after death, which is long enough to carry a dead patient
+    past the landmark."""
     blocks, anchor, patient, t0 = _cohort_fixture(discharge_h=90, death_h=60,
                                                   category="Expired")
     c = B.build_cohort(blocks, anchor, patient)
@@ -476,7 +476,7 @@ def _ep(resp_entries, raw_hours):
 
 
 def test_a_waterfall_transition_ends_the_episode():
-    """100% of waterfalled IMV -> non-IMV transitions go to a real device, so a
+    """A waterfalled IMV -> non-IMV transition always lands on a real device, so a
     transition is a true extubation and ends the episode precisely."""
     out = _ep([(h, "IMV") for h in (0, 2, 4, 6)] + [(7, "Nasal Cannula")],
               [0, 2, 4, 6])
@@ -486,7 +486,7 @@ def test_a_waterfall_transition_ends_the_episode():
 
 def test_a_raw_gap_ends_the_episode_when_no_transition_is_charted():
     """The waterfall carries IMV forward when nothing breaks the segment --
-    measured at p90 30h and up to 1,137h past the last raw record, in 19.3% of
+    sometimes for days past the last raw record, in a material share of
     hospitalizations. The raw-gap rule is what catches those."""
     g = B.EPISODE_GAP_H
     out = _ep([(h, "IMV") for h in (0, 2, 4, 4 + g + 5)], [0, 2, 4, 4 + g + 5])
@@ -496,18 +496,18 @@ def test_a_raw_gap_ends_the_episode_when_no_transition_is_charted():
 
 
 def test_normal_charting_gaps_do_not_fragment_an_episode():
-    """Raw IMV gaps at UCMC are p95 5.00h and p98 7.07h, so a threshold at or
+    """Routine raw IMV charting gaps run to several hours, so a threshold at or
     below those would split continuously-ventilated patients."""
     assert B.EPISODE_GAP_H > 7.0, (
         f"episode gap {B.EPISODE_GAP_H}h sits inside the normal charting "
-        f"distribution (p98 = 7.07h)"
+        f"distribution"
     )
     out = _ep([(h, "IMV") for h in (0, 4.3, 8.6, 12)], [0, 4.3, 8.6, 12])
     assert out["n_imv_episodes"].iloc[0] == 1
 
 
 def test_first_to_last_span_is_not_used_as_duration():
-    """Span merges separate intubations weeks apart; the raw maximum was 24,063h."""
+    """Span merges separate intubations weeks apart, giving years-long durations."""
     out = _ep([(h, "IMV") for h in (0, 1, 500, 501)], [0, 1, 500, 501])
     assert out["first_imv_episode_hours"].iloc[0] == 1
     assert out["n_imv_episodes"].iloc[0] == 2
@@ -632,7 +632,7 @@ def test_infusion_unit_conversion_covers_the_charted_units():
 
 
 def test_the_dominant_charted_unit_needs_no_weight():
-    """99.5% of UCMC fentanyl infusion rows are charted mcg/hr. That arm must
+    """Nearly every fentanyl infusion row is charted mcg/hr. That arm must
     survive a missing weight -- under the former mcg/kg/hr unit it did not, and
     a null weight silently removed the exposure."""
     m = pd.DataFrame({"med_dose": [75.0], "med_dose_unit": ["mcg/hr"],
@@ -836,8 +836,8 @@ def test_the_hourly_cell_takes_the_last_rate_not_the_highest():
 
     Sorting on value instead of time returns the MAXIMUM, which is what this
     code did until 2026-09-24. The two agree on an uptitration and diverge on
-    every downtitration -- measured then at 9,312 cells, error always upward,
-    median 50 mcg/hr, 35.0% of episodes touched."""
+    every downtitration -- it hit many cells, the error was always upward, and
+    it touched a large share of episodes."""
     up = _rates([(0, 5, 50.0, "start"), (0, 40, 100.0, "dose_change")])
     assert up[0] == 100.0, "an uptitration ends the hour at the higher rate"
 
@@ -979,7 +979,7 @@ def test_an_open_ended_stay_runs_to_the_end_of_the_grid():
 
 
 def test_a_multi_unit_episode_keeps_every_unit():
-    """11% of ICU hospitalizations touch more than one unit. Reducing them to one
+    """A material share of ICU hospitalizations touch more than one unit. Reducing to one
     label is the loss protocol.json records under
     _DO_NOT_TREAT_THIS_PAIR_AS_COMPLETE."""
     hi, cohort = _icu_fixture([("b0", "N04E", "medical_icu", 0.0, 20.0),

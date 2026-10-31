@@ -52,6 +52,15 @@ WIN_MIN   <- as.numeric(SPEC$bolus_window_minutes)
 WIN_SENS  <- sort(unique(c(as.numeric(unlist(SPEC$window_sensitivity_minutes)), WIN_MIN)))
 VENT_ONLY <- isTRUE(SPEC$ventilated_only)
 ADH_LM_H  <- as.numeric(SPEC$adherence_landmark_hours)
+# Every window a per-encounter adherence scope is emitted for. Declared rather
+# than derived from ADH_LM_H alone, because 07 refits the primary model at a
+# landmark of its own and needs the exposure measured over THAT window -- see
+# titration._adherence_scope_hours_why. Asserted to include the reported one, so
+# a config that drops it fails here rather than silently shipping fewer scopes.
+ADH_SCOPES <- sort(unique(as.numeric(unlist(SPEC$adherence_scope_hours))))
+stopifnot(
+  "titration.adherence_scope_hours must include adherence_landmark_hours" =
+    ADH_LM_H %in% ADH_SCOPES)
 MIN_EV    <- as.numeric(SPEC$min_events_for_adherence)
 BOOT_REPS <- as.integer(SPEC$bootstrap_resamples)
 # Absolute config-declared bins; site-local quantiles cannot be pooled.
@@ -373,8 +382,11 @@ adherence <- function(d, tag) {
   agg
 }
 # adh stays UNRESTRICTED: the pooling histogram below is a whole-cohort distribution.
-adh <- rbind(adherence(ev, "overall"),
-             adherence(ev[ev$t_hr <= ADH_LM_H, ], sprintf("first_%gh", ADH_LM_H)))
+scoped <- function(d) do.call(rbind, c(
+  list(adherence(d, "overall")),
+  lapply(ADH_SCOPES, function(h)
+    adherence(d[d$t_hr <= h, ], sprintf("first_%gh", h)))))
+adh <- scoped(ev)
 
 summarise_adherence <- function(a) do.call(rbind, lapply(split(a, a$scope), function(x) {
   e <- x[x$n_events >= MIN_EV, ]
@@ -393,8 +405,7 @@ summarise_adherence <- function(a) do.call(rbind, lapply(split(a, a$scope), func
 
 adh_dist <- by_cohort(function(keep) {
   e <- keep_rows(ev, keep)
-  a <- rbind(adherence(e, "overall"),
-             adherence(e[e$t_hr <= ADH_LM_H, ], sprintf("first_%gh", ADH_LM_H)))
+  a <- scoped(e)
   if (is.null(a)) return(NULL)
   summarise_adherence(a)
 })

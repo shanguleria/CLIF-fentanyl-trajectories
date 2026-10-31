@@ -90,7 +90,7 @@ def test_locf_eligibility_and_caps_are_consistent():
         if locf["eligible"]:
             assert "cap_hours" in locf, (
                 f"{name}: LOCF-eligible with no cap_hours. An uncapped lab ffill is "
-                f"the bug that produced a 1,331h stale carry-in in a sibling repo."
+                f"the bug that produced a days-long stale carry-in in a sibling repo."
             )
         else:
             assert "cap_hours" not in locf, (
@@ -639,7 +639,7 @@ def test_the_tabled_intensity_stratification_has_no_live_consumer():
 
 
 def test_the_stratification_is_never_called_a_trajectory():
-    """Modal time ignores order -- only 44.9% of episodes end in the state they
+    """Modal time ignores order -- most episodes do not end in the state they
     began in. Calling these strata trajectories or latent classes is exactly the
     claim the tabled gbmt work could not support, so the words are banned from
     the code that builds them."""
@@ -770,9 +770,9 @@ def test_over_dispersion_is_measured_declared_and_owned():
 
 def test_the_caterpillar_caption_refuses_to_be_read_as_a_ranking():
     """Ordering units by rate invites reading the rank as the result. The
-    intervals are what say how much of the ordering is resolvable -- at UCMC
-    4 of 6 ordered-adjacent pairs overlap on co-administration -- so the caption
-    has to state both the count and that overlap is not a pairwise test.
+    intervals are what say how much of the ordering is resolvable -- many
+    ordered-adjacent pairs overlap on co-administration -- so the caption has to
+    state both the count and that overlap is not a pairwise test.
 
     The count must be COMPUTED by the run that draws the panel. A hardcoded
     number goes stale the first time a site has different units, and would be

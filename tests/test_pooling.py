@@ -341,8 +341,8 @@ def test_each_histogram_accounts_for_every_value():
     from the pooled distribution, and the pooled median moves with it.
 
     n_total is the count of NON-MISSING values, which is why it differs between
-    variables measured at different rates (fentanyl 184,854 ventilated windows,
-    lactate 135,628). A pooled histogram therefore describes the distribution
+    variables measured at different rates (fentanyl is charted far more densely
+    than lactate). A pooled histogram therefore describes the distribution
     among OBSERVED values -- pair it with missingness.csv, not with the window
     count.
     """
@@ -467,8 +467,8 @@ def test_the_collapsed_race_matches_the_full_categories_level_by_level():
     The first implementation used `unlist(map[v])`, which drops the NULLs for
     unmatched values -- so the replacement vector came back shorter than the
     input, ifelse recycled it, and every row was silently misaligned. The
-    published table said 59.8% of the landmark cohort were Black against a true
-    62.6%. Totals still matched, so only a level-by-level check catches it.
+    published table reported the wrong share of the landmark cohort for a race
+    level. Totals still matched, so only a level-by-level check catches it.
     """
     d = _skip_if_absent(CAT)
     if d is None:
@@ -497,7 +497,7 @@ def test_the_collapsed_race_matches_the_full_categories_level_by_level():
         expected: dict[str, int] = {}
         # A suppressed SOURCE level makes its target unverifiable from the
         # published file -- that is what suppression means. Only the stratum
-        # `overall` is fully unsuppressed at UCMC, so without this the check
+        # `overall` is fully unsuppressed, so without this the check
         # would crash on NaN at a site with any rare category inside a band.
         dirty: set[str] = set()
         for _, row in g.iterrows():

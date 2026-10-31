@@ -35,8 +35,8 @@ def test_targets_are_declared_for_every_nee_drug():
 
 
 def test_angiotensin_ng_per_kg_min_is_divided_by_1000():
-    """100% of angiotensin at UCMC is ng/kg/min, and the NEE coefficient is 10,
-    so an error here is a 1000x error on the sickest patients."""
+    """Angiotensin is charted in ng/kg/min, and the NEE coefficient is 10, so an
+    error here is a 1000x error on the sickest patients."""
     assert one("angiotensin", 20.0, "ng/kg/min")[0] == 0.02
 
 
@@ -56,8 +56,8 @@ def test_vasopressin_units_per_min_passes_through():
 
 
 def test_vasopressin_unit_matching_is_case_insensitive():
-    """UCMC charts 'Units/min'; the schema says 'units/min'. A case-sensitive
-    lookup left 277,720 rows unconverted."""
+    """Sites chart 'Units/min'; the schema says 'units/min'. A case-sensitive
+    lookup left a large block of rows unconverted."""
     assert one("vasopressin", 0.04, "Units/min")[0] == 0.04
     assert one("vasopressin", 0.04, "  UNITS/MIN ")[0] == 0.04
 

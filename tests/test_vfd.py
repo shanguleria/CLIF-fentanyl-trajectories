@@ -98,8 +98,8 @@ def test_the_ceiling_is_25_days_because_accrual_starts_at_the_landmark():
     exposure and outcome would be mechanically coupled -- which is precisely what
     the landmark design exists to prevent.
 
-    MEASURED at UCMC before the clamp: 124 blocks exceeded 25 days and the
-    maximum was 27.32. After: zero and 25.00.
+    Before the clamp a material share of blocks exceeded 25 days; after it,
+    none do and the maximum is exactly the ceiling.
     """
     # Ventilated without interruption to 72h, then free: the ceiling binds.
     got = _vfd({"b": (900, [(0, "IMV"), (72, "Room Air")])})
@@ -123,8 +123,8 @@ def test_a_spell_qualifies_on_its_full_length_but_accrues_only_after_T():
     """TWO DIFFERENT WINDOWS. A spell QUALIFIES on its full length anywhere in
     [0, horizon]; it ACCRUES only over [T, horizon]. Testing the 48h threshold on
     the clipped length instead would make a successful extubation stop being one
-    because of where the landmark happens to fall -- and at UCMC the grid puts
-    160 spells across that boundary."""
+    because of where the landmark happens to fall -- and real cohorts put many
+    spells across that boundary."""
     # Liberated at hour 40, reintubated at hour 100. The spell is 60h, so it is a
     # successful extubation; 28 of those hours fall after T and are credited.
     got = _vfd({"b": (900, [(0, "IMV"), (40, "Room Air"), (100, "IMV")])})
@@ -331,9 +331,8 @@ def test_eligibility_is_the_state_at_T_not_any_record_in_the_window():
     Until 0.10.0 eligibility read `imv_status == 1` off the window grid, which is
     max(device_category == "IMV") OVER [T-4, T). A patient charted on IMV at hour
     69 and extubated at hour 70 was therefore "ventilated at T" while already off
-    the ventilator. MEASURED at UCMC: 238 blocks (3.6% of the old 6,728), and
-    they were the source of a VFD-28 ceiling of 27.3 days where the definition
-    allows 25.
+    the ventilator. A material share of blocks entered that way, and they were the
+    source of a VFD-28 ceiling above the 25 days the definition allows.
     """
     T = B.COV["cohort"]["landmark_hours"]
     got = _tte({
@@ -354,9 +353,9 @@ def test_a_block_interrupted_inside_the_window_is_not_landmark_eligible():
 
     Being on IMV at the INSTANT T was not enough. A patient extubated at hour 12
     and reintubated at hour 60 was eligible despite 48h off the ventilator, and
-    did not have the exposure the landmark window exists to guarantee. MEASURED
-    at UCMC before the rule: 838 of 5,808 landmark blocks (14.4%) carried some
-    charted non-IMV interval inside [0, 72h).
+    did not have the exposure the landmark window exists to guarantee. Before the
+    rule a sizeable minority of landmark blocks carried some charted non-IMV
+    interval inside [0, 72h).
     """
     T = B.COV["cohort"]["landmark_hours"]
     got = _tte({
@@ -372,9 +371,9 @@ def test_a_block_interrupted_inside_the_window_is_not_landmark_eligible():
 def test_an_interruption_within_the_tolerance_keeps_the_block():
     """cohort.landmark_max_interruption_hours. The tolerance is NOT cosmetic:
     clifpy's waterfall fills a NULL device_category but does not denoise a
-    CHARTED one, so a single contradictory entry survives as a real interval. At
-    UCMC the shortest such interruption is ONE MINUTE, and 140 blocks (2.4% of
-    the cohort) would have been excluded on an interruption under an hour."""
+    CHARTED one, so a single contradictory entry survives as a real interval.
+    Such interruptions run as short as ONE MINUTE, and blocks would otherwise be
+    excluded on an interruption lasting under an hour."""
     T = B.COV["cohort"]["landmark_hours"]
     tol = float(B.COV["cohort"]["landmark_max_interruption_hours"])
     got = _tte({
@@ -393,9 +392,9 @@ def test_an_interruption_within_the_tolerance_keeps_the_block():
 
 def test_the_state_at_T_must_be_observed_not_forward_filled():
     """cohort.landmark_record_lookback_hours. SG chose a lookback on 2026-10-27
-    after seeing what the bare state-at-T rule admitted: 444 blocks whose "on IMV
-    at T" was the waterfall forward-filling across a MEDIAN 34.5h of no real
-    charting, of which 0.2% were ever liberated and 93.7% scored zero VFDs as
+    after seeing what the bare state-at-T rule admitted: blocks whose "on IMV at
+    T" was the waterfall forward-filling across days of no real charting, almost
+    none of which were ever liberated and nearly all of which scored zero VFDs as
     lost-on-a-ventilator. Two imputations compounding."""
     T = B.COV["cohort"]["landmark_hours"]
     L = B.COV["cohort"]["landmark_record_lookback_hours"]
@@ -406,7 +405,7 @@ def test_the_state_at_T_must_be_observed_not_forward_filled():
         # nothing observed supports that.
         "stale": (500, [(0, "IMV"), (T - L - 1, "IMV")]),
         # Scaffold INSIDE the window does not count as observation -- this is the
-        # case that made the old grid rule admit 638 blocks on imputed rows alone.
+        # case that made the old grid rule admit blocks on imputed rows alone.
         "scaffold_only": (500, [(0, "IMV"), (T - L - 1, "IMV"), (T - 1, "IMV", True)]),
     }, {k: "Home" for k in ("fresh", "stale", "scaffold_only")})
     assert "fresh" in got.index
@@ -431,9 +430,9 @@ def test_the_lookback_reuses_the_episode_gap_threshold_on_purpose():
 
 def test_a_successful_liberation_survives_a_later_death():
     """THE REGRESSION THIS GUARDS. Before 2026-10-27 extubation_event = 2 erased
-    the liberation entirely: MEASURED at UCMC, 399 blocks (5.9% of the landmark
-    cohort) were liberated and died a median 9.8 days later, and every one was
-    coded 'death' with the extubation discarded. Both facts are now kept."""
+    the liberation entirely: a material share of the landmark cohort were
+    liberated and then died days later, and every one was coded 'death' with the
+    extubation discarded. Both facts are now kept."""
     got = _tte({"b": (500, [(0, "IMV"), (71, "IMV"), (100, "Room Air")])}, {"b": "Expired"})
     assert got.loc["b", "extubation_event"] == 1, "the liberation was erased again"
     assert got.loc["b", "mortality_event"] == 1, "the death was lost"
@@ -464,8 +463,8 @@ def test_the_three_event_codes_are_exhaustive_and_distinct():
 
 def test_death_dttm_establishes_death_without_a_terminal_discharge():
     """'death_dttm or, if unavailable, discharge_dttm when the category is
-    hospice or expired.' MEASURED at UCMC: 3,066 patients carry a death_dttm with
-    NO death discharge, so this branch is not hypothetical."""
+    hospice or expired.' Many patients carry a death_dttm with NO death
+    discharge, so this branch is not hypothetical."""
     got = _tte({"b": (900, [(0, "IMV"), (71, "IMV"), (100, "Room Air")])}, {"b": "Home"},
                death_dttm_hr={"b": 300})
     assert bool(got.loc["b", "died"]) is True
