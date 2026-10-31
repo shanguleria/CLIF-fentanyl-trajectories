@@ -231,7 +231,7 @@ stack_with_risk_table <- function(p_main, p_table, row_height = 0.20) {
 # two curves are direct-labelled instead, which is what <= 4 series want anyway.
 # `theme_fn` is the dress, not the drawing: the pooled script wears house_ats()
 # and every figure beside this one in output/pooled/figures/ already does.
-liberation_panels <- function(occ, denom, landmark_d, horizon_d,
+liberation_panels <- function(occ, denom, landmark_d = NA_real_, horizon_d,
                               breaks_d = c(0, 3, 7, 14, 21, 28),
                               theme_fn = house) {
   stopifnot(
@@ -244,8 +244,13 @@ liberation_panels <- function(occ, denom, landmark_d, horizon_d,
   x_scale <- scale_x_continuous(
     breaks = brk, labels = brk / 24, limits = c(0, horizon_d * 24),
     expand = expansion(mult = c(0.01, 0.03)))
-  landmark <- geom_vline(xintercept = landmark_d * 24, colour = MUTED,
-                         linewidth = 0.4, linetype = "22")
+  # NA means DRAW NO RULE. The whole-cohort figure has no landmark -- most of
+  # that cohort never reaches T -- and a rule there would mark a boundary that
+  # does not apply to the patients being drawn. geom_blank() keeps the layer
+  # list the same shape so both panels compose identically.
+  landmark <- if (is.na(landmark_d)) geom_blank() else
+    geom_vline(xintercept = landmark_d * 24, colour = MUTED,
+               linewidth = 0.4, linetype = "22")
   pct <- function(n) 100 * n / denom
 
   # ---- top: alive, and cumulative incidence of first qualifying liberation ---

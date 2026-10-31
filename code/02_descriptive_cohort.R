@@ -91,7 +91,8 @@ OWNED <- list(phase = c(
   "pooling_continuous.csv",
   "pooling_histograms.csv",
   "provenance.json",
-  "fentanyl_curves.png", "liberation_survival.png", "captions.md"))
+  "fentanyl_curves.png", "liberation_survival.png",
+  "liberation_survival_all.png", "captions.md"))
 
 # Renames leave stale twins that clear_owned_outputs no longer names; retire them here.
 RETIRED <- c(
@@ -393,15 +394,17 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
 # No survival package is involved -- calling survfit() on uncensored data to
 # borrow a method's name would be decoration. See code/utils/dependencies.R.
 
-iv <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "imv_intervals.parquet")))
+iv <- as.data.frame(read_parquet(
+  file.path(phi_dir(dirs, "01_cohort"), "imv_intervals.parquet")))
 stopifnot(
-  "imv_intervals must carry the qualifying flag -- re-run code/01_build_cohort.py" =
-    all(c("t_start_hr", "t_end_hr", "is_imv", "qualifies", "accrued_h") %in% names(iv)),
-  # Containment, not equality: a landmark block whose every interval fell
-  # outside [0, horizon] is legitimately absent from iv. An interval belonging
-  # to no landmark block is not -- that is a join that went wrong.
-  "imv_intervals carries a block the landmark cohort does not" =
-    all(iv$encounter_block %in% elig))
+  "imv_intervals must carry the qualifying flag -- re-run the cohort build" =
+    all(c("t_start_hr", "t_end_hr", "is_imv", "qualifies", "accrued_h",
+          "landmark_eligible") %in% names(iv)),
+  # Containment, not equality: a block whose every interval fell outside
+  # [0, horizon] is legitimately absent. An interval belonging to no cohort
+  # block is not -- that is a join that went wrong.
+  "imv_intervals carries a block the analytic cohort does not" =
+    all(iv$encounter_block %in% course$encounter_block))
 
 HORIZON_H  <- as.numeric(COV$outcomes$vfd$horizon_days) * 24
 GRID_STEP_H <- 6            # smooth enough to draw, small enough to pool
@@ -411,132 +414,203 @@ grid_h <- seq(0, HORIZON_H, by = GRID_STEP_H)
 # number typed into a caption is a number that goes stale on the next rerun.
 wf_f <- file.path(dirs$out_final, "01_cohort", "diagnostics",
                   "waterfall_carryforward.csv")
-stopifnot("no waterfall diagnostic -- re-run code/01_build_cohort.py" =
+stopifnot("no waterfall diagnostic -- re-run the cohort build" =
             file.exists(wf_f))
 wf <- read.csv(wf_f, stringsAsFactors = FALSE)
 WF_CARRIED_PCT <- wf$pct[wf$metric == "cohort IMV-hours that are carry-forward"]
 stopifnot("the waterfall diagnostic has no carry-forward share" =
             length(WF_CARRIED_PCT) == 1 && is.finite(WF_CARRIED_PCT))
 
-lib <- tte[tte$landmark_eligible, ]
-lib <- lib[order(lib$encounter_block), ]
-n_lib <- nrow(lib)
+# ONE builder, called for the whole analytic cohort and for the landmark
+# cohort. Writing it twice would be two pictures of the same patients that
+# could disagree; `blocks` carries death_hr, hours_to_discharge and
+# lost_on_vent, and `ivx` the annotated intervals, so the only difference
+# between the two calls is which rows go in.
+occupancy <- function(blocks, ivx) {
+  blocks <- blocks[order(blocks$encounter_block), ]
+  n <- nrow(blocks)
+  free_iv <- ivx[ivx$qualifies, c("encounter_block", "t_start_hr", "t_end_hr")]
+  blk <- match(free_iv$encounter_block, blocks$encounter_block)
+  free_iv <- free_iv[!is.na(blk), ]; blk <- blk[!is.na(blk)]
 
-free_iv <- iv[iv$qualifies, c("encounter_block", "t_start_hr", "t_end_hr")]
-# Block x grid-point occupancy, filled by walking the ~2.5k qualifying SPELLS
-# rather than the 5.8k blocks x 113 points: the same answer, two orders of
-# magnitude fewer R-level calls.
-blk <- match(free_iv$encounter_block, lib$encounter_block)
-stopifnot("a qualifying spell belongs to no landmark block" = !anyNA(blk))
-in_free <- matrix(FALSE, nrow = n_lib, ncol = length(grid_h))
-# AT THE HORIZON, ASK ABOUT THE INSTANT BEFORE IT. Intervals are half-open and
-# clipped to the horizon, so a literal `t < t_end_hr` test at t = HORIZON_H is
-# false for everyone and the last column of the figure empties out -- the
-# day-28 bar would show every survivor back on a ventilator.
-g_eval <- pmin(grid_h, HORIZON_H - 1e-9)
-for (k in seq_len(nrow(free_iv))) {
-  hit <- g_eval >= free_iv$t_start_hr[k] & g_eval < free_iv$t_end_hr[k]
-  if (any(hit)) in_free[blk[k], hit] <- TRUE
+  # Block x grid-point occupancy, filled by walking the qualifying SPELLS
+  # rather than blocks x grid points: the same answer, two orders of magnitude
+  # fewer R-level calls.
+  #
+  # AT THE HORIZON, ASK ABOUT THE INSTANT BEFORE IT. Intervals are half-open
+  # and clipped to the horizon, so a literal `t < t_end_hr` test at
+  # t = HORIZON_H is false for everyone and the last column of the figure
+  # empties out -- the day-28 bar would show every survivor back on a vent.
+  in_free <- matrix(FALSE, nrow = n, ncol = length(grid_h))
+  g_eval <- pmin(grid_h, HORIZON_H - 1e-9)
+  for (k in seq_len(nrow(free_iv))) {
+    hit <- g_eval >= free_iv$t_start_hr[k] & g_eval < free_iv$t_end_hr[k]
+    if (any(hit)) in_free[blk[k], hit] <- TRUE
+  }
+
+  first_lib <- rep(Inf, n)
+  if (nrow(free_iv)) {
+    starts <- tapply(free_iv$t_start_hr, free_iv$encounter_block, min)
+    first_lib[match(names(starts), blocks$encounter_block)] <- as.numeric(starts)
+  }
+
+  # PRIORITY ORDER -- each test excludes the ones before it, so the four states
+  # are mutually exclusive by construction. The partition is asserted below.
+  do.call(rbind, lapply(seq_along(grid_h), function(j) {
+    t <- grid_h[j]
+    dead  <- !is.na(blocks$death_hr) & blocks$death_hr <= t
+    gone  <- !dead & (t >= blocks$hours_to_discharge)
+    lost  <- gone & blocks$lost_on_vent
+    # Discharged alive OFF the ventilator: still alive and still free, by the
+    # same extension ventilator_free_days() applies.
+    freed <- !dead & !lost & (in_free[, j] | gone)
+    data.frame(
+      hour = t, day = t / 24,
+      measure = c("alive, on IMV", "alive, free of IMV",
+                  "discharged alive, charted on IMV", "died", "cum_liberated"),
+      n_admissions = c(sum(!dead & !lost & !freed), sum(freed), sum(lost),
+                       sum(dead), sum(first_lib <= t)),
+      denominator = n, stringsAsFactors = FALSE)
+  }))
 }
 
-# First qualifying liberation per block: the cumulative-incidence event time.
-first_lib <- rep(Inf, n_lib)
-starts <- tapply(free_iv$t_start_hr, free_iv$encounter_block, min)
-first_lib[match(names(starts), lib$encounter_block)] <- as.numeric(starts)
+LIB_COHORTS <- list(
+  all            = course$encounter_block,
+  landmark_72h   = tte$encounter_block[tte$landmark_eligible])
+names(LIB_COHORTS)[2] <- sprintf("landmark_%dh", LANDMARK)
 
-# Occupancy, in PRIORITY order -- each test excludes the ones before it, so the
-# four states are mutually exclusive by construction rather than by hoping they
-# are. The partition is then asserted below anyway.
-occ <- do.call(rbind, lapply(seq_along(grid_h), function(j) {
-  t <- grid_h[j]
-  dead  <- !is.na(lib$death_hr) & lib$death_hr <= t
-  gone  <- !dead & (t >= lib$hours_to_discharge)
-  lost  <- gone & lib$vfd_zero_lost_on_vent
-  # Discharged alive OFF the ventilator: still alive and still free, by the
-  # same extension ventilator_free_days() applies.
-  freed <- !dead & !lost & (in_free[, j] | gone)
-  data.frame(
-    hour = t, day = t / 24,
-    measure = c("alive, on IMV", "alive, free of IMV",
-                "discharged alive, charted on IMV", "died", "cum_liberated"),
-    n_admissions = c(sum(!dead & !lost & !freed), sum(freed), sum(lost),
-                     sum(dead), sum(first_lib <= t)),
-    denominator = n_lib, stringsAsFactors = FALSE)
+liberation_survival <- do.call(rbind, lapply(names(LIB_COHORTS), function(tag) {
+  ids <- LIB_COHORTS[[tag]]
+  b <- course[course$encounter_block %in% ids,
+              c("encounter_block", "death_hr", "hours_to_discharge",
+                "lost_on_vent")]
+  o <- occupancy(b, iv[iv$encounter_block %in% ids, ])
+  states4 <- setdiff(unique(o$measure), "cum_liberated")
+  sums <- tapply(o$n_admissions[o$measure %in% states4],
+                 o$hour[o$measure %in% states4], sum)
+  stopifnot(
+    "the four occupancy states must partition the cohort at every point" =
+      all(sums == length(ids)),
+    "the cumulative incidence of liberation must be monotone" =
+      !is.unsorted(o$n_admissions[o$measure == "cum_liberated"]))
+  cbind(cohort = tag, o, stringsAsFactors = FALSE)
 }))
-occ$pct <- round(100 * occ$n_admissions / occ$denominator, 2)
+liberation_survival$pct <- round(
+  100 * liberation_survival$n_admissions / liberation_survival$denominator, 2)
 
-states4 <- setdiff(unique(occ$measure), "cum_liberated")
-sums <- tapply(occ$n_admissions[occ$measure %in% states4],
-               occ$hour[occ$measure %in% states4], sum)
-stopifnot(
-  "the four occupancy states must partition the landmark cohort at every point" =
-    all(sums == n_lib),
-  "the cumulative incidence of liberation must be monotone" =
-    !is.unsorted(occ$n_admissions[occ$measure == "cum_liberated"]))
-
-# THE AREA IDENTITY, verified rather than asserted in a caption. The free-of-IMV
-# band integrated from the landmark to the horizon is mean ALIVE-AND-IMV-FREE
-# DAYS. That is NOT mean VFD-28, and the gap between them is the whole point:
+# THE AREA IDENTITY, verified rather than asserted in a caption, on the
+# LANDMARK rows -- accrued_h is a VFD quantity and VFD needs a landmark. The
+# free-of-IMV band integrated from the landmark to the horizon is mean
+# ALIVE-AND-IMV-FREE DAYS. That is NOT mean VFD-28, and the gap is the point:
 # VFD retroactively zeroes anyone who dies inside the horizon, so the lived
 # ventilator-free time of everyone who died is real and is scored 0. The counts
 # are printed below rather than written here, where they would go stale.
-free_n <- occ$n_admissions[occ$measure == "alive, free of IMV"]
+lm_tag <- names(LIB_COHORTS)[2]
+lmrows <- liberation_survival[liberation_survival$cohort == lm_tag, ]
+n_lib <- lmrows$denominator[1]
+free_n <- lmrows$n_admissions[lmrows$measure == "alive, free of IMV"]
 # A grid point stands for the step that STARTS there, so the horizon itself is
 # not a step and must not be summed -- it is reported, not integrated.
 in_win <- grid_h >= LANDMARK & grid_h < HORIZON_H
 area_d <- sum(free_n[in_win]) * GRID_STEP_H / 24 / n_lib   # left Riemann sum
-exact_d <- sum(iv$accrued_h) / 24 / n_lib
+exact_d <- sum(iv$accrued_h[iv$landmark_eligible]) / 24 / n_lib
+lib <- tte[tte$landmark_eligible, ]
 cat(sprintf(
   paste0("\nLiberation and survival to day %g\n",
-         "  alive and IMV-free days per admission : %.2f  (grid) vs %.2f (exact)\n",
-         "  mean VFD-28 as scored                 : %.2f\n",
+         "  cohorts drawn: %s\n",
+         "  landmark: alive and IMV-free days per admission : %.2f (grid) vs %.2f (exact)\n",
+         "  landmark: mean VFD-28 as scored                 : %.2f\n",
          "    the difference is the %s admission(s) whose accrued free time\n",
          "    VFD zeroes for death inside the horizon, plus %s zeroed as\n",
          "    discharged alive while still charted on IMV\n"),
-  HORIZON_H / 24, area_d, exact_d, mean(lib$vfd_28),
+  HORIZON_H / 24, paste(names(LIB_COHORTS), collapse = ", "),
+  area_d, exact_d, mean(lib$vfd_28),
   format(sum(lib$vfd_zero_for_death), big.mark = ","),
   format(sum(lib$vfd_zero_lost_on_vent), big.mark = ",")))
 stopifnot(
   "the drawn band and the exported intervals disagree about free time" =
     abs(area_d - exact_d) < 0.25)
 
-liberation_survival <- occ[, c("hour", "day", "measure", "n_admissions",
-                               "denominator", "pct")]
+
+# ---- the two figures, one per cohort, from the one shipped frame ------------
+# liberation_panels() takes the rows for ONE cohort, so the CSV is subset here
+# rather than drawn from twice-computed data. landmark_d = NA on the whole
+# cohort: most of it never reaches 72h, so a landmark rule there would mark a
+# boundary that does not apply to the patients being drawn.
+lm_n <- n_lib
+all_n <- liberation_survival$denominator[liberation_survival$cohort == "all"][1]
+succ_h <- as.numeric(COV$outcomes$successful_extubation_hours)
+lost_all <- liberation_survival$n_admissions[
+  liberation_survival$cohort == "all" &
+    liberation_survival$measure == "discharged alive, charted on IMV" &
+    liberation_survival$hour == HORIZON_H]
+dead_all <- liberation_survival$n_admissions[
+  liberation_survival$cohort == "all" &
+    liberation_survival$measure == "died" &
+    liberation_survival$hour == HORIZON_H]
+
+SHARED_CAP <- paste0(
+  "UPPER PANEL, after MODE (Semler et al., NEJM Evid 2024) Figure 3: the share ",
+  "alive, and the cumulative incidence of a first SUCCESSFUL liberation -- at ",
+  "least %gh free of invasive ventilation -- with death as a competing risk. ",
+  "LOWER PANEL: where the cohort actually is, hour by hour. Discharge alive is ",
+  "carried forward to day %g in the ventilation state the patient left in, ",
+  "which is the rule ventilator_free_days() applies, so there is no censoring ",
+  "and the cumulative incidence is an exact proportion. The orange band is the ",
+  "%s admission(s) discharged alive while respiratory_support was still ",
+  "charting invasive ventilation; %s%% of the cohort's invasive-ventilation ",
+  "hours are waterfall carry-forward rather than charted device records ",
+  "(01_cohort/diagnostics/waterfall_carryforward.csv), so that band is partly ",
+  "a charting artefact. Mortality is IN-HOSPITAL and so a lower bound on ",
+  "%g-day mortality. Grid %gh.")
 
 register_caption("liberation_survival.png",
-  "Liberation from invasive ventilation and survival through day 28",
+  "Liberation from invasive ventilation and survival through day 28, landmark cohort",
   sprintf(paste0(
-    "All %s admissions ventilated at the %gh landmark, followed to day %g from ",
-    "the start of invasive ventilation; the dashed rule marks the landmark. ",
-    "UPPER PANEL, after MODE (Semler et al., NEJM Evid 2024) Figure 3: the ",
-    "share alive, and the cumulative incidence of a first SUCCESSFUL ",
-    "liberation -- at least %gh free of invasive ventilation -- with death as ",
-    "a competing risk. LOWER PANEL: where the cohort actually is, hour by ",
-    "hour. Discharge alive is carried forward to day %g in the ventilation ",
-    "state the patient left in, which is the rule ventilator_free_days() ",
-    "applies, so there is no censoring and the cumulative incidence is an ",
-    "exact proportion. The orange band is the %s admission(s) discharged ",
-    "alive while respiratory_support was still charting invasive ventilation; ",
-    "all of them are scored VFD-28 = 0 by rule, and %s%% of the cohort's ",
-    "invasive-ventilation hours are waterfall carry-forward rather than ",
-    "charted device records (01_cohort/diagnostics/waterfall_carryforward.csv). ",
-    "The free-of-IMV band integrates to %.1f alive and IMV-free days per ",
-    "admission between the landmark and day %g; mean VFD-28 is %.1f days, ",
-    "lower because VFD retroactively scores 0 for the %s admission(s) who ",
-    "died inside the horizon. Mortality is IN-HOSPITAL and so a lower bound ",
-    "on %g-day mortality. Grid %gh; denominator %s throughout."),
-    format(n_lib, big.mark = ","), LANDMARK, HORIZON_H / 24,
-    as.numeric(COV$outcomes$successful_extubation_hours), HORIZON_H / 24,
-    format(sum(lib$vfd_zero_lost_on_vent), big.mark = ","),
-    WF_CARRIED_PCT, area_d, HORIZON_H / 24, mean(lib$vfd_28),
+    "The %s admissions CONTINUOUSLY ventilated through the %gh landmark, ",
+    "followed to day %g from the start of invasive ventilation; the dashed ",
+    "rule marks the landmark. ", SHARED_CAP, " The free-of-IMV band integrates ",
+    "to %.1f alive and IMV-free days per admission between the landmark and ",
+    "day %g; mean VFD-28 is %.1f days, lower because VFD retroactively scores ",
+    "0 for the %s admission(s) who died inside the horizon. Denominator %s."),
+    format(lm_n, big.mark = ","), LANDMARK, HORIZON_H / 24,
+    succ_h, HORIZON_H / 24,
+    format(sum(lib$vfd_zero_lost_on_vent), big.mark = ","), WF_CARRIED_PCT,
+    HORIZON_H / 24, GRID_STEP_H,
+    area_d, HORIZON_H / 24, mean(lib$vfd_28),
     format(sum(lib$vfd_zero_for_death), big.mark = ","),
-    HORIZON_H / 24, GRID_STEP_H, format(n_lib, big.mark = ",")))
+    format(lm_n, big.mark = ",")))
 
-p_lib <- liberation_panels(liberation_survival, denom = n_lib,
-                           landmark_d = LANDMARK / 24,
-                           horizon_d = HORIZON_H / 24)
-ggsave(file.path(dirs$phase, "liberation_survival.png"), p_lib,
-       width = 7.2, height = 8.4, dpi = 300, bg = PAPER)
+register_caption("liberation_survival_all.png",
+  "Liberation from invasive ventilation and survival through day 28, whole cohort",
+  sprintf(paste0(
+    "ALL %s ventilated admissions -- the denominator the landmark cohort is ",
+    "drawn FROM, so the two figures read together show what the landmark ",
+    "selects. Followed to day %g from the start of invasive ventilation. NO ",
+    "LANDMARK RULE IS DRAWN: most of this cohort never reaches %gh, so the ",
+    "boundary does not apply to the patients shown, and no VFD is defined for ",
+    "them either -- VFD accrues from a landmark these admissions do not have. ",
+    SHARED_CAP, " At day %g, %s (%.1f%%) had died and %s (%.1f%%) were ",
+    "discharged alive while still charted on invasive ventilation. ",
+    "Denominator %s."),
+    format(all_n, big.mark = ","), HORIZON_H / 24, LANDMARK,
+    succ_h, HORIZON_H / 24, format(lost_all, big.mark = ","), WF_CARRIED_PCT,
+    HORIZON_H / 24, GRID_STEP_H,
+    HORIZON_H / 24, format(dead_all, big.mark = ","), 100 * dead_all / all_n,
+    format(lost_all, big.mark = ","), 100 * lost_all / all_n,
+    format(all_n, big.mark = ",")))
+
+for (tag in names(LIB_COHORTS)) {
+  d <- liberation_survival[liberation_survival$cohort == tag, ]
+  fn <- if (tag == "all") "liberation_survival_all.png" else "liberation_survival.png"
+  p_lib <- liberation_panels(
+    d, denom = d$denominator[1],
+    landmark_d = if (tag == "all") NA_real_ else LANDMARK / 24,
+    horizon_d = HORIZON_H / 24)
+  ggsave(file.path(dirs$phase, fn), p_lib,
+         width = 7.2, height = 8.4, dpi = 300, bg = PAPER)
+}
+
 
 
 # ---- 12. Baseline characteristics -- MOVED TO 07 --------------------------

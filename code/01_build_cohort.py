@@ -2072,6 +2072,87 @@ def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
     return iv[iv["t_end_hr"] > iv["t_start_hr"]].drop(columns=["run", "end_hr"])
 
 
+def _resolve_discharge_state(iv: pd.DataFrame, blocks: pd.Index,
+                             disc_h: pd.Series, died_in: pd.Series,
+                             horizon_h: float
+                             ) -> tuple[pd.DataFrame, set, pd.Series]:
+    """What happens to a block discharged ALIVE before the horizon.
+
+    THE ONLY PLACE THIS SPLIT LIVES. Config: outcomes.vfd._discharged_alive.
+    It keys on the ventilation STATE AT DISCHARGE, not on leaving early:
+      OFF IMV -> assume alive and IMV-free through the horizon; EXTEND the
+                 final spell, which is why `iv` comes back mutated.
+      ON IMV  -> lost to follow-up on a ventilator. VFD scores it zero, and the
+                 occupancy figure gives it a band of its own, because it means
+                 something different from either dying or staying ventilated.
+
+    Extracted 2026-10-30 so ventilator_free_days() (landmark cohort) and
+    occupancy_intervals() (whole analytic cohort) cannot drift about it. A
+    second copy of this rule would be two different pictures of the same
+    patients.
+    """
+    iv = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable")
+    last = iv.groupby("encounter_block").tail(1)
+    early_alive = (~died_in & (disc_h < horizon_h))
+
+    off = last[~last["is_imv"]]
+    ok = early_alive.reindex(off["encounter_block"]).fillna(False).to_numpy()
+    iv.loc[off.index[ok], "t_end_hr"] = horizon_h
+    extended = set(off.loc[off.index[ok], "encounter_block"])
+
+    on = last[last["is_imv"]]
+    lost_on_vent = pd.Series(False, index=blocks)
+    lost_on_vent.loc[list(set(on.loc[
+        early_alive.reindex(on["encounter_block"]).fillna(False).to_numpy(),
+        "encounter_block"]))] = True
+    return iv, extended, lost_on_vent
+
+
+def occupancy_intervals(cohort: pd.DataFrame, iv_all: pd.DataFrame,
+                        death_hr: pd.Series, eligible: set) -> pd.DataFrame:
+    """Annotated IMV / off-IMV intervals for the WHOLE ANALYTIC COHORT.
+
+    The landmark figure only ever needed the landmark cohort's intervals, so
+    that is all imv_intervals.parquet used to carry. The same picture for the
+    whole cohort -- which is most of the point, since it is the denominator the
+    landmark is drawn FROM -- needs them for every block.
+
+    Shares _resolve_discharge_state() with ventilator_free_days(), so the
+    extension and the lost-on-a-ventilator split are one rule, not two.
+
+    `accrued_h` IS A VFD QUANTITY and is only meaningful where a landmark
+    applies, so `landmark_eligible` ships beside it; a reader summing it over
+    the whole cohort would be adding credited hours for patients who have no
+    landmark. `qualifies` has no such caveat -- a spell either lasted
+    successful_extubation_hours or it did not.
+    """
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+    succ_h = float(COV["outcomes"]["successful_extubation_hours"])
+    landmark_h = float(COV["cohort"]["landmark_hours"])
+
+    idx = cohort.set_index("encounter_block")
+    disc_h = ((idx["followup_end_dttm"] - idx["anchor_dttm"])
+              .dt.total_seconds() / 3600)
+    died_in = (death_hr.reindex(idx.index) <= horizon_h).fillna(False)
+    iv, _extended, lost_on_vent = _resolve_discharge_state(
+        iv_all.copy(), idx.index, disc_h, died_in, horizon_h)
+
+    iv["dur_h"] = iv["t_end_hr"] - iv["t_start_hr"]
+    iv["qualifies"] = (~iv["is_imv"]) & (iv["dur_h"] >= succ_h)
+    iv["accrued_h"] = np.where(
+        iv["qualifies"],
+        (iv["t_end_hr"].clip(upper=horizon_h)
+         - iv["t_start_hr"].clip(lower=landmark_h)).clip(lower=0), 0.0)
+    iv["landmark_eligible"] = iv["encounter_block"].isin(eligible)
+
+    note("occupancy intervals, analytic cohort",
+         int(iv["encounter_block"].nunique()))
+    note("  of those blocks, landmark-eligible", len(eligible))
+    note("  discharged alive while still charted on IMV (whole cohort)",
+         int(lost_on_vent.sum()))
+    return iv.reset_index(drop=True), lost_on_vent, died_in
+
+
 def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
                          death_hr: pd.Series, landmark_h: float | None = None
                          ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -2111,24 +2192,8 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     # the right test for "alive at day 28", which `death_hr.isna()` is not.
     died_in = (death_hr.reindex(idx.index) <= horizon_h).fillna(False)
 
-    # Discharged alive before the horizon, split on the state AT discharge.
-    #   OFF IMV -> assume alive and IMV-free through day 28; extend the spell.
-    #   ON IMV  -> score zero: lost to follow-up on a ventilator, and unlikely to
-    #              liberate inside the horizon. See outcomes.vfd._definition.
-    last = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable") \
-             .groupby("encounter_block").tail(1)
-    early_alive = (~died_in & (disc_h < horizon_h))
-
-    off = last[~last["is_imv"]]
-    ok = early_alive.reindex(off["encounter_block"]).fillna(False).to_numpy()
-    iv.loc[off.index[ok], "t_end_hr"] = horizon_h
-    extended = set(off.loc[off.index[ok], "encounter_block"])
-
-    on = last[last["is_imv"]]
-    lost_on_vent = pd.Series(False, index=idx.index)
-    lost_on_vent.loc[list(set(on.loc[
-        early_alive.reindex(on["encounter_block"]).fillna(False).to_numpy(),
-        "encounter_block"]))] = True
+    iv, extended, lost_on_vent = _resolve_discharge_state(
+        iv, idx.index, disc_h, died_in, horizon_h)
 
     free = iv[~iv["is_imv"]].copy()
     free["dur_h"] = free["t_end_hr"] - free["t_start_hr"]
@@ -2378,8 +2443,9 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
 
 
 def course_exposure(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
-                    iv_all: pd.DataFrame, long: pd.DataFrame,
-                    dirs: dict) -> pd.DataFrame:
+                    iv_all: pd.DataFrame, long: pd.DataFrame, dirs: dict,
+                    lost_on_vent: pd.Series | None = None,
+                    died_in: pd.Series | None = None) -> pd.DataFrame:
     """Per-admission ventilation and sedation over the WHOLE course, not 72h.
 
     One row per ANALYTIC-COHORT block (`trajectory_long`'s denominator), not
@@ -2505,6 +2571,25 @@ def course_exposure(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
     print(f"  the two deliberate differences from trajectory_long, measured: "
           f"gating would remove {gated:,.0f} mcg/hr of window dose; the longer "
           f"extent adds {carry:,.0f} mcg inside the first {EXTENT_H:g}h")
+
+    # ---- the per-block inputs the occupancy figure needs ---------------------
+    # Carried here rather than in a third file: this is already one row per
+    # ANALYTIC-COHORT block, which is exactly the grain and exactly the
+    # denominator the whole-cohort liberation figure is drawn on.
+    idx = cohort.set_index("encounter_block")
+    out = out.merge(
+        pd.DataFrame({
+            "encounter_block": idx.index,
+            "death_hr": idx["death_hr"].to_numpy(),
+            "hours_to_discharge": ((idx["block_discharge_dttm"] - idx["anchor_dttm"])
+                                   .dt.total_seconds() / 3600).to_numpy(),
+        }), on="encounter_block", how="left")
+    if lost_on_vent is not None:
+        out["lost_on_vent"] = (lost_on_vent.reindex(out["encounter_block"])
+                               .fillna(False).to_numpy())
+    if died_in is not None:
+        out["died_in_horizon"] = (died_in.reindex(out["encounter_block"])
+                                  .fillna(False).to_numpy())
 
     vent = out["imv_hours"] > 0
     print(f"  IMV hours per block: median {out.loc[vent, 'imv_hours'].median():.1f}, "
@@ -3263,8 +3348,14 @@ def main() -> None:
     # and landmark_sensitivity all need the same intervals.
     iv_all = _imv_intervals(t["resp"], cohort,
                             float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0)
-    tte, iv_annot = build_time_to_event(cohort, long, t["resp"], iv_all)
-    course = course_exposure(cohort, t, mapping, iv_all, long, dirs)
+    tte, _iv_landmark = build_time_to_event(cohort, long, t["resp"], iv_all)
+    # Cohort-wide, so the liberation picture can be drawn for the denominator
+    # the landmark is selected FROM, not only for the landmark itself.
+    iv_annot, lost_on_vent, died_in = occupancy_intervals(
+        cohort, iv_all, cohort.set_index("encounter_block")["death_hr"],
+        set(tte["encounter_block"]))
+    course = course_exposure(cohort, t, mapping, iv_all, long, dirs,
+                             lost_on_vent, died_in)
 
     out = dirs["phi"]
     # Parquet is what later scripts read; CSV is the same table for human review.

@@ -1,5 +1,5 @@
 {
-    "definition_version": "0.11.0",
+    "definition_version": "0.12.0",
     "_date": "2026-10-27",
     "_purpose": "How the COORDINATING CENTRE combines site bundles. Read by code/pool_sites.R only; no site consumes it. Deliberately NOT in PROTOCOL_FILES: sites do not run the pooling, and putting it there would make a pooling-method edit bump the protocol version and force every site to re-run. It is stamped onto the pooled outputs instead.",
     "_authority": "Every entry implements a row of docs/cohort_and_outputs.md section 8 and names which one in its _why. If this file and that section disagree, the section is the specification and this file is the bug.",
@@ -180,6 +180,7 @@
             "method": "sum_counts",
             "grain": "admission",
             "keys": [
+                "cohort",
                 "hour",
                 "day",
                 "measure"
@@ -191,12 +192,12 @@
             "percents": {
                 "pct": "n_admissions"
             },
-            "_why": "THE 28-DAY LIBERATION AND SURVIVAL FIGURE'S OWN DATA, after MODE Figure 3. One row per (6-hourly grid point, measure). The four occupancy measures PARTITION the landmark cohort at every grid point, so they sum across sites exactly and the pooled stack is still a partition; cum_liberated is a separate cumulative count over the same denominator and must not be added to them. THE GRID IS FIXED at 0..horizon and shipped in full, including points where a measure is zero, so the key set is identical at every site and the pooled row is a sum over the same levels rather than an outer join that invents gaps. This file exists because VFD-28 = 0 means three different things -- died, still ventilated, or discharged alive while still charted on IMV -- and a pooled median hides which.",
+            "_why": "THE 28-DAY LIBERATION AND SURVIVAL FIGURE'S OWN DATA, after MODE Figure 3. One row per (6-hourly grid point, measure). The four occupancy measures PARTITION the landmark cohort at every grid point, so they sum across sites exactly and the pooled stack is still a partition; cum_liberated is a separate cumulative count over the same denominator and must not be added to them. THE GRID IS FIXED at 0..horizon and shipped in full, including points where a measure is zero, so the key set is identical at every site and the pooled row is a sum over the same levels rather than an outer join that invents gaps. This file exists because VFD-28 = 0 means three different things -- died, still ventilated, or discharged alive while still charted on IMV -- and a pooled median hides which. SHIPPED FOR TWO NESTED COHORTS, `all` and `landmark_<T>h`, so a reader can see what the landmark selects; `cohort` is a KEY and the two must never be summed.",
             "_order": 95,
             "_title": "Liberation from invasive ventilation and survival through the horizon",
             "_grain": "admission",
             "_numerator": "admissions in that state at that hour (the four occupancy measures), or admissions ever liberated by that hour (cum_liberated)",
-            "_denominator": "admissions ventilated at the landmark",
+            "_denominator": "admissions in that cohort -- the whole analytic cohort for `all`, the landmark cohort for `landmark_<T>h`",
             "_caveat": "DISCHARGE ALIVE IS CARRIED FORWARD to the horizon in the ventilation state the patient left in, which is the rule ventilator_free_days() applies, so there is no censoring and these are exact proportions rather than estimates. Mortality is IN-HOSPITAL and so a lower bound on 28-day mortality; a site whose extract carries post-discharge death will report a larger dead band for the same patients. The 'discharged alive, charted on IMV' band is partly a CHARTING artefact and its size varies with how completely a site populates respiratory_support.device_category -- read it next to 01_cohort/diagnostics/waterfall_carryforward.csv before comparing sites."
         },
         "02_descriptive/retention.csv": {
@@ -1060,6 +1061,7 @@
     },
     "_care_setting_display_groups_why": "PRESENTATION ONLY, for the pooled figures. Centre-side: no site reads this and it does not affect any analysis. MEASURED 2026-10-27 across UCMC and Rush: only 2 of 10 care_setting values -- ed and medical_icu -- appear at BOTH sites. The other eight are unique to one, so colouring 14 units by 10 raw settings makes the colour a site label with extra steps, which defeats the reason for using care_setting at all (seeing whether, say, medical ICUs cluster high ACROSS hospitals). Grouping to 6 comparable classes restores that reading. THE MAPPING IS A CLINICAL JUDGEMENT AND IS PROVISIONAL: whether general_icu is Medical and whether mixed_cardiothoracic_icu groups with cardiac or with surgical are SG's calls, not the code's. An unmapped value falls through to its own label rather than being silently bucketed. NOTE the grouping does not rescue comparability by itself -- at these two sites even the shared categories separate BY SITE (ED 11.5% vs 65.4%; medical ICUs 20.8-23.1% vs 26.9-45.8%), which is itself the finding: site dominates care setting.",
     "_changelog": {
+        "0.12.0": "2026-10-30. 02_descriptive/liberation_survival.csv gains `cohort` as its FIRST key and now ships two NESTED cohorts, `all` (the whole analytic cohort) and `landmark_<T>h`. The whole-cohort rows are the denominator the landmark is drawn from, so the two read together show what the landmark selects. A 0.11.0 bundle pools as the landmark rows only and would be summed with the new `all` rows if cohort were not keyed -- which is exactly why it is.",
         "0.11.0": "2026-10-30. RETIRES 02_descriptive/balanced_panels.csv -- a trajectory-era overlay nothing downstream consumed; the `panel_hours` label column and `panel_n` not-poolable column went with it, since no other file used either. ADDS 02_descriptive/course_summary.csv in its place: the same drugs described as per-admission distributions over the whole ventilation course rather than as window curves. A 0.10.0 bundle WILL BE REFUSED -- it still carries balanced_panels.csv, which no entry now claims, and that is the intended loud failure rather than a silent partial pool.",
         "0.10.0": "2026-10-30. Adds three files, none of which changes an existing quantity. 02_descriptive/liberation_survival.csv is the 28-day liberation-and-survival figure's own data (sum_counts; the four occupancy measures partition the cohort at every grid point). 01_cohort/diagnostics/waterfall_carryforward.csv and 01_cohort/diagnostics/landmark_sensitivity.csv are per_site_only diagnostics: how much of a site's invasive-ventilation time is clifpy waterfall carry-forward, and whether the 72h landmark selects a sicker cohort than 24h or 48h would. A bundle from 0.9.0 pools unchanged -- the new keys are additive.",
         "0.2.0": "2026-10-27, for protocol.json 0.8.0. Four 05 files gained `cohort` as their FIRST key (all | landmark). Four method checks moved to 05_titration/diagnostics/ and their spec keys moved with them. Table 1 strata changed from predominant dose band to cohort membership, so `stratum` in pooling_categorical.csv and pooling_continuous.csv takes overall | Landmark | Not landmark. A bundle from 0.1.0 WILL be refused: the moved files arrive at paths this spec does not claim, which is the intended loud failure rather than a silent partial pool.",
