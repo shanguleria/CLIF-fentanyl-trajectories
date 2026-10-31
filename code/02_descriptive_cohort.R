@@ -50,12 +50,6 @@ UNITS <- c(fentanyl = COV$exposure$units,
 
 MIN_CELL <- COV$reporting$small_cell_min_den
 
-# Where a categorical ships in both a full and a collapsed form, the full form is
-# published at `overall` only: both views over the same strata subtract.
-FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
-stopifnot("protocol.json must declare disclosure.full_levels_strata_scope" =
-            !is.null(FULL_SCOPE))
-
 # Absolute config-declared bins, never local quantiles -- those cannot be pooled.
 HSPEC <- COV$pooling$histograms$variables
 stopifnot("protocol.json must declare pooling.histograms.variables" =

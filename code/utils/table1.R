@@ -46,13 +46,49 @@ t1_continuous <- function(label, values, unit = NA_character_, digits = 1,
   list(display = disp, pool = pool, pool_cat = NULL)
 }
 
+# Cross-view withholding, for a scope that publishes BOTH views of a variable.
+# pool_cat protects a cell within one view; two views of one scope are two
+# equations over the same cells.
+#
+# Publishing a collapsed level reveals the sum of the suppressed source levels
+# inside it. That isolates a cell -- and so leaks -- only when the sum is over
+# exactly ONE of them: one suppressed source inside the level, or one outside
+# it. A sum over two or more is not new, the full row's own denominator already
+# gives the sum over all of them. Withholding wider than that protects nothing
+# and misdescribes a number table1.csv prints unsuppressed next door.
+t1_withhold_crossview <- function(pcc, pc, sc, collapse) {
+  i <- pcc$stratum == sc
+  src <- pc[pc$stratum == sc & pc$n_suppressed_small_cell == 1L, "level"]
+  hold <- pcc$level[i & pcc$n_suppressed_small_cell == 1L]
+  inside <- table(collapse_levels(src, map = collapse))
+  if (length(src))
+    hold <- union(hold, names(inside)[inside == 1L | length(src) - inside == 1L])
+  # min_suppressed_cells_per_row. A row sums to its published denominator, so a
+  # single withheld cell is subtraction. The partner must itself hold two or
+  # more suppressed sources, or recovering IT would isolate one.
+  if (length(hold) == 1L) {
+    g <- pcc[i & pcc$level %in% setdiff(names(inside)[inside >= 2L], hold), ]
+    if (nrow(g)) hold <- c(hold, g$level[which.min(g$n)])
+  }
+  j <- i & pcc$level %in% hold
+  pcc$n[j] <- NA_integer_
+  pcc$pct[j] <- NA_real_
+  pcc$n_suppressed_small_cell[j] <- 1L
+  pcc
+}
+
 # levels_shown: the levels that get a display row, in order. A level present in
 # the data but not listed still SHIPS in the tidy export -- it is only the
 # display that is curated, so a pooled count is never lost to a display choice.
 t1_categorical <- function(label, values, collapse = NULL, min_cell = 10,
-                           scope_order = names(values), levels_shown = NULL) {
+                           scope_order = names(values), levels_shown = NULL,
+                           full_scope = "all") {
   stopifnot("t1_categorical needs a named list of scopes" =
-              !is.null(names(values)) && all(nzchar(names(values))))
+              !is.null(names(values)) && all(nzchar(names(values))),
+            "full_scope names no scope in values" =
+              identical(full_scope, "all") || full_scope %in% names(values),
+            "full_scope applies only to a variable with a collapsed twin" =
+              identical(full_scope, "all") || !is.null(collapse))
   raw <- lapply(values, function(v) ifelse(is.na(v), "Missing", as.character(v)))
   shown <- if (is.null(collapse)) raw else lapply(raw, collapse_levels, map = collapse)
 
@@ -71,21 +107,14 @@ t1_categorical <- function(label, values, collapse = NULL, min_cell = 10,
   pc <- tidy_for(raw, label)
   if (!is.null(collapse)) {
     pcc <- tidy_for(shown, paste(label, "(collapsed)"))
-    # Cross-view suppression. pool_cat suppresses within one view, but a full and
-    # a collapsed view of the same scope are two equations over the same cells:
-    # a published collapsed level whose sources are all published but one gives
-    # that one by subtraction (Other = 4017 exposed a suppressed level as 67, and
-    # the row total then exposed Missing). So a collapsed level is withheld
-    # whenever any raw level feeding it is suppressed.
-    for (sc in unique(pc$stratum)) {
-      src <- pc[pc$variable == label & pc$stratum == sc &
-                  pc$n_suppressed_small_cell == 1L, "level"]
-      hit <- unique(collapse_levels(src, map = collapse))
-      i <- pcc$stratum == sc & pcc$level %in% hit
-      pcc$n[i] <- NA_integer_
-      pcc$pct[i] <- NA_real_
-      pcc$n_suppressed_small_cell[i] <- 1L
-    }
+    # protocol.json disclosure.full_levels_strata_scope: where a variable ships
+    # in both views, the FULL one ships in that scope alone. Two views over one
+    # scope are the mechanism that made suppression recoverable; the collapsed
+    # view ships in every scope because it is what Table 1 displays.
+    if (!identical(full_scope, "all"))
+      pc <- pc[pc$stratum == full_scope, , drop = FALSE]
+    for (sc in unique(pc$stratum))
+      pcc <- t1_withhold_crossview(pcc, pc, sc, collapse)
     pc <- rbind(pc, pcc)
   }
 

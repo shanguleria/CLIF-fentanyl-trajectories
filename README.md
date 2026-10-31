@@ -490,16 +490,24 @@ The suite is the preflight in `run_pipeline.sh` / `.ps1`, which runs these in
 order and stops on the first failure. `pytest tests/` runs them all at once.
 
 ```bash
+.venv/bin/python tests/test_config_parses.py # every tracked config is valid JSON
 .venv/bin/python code/check_config.py        # the site config is usable at all
-.venv/bin/python tests/test_protocol.py    # the covariate protocol is internally consistent
+.venv/bin/python tests/test_protocol.py      # the covariate protocol is internally consistent
 .venv/bin/python tests/test_fio2.py          # FiO2 unit handling (percent vs fraction)
 .venv/bin/python tests/test_outliers.py      # outlier bounds, both layers
 .venv/bin/python tests/test_waterfall_cache.py  # the cache key covers every input
 .venv/bin/python tests/test_doses.py         # dose unit conversion
-.venv/bin/python tests/test_pooling.py       # federated-pooling exports are exactly poolable
 .venv/bin/python tests/test_paths.py         # output locations and staleness guards
+Rscript tests/test_require_manifest.R        # the R side of the config-drift guard
+Rscript tests/test_table1_disclosure.R       # Table 1's two views cannot subtract back to a withheld cell
 .venv/bin/python tests/test_build_cohort.py  # Phase 0 logic
+.venv/bin/python tests/test_vfd.py           # ventilator-free days
 ```
+
+Three more validate what the run produced and so come **after** it:
+`tests/test_coefficient_meta.R`, `tests/test_pooling.py` (the federated-pooling
+exports are exactly poolable, and no suppressed cell is recoverable) and
+`tests/test_outcome_model.py`.
 
 Counts are deliberately not stated here. The numbers that used to be — 16, 14,
 30, 11, 12 — were wrong by 2026-09-23 for five of the six files listed (the true

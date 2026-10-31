@@ -1345,9 +1345,18 @@ T1_SHOW   <- unlist(T1$display_columns)
 T1_MODEL_ONLY <- unlist(T1$model_scope_only)
 T1_RACE   <- unlist(T1$race_levels)
 RACE_COLLAPSE <- COV$time_invariant$race$reporting_collapse
+# Where a variable ships in both a full and a collapsed form, the full form is
+# published in this scope alone: both views over one scope subtract. The key
+# moved here with Table 1 -- 02 declared it and, once it stopped emitting a
+# categorical, consumed it nowhere.
+FULL_SCOPE <- COV$disclosure$full_levels_strata_scope
 stopifnot(
   "display_columns must name declared scopes" = all(T1_SHOW %in% T1_SCOPES),
-  "protocol.json must declare race.reporting_collapse" = !is.null(RACE_COLLAPSE))
+  "protocol.json must declare race.reporting_collapse" = !is.null(RACE_COLLAPSE),
+  "protocol.json must declare disclosure.full_levels_strata_scope" =
+    !is.null(FULL_SCOPE),
+  "disclosure.full_levels_strata_scope must be 'all' or a Table 1 scope" =
+    identical(FULL_SCOPE, "all") || FULL_SCOPE %in% T1_SCOPES)
 
 # The scope frames. `base` is window 0 for EVERY block, so it is the descriptive
 # denominator including admissions that never received fentanyl; `d_landmark` is
@@ -1391,7 +1400,7 @@ T1_PARTS <- list(
   # still ships in the tidy export, so no pooled count is lost to a display choice.
   t1_categorical("Race", t1_vals("race"), collapse = RACE_COLLAPSE,
                  min_cell = MIN_CELL, scope_order = T1_SHOW,
-                 levels_shown = T1_RACE),
+                 levels_shown = T1_RACE, full_scope = FULL_SCOPE),
   t1_cont("Charlson Comorbidity Index", "cci", "index", 0),
   t1_cont("SOFA at baseline (24h pre-intubation)", "sofa_baseline", "points", 0),
   t1_cont("First IMV episode, hours", "first_imv_episode_hours", "hours", 1),

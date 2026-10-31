@@ -30,6 +30,9 @@ if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Not
 # The R side of the same machinery -- see the comment in run_pipeline.sh.
 & Rscript tests/test_require_manifest.R
 if ($LASTEXITCODE -ne 0) { Write-Error "the config-drift guard failed its tests. Nothing was run." }
+# Pure functions again -- see the comment in run_pipeline.sh.
+& Rscript tests/test_table1_disclosure.R
+if ($LASTEXITCODE -ne 0) { Write-Error "Table 1's disclosure rules failed their tests. Nothing was run." }
 & $py tests/test_build_cohort.py
 if ($LASTEXITCODE -ne 0) { Write-Error "cohort-build logic failed its tests. Nothing was run." }
 & $py tests/test_vfd.py

@@ -54,6 +54,14 @@ if ! Rscript tests/test_require_manifest.R; then
   echo "ERROR: the config-drift guard failed its tests. Nothing was run." >&2
   exit 1
 fi
+# Pure functions again: the disclosure rules on Table 1's categorical export.
+# The branches that matter are inert on a large site's data, so they are checked
+# on hand-built scopes here rather than only on what today's run happened to
+# produce.
+if ! Rscript tests/test_table1_disclosure.R; then
+  echo "ERROR: Table 1's disclosure rules failed their tests. Nothing was run." >&2
+  exit 1
+fi
 if ! "$PY" tests/test_build_cohort.py; then
   echo "ERROR: cohort-build logic failed its tests. Nothing was run." >&2
   exit 1
