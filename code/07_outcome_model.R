@@ -682,6 +682,23 @@ fit_one <- function(frame, form, label, why, nominal = NULL) {
   # filter misses them and clm drops rows itself, after the collapse was sized.
   vars <- setdiff(c(all.vars(form), all.vars(nominal)), c("vfd_ord", "icu"))
   frame <- frame[stats::complete.cases(frame[, vars, drop = FALSE]), ]
+  # A factor covariate level seen in fewer than MIN_CELL admissions is dropped,
+  # not modelled: a handful of rows in one level separates perfectly (sexUnknown
+  # came back at log-odds 22.8 on the 48h frame, singular Hessian, every SE NA).
+  # The primary frame has no such level, so this is inert there. Counted below.
+  n_rare <- 0L
+  for (fv in intersect(vars, names(frame)[vapply(frame, function(x) is.factor(x) || is.character(x),
+                                                    logical(1))])) {
+    cnt <- table(frame[[fv]])
+    bad <- names(cnt)[cnt > 0 & cnt < MIN_CELL]
+    if (length(bad)) {
+      hit <- as.character(frame[[fv]]) %in% bad
+      n_rare <- n_rare + sum(hit)
+      cat(sprintf("  %s: dropped %d admission(s) in rare %s level(s) %s\n",
+                  label, sum(hit), fv, paste(bad, collapse = ", ")))
+      frame <- frame[!hit, ]
+    }
+  }
   frame <- collapse_units(frame)
   n_collapsed <- length(attr(frame, "collapsed"))
   n_dropped <- attr(frame, "dropped_n")
