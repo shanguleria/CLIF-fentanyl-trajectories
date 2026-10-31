@@ -11,7 +11,8 @@ PHI_LABEL <- paste(
   "transcript. Only `output/final_no_phi/` is shareable.",
   sep = "\n")
 
-# Directories this pipeline may write to. Per-script subfolders: phase_dir().
+# Directories this pipeline may write to. Per-script subfolders: phase_dir()
+# for the shareable tree, phi_dir() for the patient-level one.
 site_dirs <- function() {
   root <- here::here()
   d <- list(
@@ -32,6 +33,16 @@ site_dirs <- function() {
 # A per-script subfolder of the shareable output tree. Mirrors paths.py.
 phase_dir <- function(dirs, name) {
   d <- file.path(dirs$out_final, name)
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  d
+}
+
+# A per-script subfolder of the PATIENT-LEVEL tree. Mirrors paths.py.
+# The folder names the script that WROTE the file, never the one that reads it,
+# so a reader says where a table came from and the handoffs between scripts are
+# legible from the path. `_cache/` and the README label stay at the root.
+phi_dir <- function(dirs, name) {
+  d <- file.path(dirs$out_phi, name)
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
   d
 }
@@ -159,8 +170,8 @@ provenance <- function(config) {
 require_manifest <- function(dirs, root) {
   f <- file.path(dirs$out_final, "manifest.json")
   if (!file.exists(f)) {
-    stop("manifest.json is absent, so Phase 0 either never completed or ",
-         "was cleared. Re-run code/01_build_cohort.py; do not read the parquet ",
+    stop("manifest.json is absent, so the cohort build either never completed ",
+         "or was cleared. Re-run code/01_build_cohort.py; do not read the parquet ",
          "files that may still be on disk.", call. = FALSE)
   }
   m <- jsonlite::fromJSON(f)
@@ -177,7 +188,7 @@ require_manifest <- function(dirs, root) {
   nowl <- config_digests(root)
   now <- vapply(nowl, function(x) unname(as.character(x))[1], character(1))
   # A manifest key with no current counterpart is NOT agreement: the config that
-  # governed Phase 0 is gone under that name.
+  # governed the cohort build is gone under that name.
   missing_now <- setdiff(names(was), names(now))
   if (length(missing_now)) {
     stop("manifest.json records config file(s) that are no longer present: ",
@@ -188,7 +199,8 @@ require_manifest <- function(dirs, root) {
   }
   drift <- names(was)[now[names(was)] != was]
   if (length(drift)) {
-    stop("config has changed since Phase 0 ran: ", paste(drift, collapse = ", "),
+    stop("config has changed since the cohort build ran: ",
+         paste(drift, collapse = ", "),
          ". Re-run code/01_build_cohort.py rather than analysing stale tables.",
          call. = FALSE)
   }
@@ -199,7 +211,8 @@ require_manifest <- function(dirs, root) {
     # attribute too and report drift on equal digests.
     nowc <- unname(code_digests(root)$overall)
     if (!identical(as.character(m$code_digest), nowc)) {
-      cat(sprintf("  NOTE code changed since Phase 0 ran (%s -> %s); these outputs mix two code versions\n",
+      cat(sprintf(paste0("  NOTE code changed since the cohort build ran ",
+                         "(%s -> %s); these outputs mix two code versions\n"),
                   m$code_digest, nowc))
     }
   }

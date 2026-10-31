@@ -57,7 +57,7 @@ PAIN_VARS <- Filter(function(v)
 stopifnot("protocol.json declares no pain instrument as a covariate" =
             length(PAIN_VARS) >= 1)
 
-# The step-breaking threshold is the Phase 0 LOCF cap itself, read from the same key.
+# The step-breaking threshold is the cohort build's LOCF cap itself, read from the same key.
 CAP_H <- as.numeric(COV$time_varying$rass$locf$cap_hours)
 for (.v in PAIN_VARS)
   stopifnot("rass and every pain instrument must share one LOCF cap" =
@@ -91,7 +91,7 @@ if (SOURCE == "synthetic") {
 } else {
   dirs$phase <- phase_dir(dirs, "03_exemplar")
   manifest <- require_manifest(dirs, here())
-  message(sprintf("[03_exemplar] site=%s  reading Phase 0 outputs from code %s",
+  message(sprintf("[03_exemplar] site=%s  reading cohort-build outputs from code %s",
                   config$site_name, manifest$code_version))
   n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
   if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
@@ -105,8 +105,8 @@ if (SOURCE == "synthetic") {
                            window_h = WINDOW_H)
   PAIN_VAR <- PAIN_VARS[1]
 } else {
-  f_series <- file.path(dirs$out_phi, "exemplar_series.parquet")
-  f_meta   <- file.path(dirs$out_phi, "exemplar_meta.json")
+  f_series <- file.path(phi_dir(dirs, "01_cohort"), "exemplar_series.parquet")
+  f_meta   <- file.path(phi_dir(dirs, "01_cohort"), "exemplar_meta.json")
   if (!file.exists(f_series)) {
     stop("no exemplar export found. Re-run code/01_build_cohort.py, which ",
          "selects the exemplar and writes ", basename(f_series),
@@ -114,7 +114,7 @@ if (SOURCE == "synthetic") {
          call. = FALSE)
   }
   series <- as.data.frame(read_parquet(f_series))
-  # Phase 0 exports the trace under its variable name; relabel to `pain` before the
+  # The cohort build exports the trace under its variable name; relabel to `pain` before the
   # factor, or the levels below turn the whole trace into NA at a non-NVPS site.
   .found <- intersect(PAIN_VARS, unique(as.character(series$series)))
   stopifnot("the exemplar export carries no declared pain instrument" =

@@ -57,6 +57,7 @@ n_groups <- seq(ng_range[1], ng_range[2])
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "lcmm")   # shareable outputs, subdivided by script
+dirs$phi <- phi_dir(dirs, "tabled")   # patient-level, same subdivision
 prov <- provenance(config)
 
 message(sprintf("[lcmm_classes] site=%s  clif=%s  data=%s",
@@ -70,7 +71,7 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(
-  out_phi   = c("lcmm_fits.rds", "lcmm_group_assignments.csv"),
+  phi   = c("lcmm_fits.rds", "lcmm_group_assignments.csv"),
   phase = c("lcmm_ic_comparison.csv", "lcmm_vs_gbmt_ari.csv",
                 "lcmm_trajectories.png", "lcmm_bic_ng_plot.png",
                 "lcmm_provenance.json"))
@@ -81,14 +82,20 @@ OWNED <- list(
 # name-level find-and-replace cannot reach the old names (lessons.md #13).
 # Existing results were MOVED, not discarded; this only clears the twin a
 # re-run would otherwise leave behind.
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("lcmm_fits.rds",
+                           "lcmm_group_assignments.csv"))
+
 RETIRED <- file.path("output", "final_no_phi", paste0("05_", "lcmm"),
                      OWNED$phase)
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 # ---- 5. Data ----
 
-df_all <- as.data.frame(read_parquet(file.path(dirs$out_phi, "landmark_cohort.parquet")))
+df_all <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "tabled"), "landmark_cohort.parquet")))
 df_all <- df_all[, c("id_num", "window_idx", "total_dose")]
 
 
@@ -107,7 +114,7 @@ message(sprintf("  fitting on %s exposed episodes x %d windows",
                 length(unique(df$window_idx))))
 
 # Cross-check against gbmt cohort so a silent cohort drift cannot pass.
-gb_file <- file.path(dirs$out_phi, "gbmt_group_assignments.csv")
+gb_file <- file.path(phi_dir(dirs, "tabled"), "gbmt_group_assignments.csv")
 gb <- if (file.exists(gb_file)) read.csv(gb_file) else NULL
 if (!is.null(gb)) {
   gb_exposed <- gb$unit[gb$group != "never_exposed"]
@@ -149,7 +156,7 @@ for (g in n_groups) {
 }
 
 # Save as soon as they exist, PHI
-saveRDS(list(m1 = m1, fits = fits), file.path(dirs$out_phi, "lcmm_fits.rds"))
+saveRDS(list(m1 = m1, fits = fits), file.path(phi_dir(dirs, "tabled"), "lcmm_fits.rds"))
 message("saved lcmm_fits.rds")
 
 
@@ -228,7 +235,7 @@ assignments <- rbind(
              stratum = "never exposed", row.names = NULL))
 stopifnot("assignments must cover every landmark episode" =
             nrow(assignments) == length(n_exposed_windows))
-write.csv(assignments, file.path(dirs$out_phi, "lcmm_group_assignments.csv"),
+write.csv(assignments, file.path(phi_dir(dirs, "tabled"), "lcmm_group_assignments.csv"),
           row.names = FALSE)
 
 # Adjusted Rand index (ARI): agreement between two partitions of the same units,

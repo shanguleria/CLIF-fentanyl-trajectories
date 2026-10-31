@@ -35,7 +35,6 @@ set.seed(COV$model$seed)
 
 WINDOW_H  <- COV$cohort$window_hours
 EXTENT_H  <- COV$cohort$granular_extent_hours
-PANELS    <- unlist(COV$cohort$balanced_panel_hours)
 LANDMARK  <- COV$cohort$landmark_hours
 
 # Dose-band cuts are federation-critical: read from the config, never defaulted here.
@@ -79,7 +78,7 @@ message(sprintf("[04_delivery_states] site=%s  clif=%s  data=%s",
 # ---- 4. Guards ---------------------------------------------------------------
 
 manifest <- require_manifest(dirs, here())
-message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
+message(sprintf("  reading cohort-build outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(phase = c(
@@ -101,7 +100,7 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 # ---- 5. Read -----------------------------------------------------------------
 
 long <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
                  "total_dose", "window_mcg", "propofol_dose", "midazolam_dose",
@@ -112,7 +111,7 @@ long <- as.data.frame(read_parquet(
                  "died")))          # terminal states, section 12b below
 
 tte <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "time_to_event.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "time_to_event.parquet"),
   col_select = c("encounter_block", "landmark_eligible")))
 
 n_windows_expected <- EXTENT_H / WINDOW_H
@@ -123,7 +122,7 @@ stopifnot(
     max(long$window_start_hr) + WINDOW_H == EXTENT_H
 )
 
-# The Phase 1 denominator is ventilated, not alive_admitted.
+# This script's denominator is ventilated, not alive_admitted.
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 stopifnot(
   "a window cannot be ventilated without being alive and admitted" =

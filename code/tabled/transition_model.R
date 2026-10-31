@@ -87,6 +87,7 @@ stopifnot("TRANSITION_BOOT_REPS must be a positive integer" =
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "transitions")
+dirs$phi <- phi_dir(dirs, "tabled")   # patient-level, same subdivision
 prov <- provenance(config)
 
 message(sprintf("[transition_model] site=%s  clif=%s  data=%s",
@@ -109,7 +110,7 @@ PHASE5_STEMS <- c("transition_matrix.csv", "transition_counts.csv",
 # writer uses is the point: a stem added to one and not the other leaves a stale
 # file that the next run silently keeps.
 OWNED <- list(
-  out_phi = c("transition_model.rds"),
+  phi = c("transition_model.rds"),
   phase   = c(as.vector(outer(c("phase5_", "phase5_dose_"), PHASE5_STEMS, paste0)),
               "phase5_provenance.json"))
 # A stem removed from the writer leaves a stale twin the owned list no longer
@@ -123,13 +124,18 @@ OWNED <- list(
 # name-level find-and-replace cannot reach the old names (lessons.md #13).
 # Existing results were MOVED, not discarded; this only clears the twin a
 # re-run would otherwise leave behind.
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("transition_model.rds"))
+
 RETIRED <- c(
   file.path("output", "final_no_phi", paste0("06_", "transitions"),
             "phase5_complete_case_loss.csv"),
   file.path("output", "final_no_phi", paste0("06_", "transitions"), OWNED$phase),
   file.path("output", "final_no_phi", "transitions",
             "phase5_complete_case_loss.csv"))
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
@@ -141,7 +147,7 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 # before 72h, median at 24h.
 
 long <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
                  "total_dose", "window_mcg", "died",
@@ -784,7 +790,7 @@ for (R in RESULTS) {
 saveRDS(setNames(RESULTS, vapply(RESULTS, function(R)
                    if (nzchar(R$tag)) sub("_$", "", R$tag) else "route",
                    character(1))),
-        file.path(dirs$out_phi, "transition_model.rds"))
+        file.path(phi_dir(dirs, "tabled"), "transition_model.rds"))
 cat("written: transition_model.rds (PHI, both definitions)\n")
 
 write_json(prov, file.path(dirs$phase, "phase5_provenance.json"),

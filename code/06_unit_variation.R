@@ -93,7 +93,7 @@ message(sprintf("[06_unit_variation] site=%s  clif=%s  data=%s",
 # ---- 4. Guards ---------------------------------------------------------------
 
 manifest <- require_manifest(dirs, here())
-message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
+message(sprintf("  reading cohort-build outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 # Figure names derive from METRICS x UNIT_KEYS, so neither can leave a figure unowned.
@@ -101,7 +101,7 @@ METRICS <- c("coadmin", "indication")
 
 # location_name is OPTIONAL in the CLIF adt schema, so availability is read from the
 # SCHEMA before OWNED is derived from it, never asserted after the figures are written.
-.ci_path <- file.path(dirs$out_phi, "care_intervals.parquet")
+.ci_path <- file.path(phi_dir(dirs, "01_cohort"), "care_intervals.parquet")
 if (file.exists(.ci_path)) {
   .have <- names(arrow::open_dataset(.ci_path))
   .gone <- setdiff(UNIT_KEYS, .have)
@@ -143,13 +143,13 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 # ---- 5. Read -----------------------------------------------------------------
 
 ev <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "titration_events_classified.parquet")))
+  file.path(phi_dir(dirs, "05_titration"), "titration_events_classified.parquet")))
 ind_ev <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "indication_events.parquet")))
+  file.path(phi_dir(dirs, "05_titration"), "indication_events.parquet")))
 icu <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "care_intervals.parquet")))
+  file.path(phi_dir(dirs, "01_cohort"), "care_intervals.parquet")))
 yrs <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "anchor_year")))
 yrs <- unique(yrs)
 
@@ -186,7 +186,7 @@ attribute <- function(d, what) {
                  by = "encounter_block", all.x = FALSE)
   pairs <- pairs[pairs$t_hr >= pairs$t_start_hr & pairs$t_hr < pairs$t_end_hr, ]
 
-  # Phase 0 refuses overlapping intervals, so an event matches at most one.
+  # The cohort build refuses overlapping intervals, so an event matches at most one.
   stopifnot("an event matched more than one care interval" = !anyDuplicated(pairs$row_id))
 
   att <- merge(d, pairs[, c("row_id", UNIT_KEYS)], by = "row_id", all.x = TRUE)

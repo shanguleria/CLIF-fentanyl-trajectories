@@ -49,6 +49,7 @@ set.seed(COV$model$seed)
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "gbmt")   # shareable outputs, subdivided by script
+dirs$phi <- phi_dir(dirs, "tabled")   # patient-level, same subdivision
 prov <- provenance(config)
 
 message(sprintf("[gbmt_classes] site=%s  clif=%s  data=%s",
@@ -67,7 +68,7 @@ message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
 #   sidecar missing        -> the fits are from an interrupted or older run
 #   digests disagree       -> the fits predate the current config
 OWNED <- list(
-  out_phi   = c("gbmt_group_assignments.csv", "gbmt_ic_comparison.csv",
+  phi   = c("gbmt_group_assignments.csv", "gbmt_ic_comparison.csv",
                 "gbmt_fits_provenance.json"),
   phase = c("gbmt_exposure_stratum.csv", "gbmt_model_selection.csv",
                 "bic_ng_plot.png",
@@ -79,9 +80,17 @@ OWNED <- list(
 # name-level find-and-replace cannot reach the old names (lessons.md #13).
 # Existing results were MOVED, not discarded; this only clears the twin a
 # re-run would otherwise leave behind.
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("gbmt_group_assignments.csv",
+                           "gbmt_ic_comparison.csv",
+                           "gbmt_fits.rds",
+                           "gbmt_fits_provenance.json"))
+
 RETIRED <- file.path("output", "final_no_phi", paste0("04_", "gbmt"),
                      OWNED$phase)
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
@@ -92,7 +101,7 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 
 ## ---- Data ----
 # Read landmark_cohort parquet as df foy gbmt
-df_all <- as.data.frame(read_parquet(file.path(dirs$out_phi, "landmark_cohort.parquet")))
+df_all <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "tabled"), "landmark_cohort.parquet")))
 df_all <- df_all[, c("id_num", "window_idx", "total_dose")]
 
 ## ---- Exposure stratum ----
@@ -165,7 +174,7 @@ fits <- lapply(n_groups, function(g) {
 names(fits) <- paste0("ng", n_groups)
 
 # Save fits
-saveRDS(fits, file.path(dirs$out_phi, "gbmt_fits.rds"))
+saveRDS(fits, file.path(phi_dir(dirs, "tabled"), "gbmt_fits.rds"))
 
 # Written only after the save succeeds, so its presence certifies the .rds. It
 # records everything that would make those fits stale.
@@ -183,7 +192,7 @@ write_json(list(
   n_units          = length(exposed_ids),
   n_windows        = length(unique(df$window_idx)),
   models           = names(fits)),
-  file.path(dirs$out_phi, "gbmt_fits_provenance.json"),
+  file.path(phi_dir(dirs, "tabled"), "gbmt_fits_provenance.json"),
   auto_unbox = TRUE, pretty = TRUE)
 
 message("saved gbmt_fits.rds (", length(fits), " fits) + provenance sidecar")
@@ -206,7 +215,7 @@ stopifnot(nrow(ic_table) == length(fits))
 print(ic_table)
 
 write.csv(ic_table,
-          file.path(dirs$out_phi, "gbmt_ic_comparison.csv"),
+          file.path(phi_dir(dirs, "tabled"), "gbmt_ic_comparison.csv"),
           row.names = FALSE)
 
 # Chen et al. layout: statistics as rows, one column per candidate ng, and a
@@ -272,7 +281,7 @@ stopifnot("assignments must cover every landmark episode" =
             nrow(assignments) == length(n_exposed_windows))
 
 write.csv(assignments,
-          file.path(dirs$out_phi, "gbmt_group_assignments.csv"),
+          file.path(phi_dir(dirs, "tabled"), "gbmt_group_assignments.csv"),
           row.names = FALSE)
 
 ## ---- Plot chosen model ----

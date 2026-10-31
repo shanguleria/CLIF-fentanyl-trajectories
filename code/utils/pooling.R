@@ -1,4 +1,4 @@
-# Federated-pooling exports, shared by Phases 1 and 2.
+# Federated-pooling exports, shared by the descriptive and landmark scripts.
 #
 # A median cannot be pooled across sites; a mean can, exactly, which is why sum
 # and sum_sq travel rather than mean and sd:

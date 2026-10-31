@@ -13,9 +13,15 @@ MANIFEST = "manifest.json"
 # Written into intermediate_phi/ at runtime so it survives `git clean -fdx`.
 PHI_LABEL = """# intermediate_phi
 
-Every patient-level artifact this pipeline produces: the Phase 0 analytic tables
-and the model fits that later phases read. One row per encounter block, or per
-encounter-block-window.
+Every patient-level artifact this pipeline produces: the cohort build's analytic
+tables and the model fits later scripts read. One row per encounter block, or
+per encounter-block-window.
+
+SUBDIVIDED BY THE SCRIPT THAT WROTE THE FILE, the same way output/final_no_phi/
+is -- `01_cohort/`, `05_titration/`, `07_outcome_model/`, `tabled/`. A reader
+therefore says where a table came from, and the handoffs between scripts are
+legible from the path. `_cache/` (the waterfall cache) and this label stay at
+the root: neither is a script's output.
 
 **This directory never leaves the site.** It is not part of any export bundle
 and must not be committed, copied to a shared drive, or read into an analysis
@@ -26,7 +32,8 @@ transcript. Only `output/final_no_phi/` is shareable.
 def site_dirs(repo: Path) -> dict[str, Path]:
     """Create and return the directories this pipeline may write to.
 
-    Per-script subfolders of out_final come from phase_dir(), not from here.
+    Per-script subfolders come from phase_dir() (shareable) and phi_dir()
+    (patient-level), not from here.
     """
     d = {
         "out_phi": repo / "output" / "intermediate_phi",
@@ -46,10 +53,30 @@ def site_dirs(repo: Path) -> dict[str, Path]:
 def phase_dir(dirs: dict[str, Path], name: str) -> Path:
     """A per-script subfolder of the shareable output tree.
 
-    The folder names the script that wrote the file; the phaseN_ file prefixes
-    stay, so the prefix still says which phase.
+    The folder names the script that wrote the file. The old phaseN_ file
+    prefixes were removed on 2026-09-23 -- the folder already says which script
+    produced a file, so the prefix said it twice. `phase` in this function's
+    name and in dirs["phase"] now means "this script's output folder" and
+    nothing more.
     """
     d = dirs["out_final"] / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def phi_dir(dirs: dict[str, Path], name: str) -> Path:
+    """A per-script subfolder of the PATIENT-LEVEL tree. Mirrors phase_dir().
+
+    Same rule as the shareable side: the folder names the script that WROTE the
+    file, never the one that reads it. So a reader says where a table came from
+    --- phi_dir(dirs, "01_cohort") / "trajectory_long.parquet" --- and the
+    handoffs between scripts are legible from the path instead of from a flat
+    directory of thirty files.
+
+    `_cache/` and the README label stay at the root: the first is not a script's
+    output and the second is about the whole tree.
+    """
+    d = dirs["out_phi"] / name
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -170,7 +197,7 @@ def clear_owned_outputs(dirs: dict[str, Path], owned: dict[str, list[str]],
             n += 1
     # A renumbered SCRIPT leaves the whole directory behind, so remove a retired
     # directory once it is empty -- never one that still holds anything, and
-    # never one this run writes to: a script may retire files in its OWN phase
+    # never one this run writes to: a script may retire files in its OWN output
     # directory, leaving it legitimately empty.
     live = {Path(v).resolve() for v in dirs.values()}
     for d in {(dirs["out_final"].parent.parent / rel).parent for rel in retired or []}:
@@ -196,8 +223,8 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
     f = dirs["out_final"] / MANIFEST
     if not f.exists():
         raise SystemExit(
-            f"{MANIFEST} is absent, so Phase 0 either never completed or was "
-            f"cleared. Re-run code/01_build_cohort.py; do not read the parquet "
+            f"{MANIFEST} is absent, so the cohort build either never completed or "
+            f"was cleared. Re-run code/01_build_cohort.py; do not read the parquet "
             f"files that may still be on disk."
         )
     m = json.loads(f.read_text())
@@ -213,7 +240,7 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
     drift = {k: (v, now.get(k)) for k, v in stamped.items() if now.get(k) != v}
     if drift:
         raise SystemExit(
-            f"config has changed since Phase 0 ran: "
+            f"config has changed since the cohort build ran: "
             + ", ".join(f"{k} {a} -> {b}" for k, (a, b) in drift.items())
             + ". Re-run code/01_build_cohort.py rather than analysing stale tables."
         )
@@ -222,6 +249,6 @@ def require_manifest(dirs: dict[str, Path], config: dict, repo: Path) -> dict:
     # centre compares.
     was = m.get("code_digest")
     if was and was != code_digests(repo)[0]:
-        print(f"  NOTE code changed since Phase 0 ran ({was} -> "
+        print(f"  NOTE code changed since the cohort build ran ({was} -> "
               f"{code_digests(repo)[0]}); these outputs mix two code versions")
     return m

@@ -68,7 +68,7 @@ def _vfd(blocks, deaths=None):
         cohort["encounter_block"])
     death_hr.index = cohort["encounter_block"]
     iv = B._imv_intervals(resp, cohort, HORIZON_H)
-    got = B.ventilator_free_days(cohort, iv, death_hr)
+    got, _ = B.ventilator_free_days(cohort, iv, death_hr)
     return got.set_index("encounter_block")["vfd_28"].to_dict()
 
 
@@ -322,7 +322,7 @@ def _tte(blocks, categories, death_dttm_hr=None):
                                  for b in cohort["encounter_block"]]]})
     cohort = cohort.merge(B.resolve_death(cohort, patient),
                           on="encounter_block", how="left")
-    return B.build_time_to_event(cohort, long, resp).set_index("encounter_block")
+    return B.build_time_to_event(cohort, long, resp)[0].set_index("encounter_block")
 
 
 def test_eligibility_is_the_state_at_T_not_any_record_in_the_window():
@@ -450,9 +450,89 @@ def test_a_site_without_death_dttm_falls_back_to_the_discharge():
                           "alive_admitted": True, "imv_status": 1}])
     cohort = cohort.merge(B.resolve_death(cohort, cohort[["patient_id"]]),
                           on="encounter_block", how="left")
-    got = B.build_time_to_event(cohort, long, resp).set_index("encounter_block")
+    got = B.build_time_to_event(cohort, long, resp)[0].set_index("encounter_block")
     assert bool(got.loc["b", "died"]) is True
     assert got.loc["b", "death_hr"] == pytest.approx(500.0)
+
+
+# ------------------------------------------- the exported intervals decompose
+def test_the_exported_intervals_sum_to_the_vfd_total_they_describe():
+    """ventilator_free_days() now also returns the intervals it summed, so a
+    figure can DECOMPOSE VFD rather than re-derive it from ext_hr. If the two
+    can drift the figure becomes a second, silently different, estimate."""
+    cohort, resp = _frames({
+        # liberated at 100h for 100h, reintubated, liberated again at 300h
+        "two": (672, [(0, "IMV"), (100, "NIPPV"), (200, "IMV"), (300, "NIPPV")]),
+        # a 20h interruption: a FAILED extubation, credited nothing
+        "failed": (672, [(0, "IMV"), (100, "NIPPV"), (120, "IMV")]),
+        "never": (672, [(0, "IMV")]),
+    })
+    death_hr = pd.Series(dtype=float).reindex(cohort["encounter_block"])
+    death_hr.index = cohort["encounter_block"]
+    iv = B._imv_intervals(resp, cohort, HORIZON_H)
+    out, annot = B.ventilator_free_days(cohort, iv, death_hr)
+
+    per_block = annot.groupby("encounter_block")["accrued_h"].sum()
+    for blk, hours in out.set_index("encounter_block")["vfd_hours"].items():
+        assert per_block.get(blk, 0.0) == pytest.approx(hours), blk
+    # EVERY interval is exported, ventilated ones included -- a figure has to
+    # draw the IMV time too, and only the off-IMV ones carry accrued_h.
+    assert annot["is_imv"].any() and (~annot["is_imv"]).any()
+    assert (annot.loc[annot["is_imv"], "accrued_h"] == 0).all()
+    assert not annot.loc[annot["encounter_block"] == "failed", "qualifies"].any()
+
+
+# ------------------------------------ the raw-gap rule, applied as a diagnostic
+def test_the_raw_gap_rule_closes_a_carried_forward_run():
+    """imv_episodes() closes an episode on a gap between RAW IMV records longer
+    than imv_episode_gap_hours; _imv_intervals() does not. _close_imv_on_raw_gap
+    applies that rule to the intervals so the difference can be MEASURED. It is
+    a diagnostic: nothing in the production path calls it."""
+    gap = float(B.EPISODE_GAP_H)
+    cohort, resp = _frames({"b": (672, [(0, "IMV")])})
+    iv = B._imv_intervals(resp, cohort, HORIZON_H)
+    assert len(iv) == 1 and iv.iloc[0]["t_end_hr"] == pytest.approx(672.0), \
+        "the waterfalled interval should run to follow-up; that is the premise"
+
+    raw = pd.DataFrame({"encounter_block": ["b", "b"], "hr": [0.0, 10.0]})
+    closed = B._close_imv_on_raw_gap(iv, raw, gap).sort_values("t_start_hr")
+    assert list(closed["is_imv"]) == [True, False]
+    assert closed.iloc[0]["t_end_hr"] == pytest.approx(10.0 + gap)
+    assert closed.iloc[1]["t_end_hr"] == pytest.approx(672.0)
+
+
+def test_the_raw_gap_rule_leaves_a_charted_run_alone():
+    """A run whose raw records reach its end is not carry-forward, and an IMV
+    run with no raw record inside it has no anchor to measure a gap from -- a
+    rule that fired there would be inventing an extubation."""
+    gap = float(B.EPISODE_GAP_H)
+    cohort, resp = _frames({"b": (200, [(0, "IMV")])})
+    iv = B._imv_intervals(resp, cohort, HORIZON_H)
+
+    charted = pd.DataFrame({"encounter_block": ["b"], "hr": [200.0 - gap / 2]})
+    assert B._close_imv_on_raw_gap(iv, charted, gap)["t_end_hr"].max() == \
+        pytest.approx(200.0)
+
+    none_inside = pd.DataFrame({"encounter_block": ["other"], "hr": [1.0]})
+    left = B._close_imv_on_raw_gap(iv, none_inside, gap)
+    assert len(left) == 1 and left.iloc[0]["t_end_hr"] == pytest.approx(200.0)
+
+
+def test_the_raw_gap_rule_merges_the_span_it_frees_with_the_next_off_imv_run():
+    """A released span butting up against an existing off-IMV interval must
+    become ONE spell: ventilator_free_days() qualifies a liberation on a single
+    interval's length, so two 30h halves would each fail the 48h test that the
+    merged 60h spell passes."""
+    gap = float(B.EPISODE_GAP_H)
+    cohort, resp = _frames({"b": (672, [(0, "IMV"), (200.0, "NIPPV")])})
+    iv = B._imv_intervals(resp, cohort, HORIZON_H)
+    raw = pd.DataFrame({"encounter_block": ["b"], "hr": [100.0]})
+    closed = B._close_imv_on_raw_gap(iv, raw, gap).sort_values("t_start_hr")
+
+    free = closed[~closed["is_imv"]]
+    assert len(free) == 1, "the freed span and the charted NIPPV run must merge"
+    assert free.iloc[0]["t_start_hr"] == pytest.approx(100.0 + gap)
+    assert free.iloc[0]["t_end_hr"] == pytest.approx(672.0)
 
 
 if __name__ == "__main__":

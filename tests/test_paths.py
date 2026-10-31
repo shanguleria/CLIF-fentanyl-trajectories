@@ -38,8 +38,8 @@ def test_paths_r_and_paths_py_expose_the_same_surface():
     """paths.R's own header says the two must agree, and nothing checked it.
 
     They did not: R's site_dirs() returned three keys to Python's four, and R had
-    no clear_owned_outputs() at all. This matters because Phase 0 (Python) writes
-    what Phases 1-6 (R) read -- a function that exists on one side only is a
+    no clear_owned_outputs() at all. This matters because the cohort build (Python) writes
+    what the R scripts read -- a function that exists on one side only is a
     guarantee that silently does not apply to half the pipeline.
     """
     r = (REPO / "code" / "utils" / "paths.R").read_text()
@@ -50,7 +50,7 @@ def test_paths_r_and_paths_py_expose_the_same_surface():
     # leading _ and R with a leading . (which the \w+ patterns above already
     # miss), so the two conventions differ and neither is part of the surface.
     py_fns = {f for f in py_fns if not f.startswith("_")}
-    # write_manifest is Python-only by design: only Phase 0 writes the manifest.
+    # write_manifest is Python-only by design: only the cohort build writes it.
     # Everything else must exist on both sides.
     py_only_by_design = {"write_manifest"}
     missing_in_r = py_fns - r_fns - py_only_by_design
@@ -64,7 +64,7 @@ def test_paths_r_and_paths_py_expose_the_same_surface():
 
 def test_the_two_site_dirs_return_the_same_key_set():
     """A directory the Python half creates and the R half cannot name is a place
-    Phase 0 writes and Phase 1 cannot read."""
+    the cohort build writes and the R scripts cannot read."""
     r = (REPO / "code" / "utils" / "paths.R").read_text()
     body = r[r.index("site_dirs <- function"):]
     body = body[:body.index("\n}")]
@@ -113,7 +113,7 @@ def test_the_r_staleness_guard_does_not_cry_wolf_on_an_unchanged_tree():
     """require_manifest() in paths.R compares the manifest's code_digest to the
     tree's. .sha_string() returns a NAMED character, so identical() compared the
     names attribute too and was FALSE for equal digests: every R script printed
-    `NOTE code changed since Phase 0 ran (424e4460bc02333e -> 424e4460bc02333e)`
+    `NOTE code changed since the cohort build ran (424e4460bc02333e -> 424e4460bc02333e)`
     -- the same hash twice -- on every run from 2026-10-02 to 2026-10-05.
 
     A guard that can never say "no drift" cannot report drift either, so the

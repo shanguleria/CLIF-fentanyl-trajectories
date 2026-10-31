@@ -1,9 +1,10 @@
 # ==============================================================================
 # 02_descriptive_cohort.R  --  cohort description: who, how long, how much fentanyl
 #
-# Purpose : Dose trajectory over the granular grid with balanced-panel overlays,
-#           the retention table that supplies the at-risk denominator, Table 1,
-#           and the pooling exports.
+# Purpose : Who the cohort is and how it is ventilated -- the retention table
+#           that supplies the at-risk denominator, the dose trajectory over the
+#           granular grid, per-admission ventilation and sedation over the whole
+#           course, the 28-day liberation picture, and the pooling exports.
 # Author  : Shan Guleria
 # Created : 2026-09-05
 # Inputs  : output/intermediate_phi/trajectory_long.parquet, time_to_event.parquet
@@ -35,7 +36,6 @@ set.seed(COV$model$seed)
 
 WINDOW_H  <- COV$cohort$window_hours
 EXTENT_H  <- COV$cohort$granular_extent_hours
-PANELS    <- unlist(COV$cohort$balanced_panel_hours)
 LANDMARK  <- COV$cohort$landmark_hours
 
 SED_UNITS <- COV$exposure$sedatives$units
@@ -47,7 +47,6 @@ DRUGS <- c(fentanyl = "total_dose",
 UNITS <- c(fentanyl = COV$exposure$units,
            setNames(vapply(SED_COLS, function(c) SED_UNITS[[c]], character(1)),
                     sub("_dose$", "", SED_COLS)))
-SEDATIVES <- setdiff(names(DRUGS), "fentanyl")
 
 MIN_CELL <- COV$reporting$small_cell_min_den
 
@@ -81,21 +80,29 @@ message(sprintf("[02_descriptive_cohort] site=%s  clif=%s  data=%s",
 # ---- 4. Guards ---------------------------------------------------------------
 
 manifest <- require_manifest(dirs, here())
-message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
+message(sprintf("  reading cohort-build outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(phase = c(
   "retention.csv",
-  "dose_summary.csv", "balanced_panels.csv",
+  "dose_summary.csv", "course_summary.csv",
   "imv_encounter_duration.csv",
+  "liberation_survival.csv",
   "pooling_continuous.csv",
   "pooling_histograms.csv",
   "provenance.json",
-  "fentanyl_curves.png", "fentanyl_balanced_panels.png",
-  "sedative_curves.png", "captions.md"))
+  "fentanyl_curves.png", "liberation_survival.png", "captions.md"))
 
 # Renames leave stale twins that clear_owned_outputs no longer names; retire them here.
 RETIRED <- c(
+  # Retired 2026-10-30 (SG): the balanced panels and the sedative curves were
+  # trajectory-era figures that were hard to read and that nothing downstream
+  # consumed. Replaced by course_summary.csv, which describes the same drugs as
+  # per-admission distributions over the WHOLE ventilation course rather than as
+  # overlaid window curves. The pooling_spec entry went with them.
+  file.path("output", "final_no_phi", "02_descriptive",
+            c("balanced_panels.csv", "fentanyl_balanced_panels.png",
+              "sedative_curves.png")),
   # Moved to 07_outcome_model/ on 2026-10-28 (protocol 0.17.0). Declared so a
   # copy left by an earlier run is cleared rather than read back as current.
   file.path("output", "final_no_phi", "02_descriptive",
@@ -129,7 +136,7 @@ if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_c
 # ---- 5. Read -----------------------------------------------------------------
 
 long <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "patient_id", "window_idx", "window_start_hr",
                  "alive_admitted", "imv_status", "inf_dose", "bolus_dose",
                  "total_dose", "window_mcg", "propofol_dose", "midazolam_dose",
@@ -140,8 +147,14 @@ long <- as.data.frame(read_parquet(
                  "died")))          # terminal states, section 12b below
 
 tte <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "time_to_event.parquet"),
-  col_select = c("encounter_block", "landmark_eligible")))
+  file.path(phi_dir(dirs, "01_cohort"), "time_to_event.parquet"),
+  col_select = c("encounter_block", "landmark_eligible",
+                 # Section 11b. Everything the 28-day liberation figure needs
+                 # about a block's fate; the WITHIN-block timing comes from
+                 # imv_intervals.parquet, read there.
+                 "died", "death_hr", "hours_to_discharge", "ext_hr",
+                 "vfd_28", "vfd_hours", "vfd_zero_lost_on_vent",
+                 "vfd_zero_for_death")))
 
 n_windows_expected <- EXTENT_H / WINDOW_H
 stopifnot(
@@ -151,7 +164,7 @@ stopifnot(
     max(long$window_start_hr) + WINDOW_H == EXTENT_H
 )
 
-# The Phase 1 denominator is ventilated, not alive_admitted.
+# This script's denominator is ventilated, not alive_admitted.
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 stopifnot(
   "a window cannot be ventilated without being alive and admitted" =
@@ -251,39 +264,83 @@ print(dose_summary[dose_summary$drug == "fentanyl" &
                      "pct_receiving_any")], row.names = FALSE)
 
 
-# ---- 9. Balanced panels ------------------------------------------------------
-# Frozen denominator: movement means within-patient change. Each panel spans
-# only its own window.
+# ---- 9. The whole ventilation course, per admission --------------------------
+# Replaces the balanced panels and the sedative curves, retired 2026-10-30.
+# Those
+# described dose as overlaid WINDOW curves inside the first 72h; this describes
+# the ADMISSION over the whole course, which is what the cohort's shape actually
+# turns on.
+#
+# FOUR NESTED COHORTS, NOT A PARTITION: all > landmark_24h > landmark_48h >
+# landmark_72h. Reported together so a reader can see what the landmark
+# restriction selects on EXPOSURE, not only on outcome. Never sum across them.
+#
+# The numbers come from course_exposure.parquet, which rebuilds the SAME hourly
+# exposure grid at the 28-day horizon rather than the 72h one -- see
+# course_exposure() in 01_build_cohort.py, which asserts that restricting it to
+# the first 72h reproduces trajectory_long's window_mcg exactly.
 
-still_vent_at <- function(h) {
-  w <- h / WINDOW_H - 1
-  unique(long$encounter_block[long$window_idx == w & long$ventilated])
+course <- as.data.frame(read_parquet(
+  file.path(phi_dir(dirs, "01_cohort"), "course_exposure.parquet")))
+stopifnot(
+  "course_exposure must cover the analytic cohort -- re-run code/01_build_cohort.py" =
+    setequal(course$encounter_block, unique(long$encounter_block)))
+
+# Landmark membership. THE ELIGIBILITY RULE IS NOT REIMPLEMENTED HERE: 72h comes
+# from time_to_event.parquet, and 24h/48h from the per-block membership
+# code/01_build_cohort.py already wrote from _landmark_eligible(). A second rule
+# in R would be a second definition.
+lm_mem <- as.data.frame(read_parquet(
+  file.path(phi_dir(dirs, "01_cohort"), "landmark_membership.parquet")))
+COHORTS <- c("all", sprintf("landmark_%dh", sort(unique(lm_mem$T_hours))))
+
+course_members <- function(tag) {
+  if (identical(tag, "all")) return(course$encounter_block)
+  th <- as.numeric(sub("^landmark_(\\d+)h$", "\\1", tag))
+  lm_mem$encounter_block[lm_mem$T_hours == th]
 }
 
-balanced_panels <- do.call(rbind, lapply(PANELS, function(h) {
-  ids <- still_vent_at(h)
-  if (!length(ids)) return(NULL)
-  x <- long[long$encounter_block %in% ids & long$window_start_hr < h, ]
-  do.call(rbind, lapply(sort(unique(x$window_idx)), function(w) {
-    y <- x[x$window_idx == w, ]
-    s <- summarise_dose(y$total_dose, "fentanyl", sprintf("balanced_ge_%dh", h),
-                        w, y$window_start_hr[1])
-    if (is.null(s)) return(NULL)
-    s$panel_hours <- h
-    s$panel_n <- length(ids)
-    s
+SED_CATS <- unlist(COV$exposure$sedatives$course_summary_categories)
+SED_RATE_UNITS <- vapply(SED_CATS,
+                         function(c) SED_UNITS[[paste0(c, "_dose")]],
+                         character(1))
+MEASURES <- c(
+  imv_hours                 = "hours",
+  fentanyl_infusion_hours   = "hours",
+  fentanyl_mcg              = "mcg",
+  fentanyl_mcg_per_imv_hour = "mcg/hour of IMV",
+  setNames(rep("hours", length(SED_RATE_UNITS)),
+           paste0(names(SED_RATE_UNITS), "_hours")),
+  setNames(unname(SED_RATE_UNITS), paste0(names(SED_RATE_UNITS), "_rate_mean")))
+stopifnot("course_exposure is missing a declared measure" =
+            all(names(MEASURES) %in% names(course)))
+
+course_summary <- do.call(rbind, lapply(COHORTS, function(tag) {
+  x <- course[course$encounter_block %in% course_members(tag), ]
+  do.call(rbind, lapply(names(MEASURES), function(m) {
+    v <- x[[m]]
+    v <- v[!is.na(v)]            # per-IMV-hour is undefined without IMV time
+    if (length(v) < MIN_CELL) return(NULL)
+    q <- unname(quantile(v, c(0.25, 0.5, 0.75, 0.90, 0.95)))
+    data.frame(
+      cohort = tag, measure = m, unit = unname(MEASURES[[m]]),
+      n = length(v), n_nonzero = sum(v > 0),
+      median = round(q[2], 3), q1 = round(q[1], 3), q3 = round(q[3], 3),
+      p90 = round(q[4], 3), p95 = round(q[5], 3),
+      mean = round(mean(v), 3), sd = round(stats::sd(v), 3),
+      # The pair that makes this poolable: an exact pooled mean and SD need no
+      # assumption about equal variances. The quantiles beside them do not pool.
+      sum = round(sum(v), 3), sum_sq = round(sum(v^2), 3),
+      min = round(min(v), 3), max = round(max(v), 3))
   }))
 }))
 
-cat("\nBalanced panels (fentanyl, frozen denominators)\n")
-for (h in PANELS) {
-  p <- balanced_panels[balanced_panels$panel_hours == h, ]
-  if (!nrow(p)) next
-  cat(sprintf("  >=%2dh  n=%5s  median %.2f -> %.2f %s (within-panel change %+.1f%%)\n",
-              h, format(p$panel_n[1], big.mark = ","), p$median[1],
-              p$median[nrow(p)], UNITS[["fentanyl"]],
-              100 * (p$median[nrow(p)] / p$median[1] - 1)))
-}
+cat("\nVentilation and sedation over the whole course, by cohort\n")
+print(course_summary[course_summary$measure %in%
+                       c("imv_hours", "fentanyl_mcg",
+                         "fentanyl_mcg_per_imv_hour"),
+                     c("cohort", "measure", "unit", "n", "median", "q1", "q3")],
+      row.names = FALSE)
 
 
 # ---- 11. IMV episodes --------------------------------------------------------
@@ -315,6 +372,171 @@ cat(sprintf("  patients contributing more than one block: %s of %s (%.1f%%)\n",
             format(sum(per_patient > 1), big.mark = ","),
             format(length(per_patient), big.mark = ","),
             100 * mean(per_patient > 1)))
+
+
+# ---- 11b. Liberation and survival to day 28 ----------------------------------
+# After MODE (Semler et al., NEJM Evid 2024) Figure 3. The question it answers
+# is not "what is the median VFD" but "where did the VFD go": a VFD-28 of 0 can
+# mean the patient died, or stayed ventilated, or was discharged alive while
+# respiratory_support was still charting IMV -- and those are different facts
+# with the same number. Each is a band here.
+#
+# DENOMINATOR IS THE WHOLE LANDMARK COHORT, not 07's complete-case modelling
+# frame. The figure describes the cohort's outcome, not the model's.
+#
+# DISCHARGE ALIVE IS CARRIED FORWARD TO DAY 28, in whatever ventilation state
+# the patient left in. That is not a new assumption: it is exactly what
+# ventilator_free_days() already does, so this decomposes VFD rather than
+# estimating it a second way. It also means EVERY block has a known state at
+# every point: there is no censoring, so the Aalen-Johansen cumulative
+# incidence collapses to an EXACT PROPORTION, which is what is computed below.
+# No survival package is involved -- calling survfit() on uncensored data to
+# borrow a method's name would be decoration. See code/utils/dependencies.R.
+
+iv <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "imv_intervals.parquet")))
+stopifnot(
+  "imv_intervals must carry the qualifying flag -- re-run code/01_build_cohort.py" =
+    all(c("t_start_hr", "t_end_hr", "is_imv", "qualifies", "accrued_h") %in% names(iv)),
+  # Containment, not equality: a landmark block whose every interval fell
+  # outside [0, horizon] is legitimately absent from iv. An interval belonging
+  # to no landmark block is not -- that is a join that went wrong.
+  "imv_intervals carries a block the landmark cohort does not" =
+    all(iv$encounter_block %in% elig))
+
+HORIZON_H  <- as.numeric(COV$outcomes$vfd$horizon_days) * 24
+GRID_STEP_H <- 6            # smooth enough to draw, small enough to pool
+grid_h <- seq(0, HORIZON_H, by = GRID_STEP_H)
+
+# Read, not restated: the caption quotes this site's carry-forward share, and a
+# number typed into a caption is a number that goes stale on the next rerun.
+wf_f <- file.path(dirs$out_final, "01_cohort", "diagnostics",
+                  "waterfall_carryforward.csv")
+stopifnot("no waterfall diagnostic -- re-run code/01_build_cohort.py" =
+            file.exists(wf_f))
+wf <- read.csv(wf_f, stringsAsFactors = FALSE)
+WF_CARRIED_PCT <- wf$pct[wf$metric == "cohort IMV-hours that are carry-forward"]
+stopifnot("the waterfall diagnostic has no carry-forward share" =
+            length(WF_CARRIED_PCT) == 1 && is.finite(WF_CARRIED_PCT))
+
+lib <- tte[tte$landmark_eligible, ]
+lib <- lib[order(lib$encounter_block), ]
+n_lib <- nrow(lib)
+
+free_iv <- iv[iv$qualifies, c("encounter_block", "t_start_hr", "t_end_hr")]
+# Block x grid-point occupancy, filled by walking the ~2.5k qualifying SPELLS
+# rather than the 5.8k blocks x 113 points: the same answer, two orders of
+# magnitude fewer R-level calls.
+blk <- match(free_iv$encounter_block, lib$encounter_block)
+stopifnot("a qualifying spell belongs to no landmark block" = !anyNA(blk))
+in_free <- matrix(FALSE, nrow = n_lib, ncol = length(grid_h))
+# AT THE HORIZON, ASK ABOUT THE INSTANT BEFORE IT. Intervals are half-open and
+# clipped to the horizon, so a literal `t < t_end_hr` test at t = HORIZON_H is
+# false for everyone and the last column of the figure empties out -- the
+# day-28 bar would show every survivor back on a ventilator.
+g_eval <- pmin(grid_h, HORIZON_H - 1e-9)
+for (k in seq_len(nrow(free_iv))) {
+  hit <- g_eval >= free_iv$t_start_hr[k] & g_eval < free_iv$t_end_hr[k]
+  if (any(hit)) in_free[blk[k], hit] <- TRUE
+}
+
+# First qualifying liberation per block: the cumulative-incidence event time.
+first_lib <- rep(Inf, n_lib)
+starts <- tapply(free_iv$t_start_hr, free_iv$encounter_block, min)
+first_lib[match(names(starts), lib$encounter_block)] <- as.numeric(starts)
+
+# Occupancy, in PRIORITY order -- each test excludes the ones before it, so the
+# four states are mutually exclusive by construction rather than by hoping they
+# are. The partition is then asserted below anyway.
+occ <- do.call(rbind, lapply(seq_along(grid_h), function(j) {
+  t <- grid_h[j]
+  dead  <- !is.na(lib$death_hr) & lib$death_hr <= t
+  gone  <- !dead & (t >= lib$hours_to_discharge)
+  lost  <- gone & lib$vfd_zero_lost_on_vent
+  # Discharged alive OFF the ventilator: still alive and still free, by the
+  # same extension ventilator_free_days() applies.
+  freed <- !dead & !lost & (in_free[, j] | gone)
+  data.frame(
+    hour = t, day = t / 24,
+    measure = c("alive, on IMV", "alive, free of IMV",
+                "discharged alive, charted on IMV", "died", "cum_liberated"),
+    n_admissions = c(sum(!dead & !lost & !freed), sum(freed), sum(lost),
+                     sum(dead), sum(first_lib <= t)),
+    denominator = n_lib, stringsAsFactors = FALSE)
+}))
+occ$pct <- round(100 * occ$n_admissions / occ$denominator, 2)
+
+states4 <- setdiff(unique(occ$measure), "cum_liberated")
+sums <- tapply(occ$n_admissions[occ$measure %in% states4],
+               occ$hour[occ$measure %in% states4], sum)
+stopifnot(
+  "the four occupancy states must partition the landmark cohort at every point" =
+    all(sums == n_lib),
+  "the cumulative incidence of liberation must be monotone" =
+    !is.unsorted(occ$n_admissions[occ$measure == "cum_liberated"]))
+
+# THE AREA IDENTITY, verified rather than asserted in a caption. The free-of-IMV
+# band integrated from the landmark to the horizon is mean ALIVE-AND-IMV-FREE
+# DAYS. That is NOT mean VFD-28, and the gap between them is the whole point:
+# VFD retroactively zeroes anyone who dies inside the horizon, so the lived
+# ventilator-free time of everyone who died is real and is scored 0. The counts
+# are printed below rather than written here, where they would go stale.
+free_n <- occ$n_admissions[occ$measure == "alive, free of IMV"]
+# A grid point stands for the step that STARTS there, so the horizon itself is
+# not a step and must not be summed -- it is reported, not integrated.
+in_win <- grid_h >= LANDMARK & grid_h < HORIZON_H
+area_d <- sum(free_n[in_win]) * GRID_STEP_H / 24 / n_lib   # left Riemann sum
+exact_d <- sum(iv$accrued_h) / 24 / n_lib
+cat(sprintf(
+  paste0("\nLiberation and survival to day %g\n",
+         "  alive and IMV-free days per admission : %.2f  (grid) vs %.2f (exact)\n",
+         "  mean VFD-28 as scored                 : %.2f\n",
+         "    the difference is the %s admission(s) whose accrued free time\n",
+         "    VFD zeroes for death inside the horizon, plus %s zeroed as\n",
+         "    discharged alive while still charted on IMV\n"),
+  HORIZON_H / 24, area_d, exact_d, mean(lib$vfd_28),
+  format(sum(lib$vfd_zero_for_death), big.mark = ","),
+  format(sum(lib$vfd_zero_lost_on_vent), big.mark = ",")))
+stopifnot(
+  "the drawn band and the exported intervals disagree about free time" =
+    abs(area_d - exact_d) < 0.25)
+
+liberation_survival <- occ[, c("hour", "day", "measure", "n_admissions",
+                               "denominator", "pct")]
+
+register_caption("liberation_survival.png",
+  "Liberation from invasive ventilation and survival through day 28",
+  sprintf(paste0(
+    "All %s admissions ventilated at the %gh landmark, followed to day %g from ",
+    "the start of invasive ventilation; the dashed rule marks the landmark. ",
+    "UPPER PANEL, after MODE (Semler et al., NEJM Evid 2024) Figure 3: the ",
+    "share alive, and the cumulative incidence of a first SUCCESSFUL ",
+    "liberation -- at least %gh free of invasive ventilation -- with death as ",
+    "a competing risk. LOWER PANEL: where the cohort actually is, hour by ",
+    "hour. Discharge alive is carried forward to day %g in the ventilation ",
+    "state the patient left in, which is the rule ventilator_free_days() ",
+    "applies, so there is no censoring and the cumulative incidence is an ",
+    "exact proportion. The orange band is the %s admission(s) discharged ",
+    "alive while respiratory_support was still charting invasive ventilation; ",
+    "all of them are scored VFD-28 = 0 by rule, and %s%% of the cohort's ",
+    "invasive-ventilation hours are waterfall carry-forward rather than ",
+    "charted device records (01_cohort/diagnostics/waterfall_carryforward.csv). ",
+    "The free-of-IMV band integrates to %.1f alive and IMV-free days per ",
+    "admission between the landmark and day %g; mean VFD-28 is %.1f days, ",
+    "lower because VFD retroactively scores 0 for the %s admission(s) who ",
+    "died inside the horizon. Mortality is IN-HOSPITAL and so a lower bound ",
+    "on %g-day mortality. Grid %gh; denominator %s throughout."),
+    format(n_lib, big.mark = ","), LANDMARK, HORIZON_H / 24,
+    as.numeric(COV$outcomes$successful_extubation_hours), HORIZON_H / 24,
+    format(sum(lib$vfd_zero_lost_on_vent), big.mark = ","),
+    WF_CARRIED_PCT, area_d, HORIZON_H / 24, mean(lib$vfd_28),
+    format(sum(lib$vfd_zero_for_death), big.mark = ","),
+    HORIZON_H / 24, GRID_STEP_H, format(n_lib, big.mark = ",")))
+
+p_lib <- liberation_panels(liberation_survival, denom = n_lib,
+                           landmark_d = LANDMARK / 24,
+                           horizon_d = HORIZON_H / 24)
+ggsave(file.path(dirs$phase, "liberation_survival.png"), p_lib,
+       width = 7.2, height = 8.4, dpi = 300, bg = PAPER)
 
 
 # ---- 12. Baseline characteristics -- MOVED TO 07 --------------------------
@@ -402,87 +624,6 @@ register_caption("fentanyl_curves.png",
 ggsave(file.path(dirs$phase, "fentanyl_curves.png"), p_fent,
        width = 7.5, height = 7.6, dpi = 200)
 
-# --- Primary figure: fentanyl balanced panels --------------------------------
-# Mean as well as median: most ventilated windows are exactly zero, so the
-# median floors.
-bp <- balanced_panels
-bp$curve <- sprintf("Ventilated >=%dh (n=%s)", bp$panel_hours,
-                    trimws(format(bp$panel_n, big.mark = ",")))
-allc <- dose_summary[dose_summary$drug == "fentanyl" &
-                       dose_summary$denominator == "all_ventilated", ]
-allc$curve <- "All ventilated (changing denominator)"
-
-keep <- c("window_start_hr", "mean", "median", "pct_receiving_any", "curve")
-pdf_ <- rbind(bp[, keep], allc[, keep])
-lv <- c(sort(unique(bp$curve)), "All ventilated (changing denominator)")
-pdf_$curve <- factor(pdf_$curve, levels = lv)
-pal <- setNames(c("#a8c8ee", "#4a8bd8", "#14427e", "#eb6834")[seq_along(lv)], lv)
-
-panel_df <- rbind(
-  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$mean,
-             quantity = sprintf("MEAN dose (%s)", FENT_U)),
-  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$median,
-             quantity = sprintf("MEDIAN dose (%s)", FENT_U)),
-  data.frame(pdf_[, c("window_start_hr", "curve")], value = pdf_$pct_receiving_any,
-             quantity = "% receiving any fentanyl")
-)
-panel_df$quantity <- factor(panel_df$quantity, levels = unique(panel_df$quantity))
-
-p_panels <- house(
-  ggplot(panel_df, aes(window_start_hr, value, colour = curve)) +
-    geom_line(linewidth = 0.9) + geom_point(size = 1.3) +
-    facet_wrap(~ quantity, scales = "free_y", ncol = 1) +
-    scale_colour_manual(values = pal) +
-    guides(colour = guide_legend(nrow = 2)) +
-    labs(x = "Hours since first IMV episode", y = NULL, colour = NULL))
-
-register_caption("fentanyl_balanced_panels.png",
-  "Real dose change, or a changing mix of patients?",
-  paste0("Panels freeze the denominator at a ventilation duration. Mean and ",
-         "median are shown together: over half of ventilated windows are ",
-         "exactly zero, so the median falls onto the floor at h24 and every ",
-         "panel collapses onto one line."))
-ggsave(file.path(dirs$phase, "fentanyl_balanced_panels.png"), p_panels,
-       width = 7.5, height = 9.2, dpi = 200)
-
-# --- Secondary figure: the companion sedatives -------------------------------
-sed <- curves[curves$drug %in% SEDATIVES, ]
-# Facet order follows the config, not the alphabet.
-sed$facet <- factor(sprintf("%s (%s)", sed$drug, sed$unit),
-                    levels = sprintf("%s (%s)", SEDATIVES, UNITS[SEDATIVES]))
-
-prev <- vapply(SEDATIVES, function(d) {
-  v <- long[[DRUGS[[d]]]][long$ventilated]
-  100 * mean(v > 0, na.rm = TRUE)
-}, numeric(1))
-prev_txt <- paste(sprintf("%s %.1f%%", SEDATIVES, prev), collapse = ", ")
-# Wrap by hand: ggplot does not wrap a subtitle, it clips it at the canvas edge.
-prev_txt <- paste(strwrap(prev_txt, width = 66), collapse = "\n")
-
-sed_long <- rbind(
-  data.frame(sed[, c("window_start_hr", "series", "facet")],
-             value = sed$median, statistic = "median"),
-  data.frame(sed[, c("window_start_hr", "series", "facet")],
-             value = sed$mean, statistic = "mean")
-)
-sed_long$statistic <- factor(sed_long$statistic, levels = c("mean", "median"))
-
-p_sed <- house(
-  ggplot(sed_long, aes(window_start_hr, value, colour = series)) +
-    geom_line(linewidth = 0.9) + geom_point(size = 1.2) +
-    facet_grid(facet ~ statistic, scales = "free_y", switch = "y") +
-    scale_colour_manual(values = DOSE_COLS) +
-    labs(x = "Hours since first IMV episode", y = NULL, colour = NULL) +
-    theme(strip.placement = "outside", strip.text.y.left = element_text(angle = 90)))
-
-register_caption("sedative_curves.png", "Companion sedatives",
-  sprintf(paste0("Secondary to the fentanyl exposure. Infusions only. Share of ",
-                 "ventilated windows with any drug: %s"),
-          gsub("\n", "; ", trimws(prev_txt))))
-ggsave(file.path(dirs$phase, "sedative_curves.png"), p_sed,
-       width = 7.5, height = 2.2 * length(SEDATIVES) + 2.2, dpi = 200)
-
-
 # ---- Write -------------------------------------------------------------------
 
 write_out <- function(x, name) {
@@ -494,8 +635,9 @@ write_out <- function(x, name) {
 cat("\n")
 write_out(retention, "retention.csv")
 write_out(dose_summary, "dose_summary.csv")
-write_out(balanced_panels, "balanced_panels.csv")
 write_out(imv_encounter_duration, "imv_encounter_duration.csv")
+write_out(course_summary, "course_summary.csv")
+write_out(liberation_survival, "liberation_survival.csv")
 
 pooling_continuous <- do.call(rbind, POOL)
 write_out(pooling_continuous, "pooling_continuous.csv")

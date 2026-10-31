@@ -55,7 +55,7 @@ if ! Rscript tests/test_require_manifest.R; then
   exit 1
 fi
 if ! "$PY" tests/test_build_cohort.py; then
-  echo "ERROR: Phase 0 logic failed its tests. Nothing was run." >&2
+  echo "ERROR: cohort-build logic failed its tests. Nothing was run." >&2
   exit 1
 fi
 if ! "$PY" tests/test_vfd.py; then
@@ -64,7 +64,7 @@ if ! "$PY" tests/test_vfd.py; then
 fi
 echo
 
-echo "== Phase 0: build cohort (Python) =="
+echo "== Build cohort (Python) =="
 "$PY" code/01_build_cohort.py
 
 # The trajectory-modelling scripts (tabled/gbmt_classes, lcmm_classes,

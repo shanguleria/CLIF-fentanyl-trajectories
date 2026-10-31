@@ -75,6 +75,7 @@ T_SWEEP <- sort(unique(c(24, 48, LANDMARK)))
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "landmark")   # shareable outputs, subdivided by script
+dirs$phi <- phi_dir(dirs, "tabled")   # patient-level, same subdivision
 prov <- provenance(config)
 
 message(sprintf("[landmark_cohort] site=%s  clif=%s  data=%s",
@@ -91,7 +92,7 @@ OWNED <- list(
   # landmark_cohort.csv was dropped from the writer but left here until
   # 2026-09-23. A declared output nothing writes is the same defect as a
   # declared config key nothing reads.
-  out_phi = c("landmark_cohort.parquet"),
+  phi = c("landmark_cohort.parquet"),
   phase = c("landmark_flow.csv", "landmark_flow.txt",
                 "T_sensitivity.csv", "failed_extubation.csv",
                 "dose_curve.csv", "dose_curve.png",
@@ -112,6 +113,11 @@ OWNED <- list(
 # slot, so an uncleared 06_landmark/ would sit beside it in the shareable tree
 # looking like a current sibling of the live step rather than the output of a
 # tabled one.
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("landmark_cohort.parquet"))
+
 RETIRED <- c(
   file.path("output", "final_no_phi", paste0("03_", "landmark"),
             paste0("phase2_", c(
@@ -124,14 +130,14 @@ RETIRED <- c(
   file.path("output", "final_no_phi", paste0("04_", "landmark"), OWNED$phase),
   file.path("output", "final_no_phi", paste0("05_", "landmark"), OWNED$phase),
   file.path("output", "final_no_phi", paste0("06_", "landmark"), OWNED$phase))
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
 # ---- 5. Read -----------------------------------------------------------------
 
-long <- as.data.frame(read_parquet(file.path(dirs$out_phi, "trajectory_long.parquet")))
-tte  <- as.data.frame(read_parquet(file.path(dirs$out_phi, "time_to_event.parquet")))
+long <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet")))
+tte  <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "time_to_event.parquet")))
 
 stopifnot(
   "window count on disk disagrees with the config grid" =
@@ -439,7 +445,7 @@ stopifnot(
   "id_num must be a dense rank of encounter_block" =
     max(lm_out$id_num) == length(elig)
 )
-write_parquet(lm_out, file.path(dirs$out_phi, "landmark_cohort.parquet"))
+write_parquet(lm_out, file.path(phi_dir(dirs, "tabled"), "landmark_cohort.parquet"))
 cat(sprintf("\nwritten: landmark_cohort.parquet  %s rows x %d cols (PHI)\n",
             format(nrow(lm_out), big.mark = ","), ncol(lm_out)))
 

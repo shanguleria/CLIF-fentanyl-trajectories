@@ -1,4 +1,5 @@
-# Fentanyl delivery states, shared by Phase 1 (description) and Phase 5 (model).
+# Fentanyl delivery states, shared by the descriptive scripts (02, 04) and the
+# tabled transition model.
 # ONE definition in one place, or the model stops describing the figure.
 #
 # Seven mutually exclusive, exhaustive states per episode-window; four describe
@@ -122,7 +123,8 @@ add_history <- function(d, id = "encounter_block", time = "window_idx",
 # multistate models on one), and the terminal three states are shared, so
 # everything downstream works on either definition unmodified.
 #
-# A DECLARED band is not the latent class Phases 3-4 rejected: it asserts no
+# A DECLARED band is not the latent class the tabled gbmt/lcmm work rejected:
+# it asserts no
 # subpopulations, it only labels, as KDIGO stage cuts a continuous ratio.
 #
 # window_mcg, NOT total_dose: total_dose is a RATE (mcg/hr), window_mcg the

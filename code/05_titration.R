@@ -84,6 +84,7 @@ stopifnot(
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "05_titration")
+dirs$phi <- phi_dir(dirs, "05_titration")   # patient-level, same subdivision
 # Method checks and sensitivity analyses; everything here still ships.
 dirs$diagnostics <- phase_dir(dirs, file.path("05_titration", "diagnostics"))
 prov <- provenance(config)
@@ -95,11 +96,11 @@ message(sprintf("[05_titration] site=%s  clif=%s  data=%s",
 # ---- 4. Guards ---------------------------------------------------------------
 
 manifest <- require_manifest(dirs, here())
-message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
+message(sprintf("  reading cohort-build outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(
-  out_phi = c("titration_adherence.parquet",
+  phi = c("titration_adherence.parquet",
               "titration_events_classified.parquet",
               "indication_events.parquet"),
   # Reported directly.
@@ -113,18 +114,25 @@ OWNED <- list(
                   "charting_precision.csv", "charting_agreement.csv",
                   "window_sensitivity.png"))
 # Stale twins left in the phase directory from before the diagnostics/ split.
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("titration_adherence.parquet",
+                           "titration_events_classified.parquet",
+                           "indication_events.parquet"))
+
 RETIRED <- file.path("output", "final_no_phi", "05_titration",
                      c("window_sensitivity.csv", "indication_window_sensitivity.csv",
                        "charting_precision.csv", "charting_agreement.csv",
                        "window_sensitivity.png"))
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 
 # ---- 5. Read -----------------------------------------------------------------
 
-rate <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_rate_events.parquet")))
-bol  <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_bolus_events.parquet")))
+rate <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "titration_rate_events.parquet")))
+bol  <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "titration_bolus_events.parquet")))
 
 # Whole-hour timestamps throughout would mean the hourly grid leaked in.
 frac_sub <- mean(rate$t_hr %% 1 != 0)
@@ -132,7 +140,7 @@ stopifnot(
   "rate events look hour-binned, not charted -- the grid has leaked in" = frac_sub > 0.5,
   "the clock must be relative hours" = is.numeric(rate$t_hr) && min(rate$t_hr) >= 0)
 
-asm <- as.data.frame(read_parquet(file.path(dirs$out_phi, "assessment_events.parquet")))
+asm <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "assessment_events.parquet")))
 # Scales are NOT comparable (NVPS 0-10, CPOT 0-8, RASS -5..+4); each is cut at its OWN threshold.
 declared <- c(names(PAIN_THRESH), names(SED_THRESH))
 absent <- setdiff(declared, unique(asm$instrument))
@@ -143,7 +151,7 @@ stopifnot("no declared indication instrument is present in the export" =
             length(setdiff(declared, absent)) >= 1)
 
 long <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "window_idx", "imv_status")))
 long$ventilated <- !is.na(long$imv_status) & long$imv_status == 1
 
@@ -155,7 +163,7 @@ cat(sprintf("\n%s rate record(s), %s bolus record(s), %s episodes\n",
 # ---- 5b. Cohort strata -------------------------------------------------------
 # `cohort` is a KEY, not a label: landmark is a SUBSET of all and must never be summed into it.
 tte <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "time_to_event.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "time_to_event.parquet"),
   col_select = c("encounter_block", "landmark_eligible")))
 ELIG <- tte$encounter_block[tte$landmark_eligible]
 # NULL means no restriction, keeping the unrestricted pass byte-identical.
@@ -753,7 +761,7 @@ write_out(asm_freq, "assessment_frequency.csv")
 write_out(ind, "indication.csv")
 write_out(ind_sens, "indication_window_sensitivity.csv")
 
-write_parquet(adh, file.path(dirs$out_phi, "titration_adherence.parquet"))
+write_parquet(adh, file.path(phi_dir(dirs, "05_titration"), "titration_adherence.parquet"))
 cat("written: titration_adherence.parquet (PHI -- per encounter)\n")
 
 # Classified events for 06, which splits them and must not redefine them. Relative clock only.
@@ -765,7 +773,7 @@ stopifnot(
     min(ev_out$t_hr) >= 0 && max(ev_out$t_hr) <= EXTENT_H,
   "an event is unclassified" = all(ev_out$kind %in% EVENT_LEVELS)
 )
-write_parquet(ev_out, file.path(dirs$out_phi, "titration_events_classified.parquet"))
+write_parquet(ev_out, file.path(phi_dir(dirs, "05_titration"), "titration_events_classified.parquet"))
 cat(sprintf("written: titration_events_classified.parquet (PHI -- %d events, %d episodes)\n",
             nrow(ev_out), length(unique(ev_out$encounter_block))))
 
@@ -804,7 +812,7 @@ for (et in c("increase", "bolus")) {
   stopifnot("the handoff disagrees with indication.csv" = abs(here - there) < 0.05)
 }
 
-write_parquet(ind_ev, file.path(dirs$out_phi, "indication_events.parquet"))
+write_parquet(ind_ev, file.path(phi_dir(dirs, "05_titration"), "indication_events.parquet"))
 cat(sprintf("written: indication_events.parquet (PHI -- %s events, %s increases, %s boluses)\n",
             format(nrow(ind_ev), big.mark = ","),
             format(sum(ind_ev$event_type == "increase"), big.mark = ","),

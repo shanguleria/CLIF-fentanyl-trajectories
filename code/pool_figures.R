@@ -61,6 +61,14 @@ exp_label <- function(term) {
 
 # ---- anonymisation -----------------------------------------------------------
 site_label <- setNames(sprintf("Site %d", seq_along(SITES)), SITES)
+
+# ONE site -> hue map for the whole script, so a site is the same colour in
+# every figure that colours by site and one legend decodes all of them. Three
+# validated brand hues (figures.R) and cycling three over four is the one thing
+# that palette comment forbids, so past three sites this is NULL and the figures
+# that need it fall back to a form that does not colour by site.
+SITE_HUE <- if (K <= length(ATS_SERIES))
+  setNames(ATS_SERIES[seq_len(K)], unname(site_label[SITES])) else NULL
 cs_label <- function(v) {
   out <- vapply(as.character(v), function(x) {
     g <- CS_GROUP[[x]]; if (is.null(g)) x else g
@@ -287,25 +295,46 @@ if (file.exists(file.path(POOL, cf_f))) {
     # other reads the panels top-down and the stats in the opposite sequence.
     het <- het[order(match(as.character(het$term_label), EXP_ORDER)), , drop = FALSE]
     rng <- range(c(cf$or_ci_lo, cf$or_ci_hi), na.rm = TRUE)
+    # The forest's own colour key: a site, or the pool, which is not a site.
+    cf$hue <- ifelse(cf$is_pool, "Pooled", site_label[cf$site])
 
-    p_f5 <- ggplot(cf, aes(x = odds_ratio, y = label)) +
-      geom_vline(xintercept = 1, colour = MUTED, linewidth = 0.4) +
-      geom_errorbar(aes(xmin = or_ci_lo, xmax = or_ci_hi), orientation = "y",
-                    width = 0.18, linewidth = 0.5, colour = ATS_INK) +
-      geom_point(aes(size = wt_rel, shape = is_pool), colour = ATS_INK, fill = ATS_INK) +
-      scale_shape_manual(values = c(`FALSE` = 22, `TRUE` = 23), guide = "none") +
-      scale_size_area(max_size = 4.2, guide = "none", na.value = 3.6) +
-      scale_x_continuous(trans = "log10",
-                         breaks = scales::breaks_log(5),
-                         labels = function(x) formatC(x, format = "fg", digits = 3)) +
-      facet_wrap(~ term_label, ncol = 1, scales = "free_y") +
-      labs(x = sprintf("Odds of a better VFD-28 band, per %d percentage points (log scale)",
-                       round(100 * fromJSON(here("config", "protocol.json"),
-                                            simplifyVector = FALSE)$model$outcome_model$exposure_scale_per)),
-           y = NULL)
-    p_f5 <- house_ats(p_f5) + theme(panel.grid.major.y = element_blank(),
-                                panel.grid.major.x = element_line(colour = GRIDLINE,
-                                                                  linewidth = 0.4))
+    FOREST_X <- sprintf("Odds of a better VFD-28 band, per %d percentage points (log scale)",
+                        round(100 * fromJSON(here("config", "protocol.json"),
+                                             simplifyVector = FALSE)$model$outcome_model$exposure_scale_per))
+    # `hues` NULL draws the conventional monochrome forest, which is what the
+    # STANDALONE figure stays. The composite passes SITE_HUE so its single
+    # legend at the foot decodes every panel, including this one -- a reader
+    # told "Site 1 is blue" and shown an all-ink forest has been misled.
+    draw_forest <- function(hues = NULL) {
+      p <- ggplot(cf, aes(x = odds_ratio, y = label)) +
+        geom_vline(xintercept = 1, colour = MUTED, linewidth = 0.4)
+      p <- if (is.null(hues))
+        p + geom_errorbar(aes(xmin = or_ci_lo, xmax = or_ci_hi), orientation = "y",
+                          width = 0.18, linewidth = 0.5, colour = ATS_INK) +
+            geom_point(aes(size = wt_rel, shape = is_pool),
+                       colour = ATS_INK, fill = ATS_INK)
+      else
+        p + geom_errorbar(aes(xmin = or_ci_lo, xmax = or_ci_hi, colour = hue),
+                          orientation = "y", width = 0.18, linewidth = 0.5) +
+            geom_point(aes(size = wt_rel, shape = is_pool, colour = hue, fill = hue)) +
+            # The pooled diamond stays ink: it is the pool, not a fourth site,
+            # and giving it a hue would put it in the site legend.
+            scale_colour_manual(values = c(hues, Pooled = ATS_INK), guide = "none") +
+            scale_fill_manual(values = c(hues, Pooled = ATS_INK), guide = "none")
+      p <- p +
+        scale_shape_manual(values = c(`FALSE` = 22, `TRUE` = 23), guide = "none") +
+        scale_size_area(max_size = 4.2, guide = "none", na.value = 3.6) +
+        scale_x_continuous(trans = "log10",
+                           breaks = scales::breaks_log(5),
+                           labels = function(x) formatC(x, format = "fg", digits = 3)) +
+        facet_wrap(~ term_label, ncol = 1, scales = "free_y") +
+        labs(x = FOREST_X, y = NULL)
+      house_ats(p) +
+        theme(panel.grid.major.y = element_blank(),
+              panel.grid.major.x = element_line(colour = GRIDLINE, linewidth = 0.4))
+    }
+    p_f5     <- draw_forest()
+    p_f5_hue <- draw_forest(SITE_HUE)
     ggsave(file.path(FIG, "exposure_forest_pooled.png"), p_f5,
            width = 7.0, height = 1.4 + nrow(het) * (0.34 * length(lev) + 0.55),
            dpi = 300,
@@ -398,18 +427,27 @@ if (file.exists(file.path(POOL, ed_f))) {
 }
 
 
-# ---- Adjusted predicted VFD-28, one column per site -----------------------
+# ---- Adjusted predicted VFD-28, sites on one set of axes -------------------
 # NOT POOLED, and deliberately so: the curve is standardised over each site's own
 # covariate distribution, so three curves are not three estimates of one quantity
-# (pooling_spec.json adjusted_prediction._why). Shown side by side instead.
+# (pooling_spec.json adjusted_prediction._why). Overlaid on shared axes instead
+# of one column per site -- the ranges are close enough that a common scale
+# reads, and it frees the width for the three-part composite below.
 ap_f <- "07_outcome_model__adjusted_prediction.csv"
 if (file.exists(file.path(POOL, ap_f))) {
   ap <- rd(ap_f)
   ap <- ap[ap$site != "POOLED", , drop = FALSE]
   for (nm in grep("mean_vfd_28|pct_vfd_zero|exposure_pct", names(ap), value = TRUE))
     ap[[nm]] <- as.numeric(ap[[nm]])
+  # Three validated brand hues (figures.R), so the overlay holds to three sites.
+  # A fourth must BRING a fourth validated hue -- cycling three over four is the
+  # one thing the palette comment forbids -- so past that the figure goes back to
+  # one column per site and the composite is skipped rather than drawn wrong.
+  AP_OVERLAY <- nrow(ap) > 0 && !is.null(SITE_HUE)
+  AP_XLAB <- "Increases with a documented indication, % of an admission's increases"
   if (nrow(ap)) {
     ap$label <- factor(site_label[ap$site], levels = unname(site_label[SITES]))
+    ap$label <- droplevels(ap$label)
     long <- rbind(
       data.frame(label = ap$label, x = ap$exposure_pct, y = ap$mean_vfd_28,
                  lo = ap$mean_vfd_28_lo, hi = ap$mean_vfd_28_hi,
@@ -420,53 +458,148 @@ if (file.exists(file.path(POOL, ap_f))) {
     long$metric <- factor(long$metric,
                           levels = c("Adjusted mean VFD-28, days",
                                      "Adjusted % with VFD-28 = 0"))
+    ap_n <- vapply(levels(ap$label), function(l)
+      max(as.numeric(ap$n_admissions[ap$label == l])), numeric(1))
+    # n on the KEY, the way the forest puts it on the row label: a reader cannot
+    # take a denominator off a line, and there is no per-site strip left to hold it.
+    SITE_KEY <- sprintf("%s (n = %s)", levels(ap$label),
+                        formatC(ap_n, format = "d", big.mark = ","))
+
+    # One metric, every site on it. The x title is dropped here and drawn ONCE
+    # by compose_panels(): side by side, each panel is narrower than that title.
+    pred_panel <- function(m) {
+      d <- long[long$metric == m, , drop = FALSE]
+      p <- ggplot(d, aes(x = x, colour = label, fill = label)) +
+        geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+        geom_line(aes(y = y), linewidth = 0.7) +
+        geom_point(aes(y = y), size = 1.7) +
+        scale_colour_manual(values = SITE_HUE, labels = SITE_KEY, name = NULL) +
+        scale_fill_manual(values = SITE_HUE, guide = "none") +
+        scale_x_continuous(breaks = sort(unique(long$x))) +
+        labs(x = NULL, y = m)
+      house_ats(p) +
+        # The y title would otherwise sit on the tick labels, and the stripped
+        # legend row leaves its box spacing behind as a gap above the shared
+        # x title. Both are only visible once the panels are composed.
+        theme(axis.title.y = element_text(margin = margin(r = 6)),
+              legend.box.spacing = unit(0, "pt"),
+              plot.margin = margin(t = 4, r = 8, b = 0, l = 4))
+    }
+    # Tagged at COMPOSITION, not here: the same two panels are A/B standalone and
+    # B/C under the forest, so the tag cannot live in the panel that is reused.
+    tag_as <- function(p, tag)
+      p + labs(tag = tag) +
+        theme(plot.tag = element_text(family = ATS_FONT, colour = ATS_INK,
+                                      face = "bold", size = 13),
+              plot.tag.position = "topleft")
+
+    p_mean <- pred_panel("Adjusted mean VFD-28, days")
+    p_zero <- pred_panel("Adjusted % with VFD-28 = 0")
+  }
+
+  if (AP_OVERLAY) {
+    g_f7 <- compose_panels(
+      bottom = list(tag_as(p_mean, "A"), tag_as(p_zero, "B")),
+      heights = 3.3, x_title = AP_XLAB,
+      x_title_gp = grid::gpar(col = ATS_INK, fontfamily = ATS_FONT, fontsize = 12))
+    ggsave(file.path(FIG, "adjusted_prediction_by_site.png"), g_f7,
+           width = 7.2, height = 4.3, dpi = 300, bg = PAPER)
+  } else if (nrow(ap)) {
+    # Fallback past three sites: facets, which is what this figure was before a
+    # shared-axis overlay became legible at k = 3.
     p_f7 <- ggplot(long, aes(x = x)) +
-      geom_ribbon(aes(ymin = lo, ymax = hi),
-                  fill = ATS_FILL, alpha = 0.16) +
-      geom_line(aes(y = y), colour = ATS_SERIES[1],
-                linewidth = 0.7) +
+      geom_ribbon(aes(ymin = lo, ymax = hi), fill = ATS_FILL, alpha = 0.16) +
+      geom_line(aes(y = y), colour = ATS_SERIES[1], linewidth = 0.7) +
       geom_point(aes(y = y), colour = ATS_SERIES[1], size = 1.7) +
       facet_grid(metric ~ label, scales = "free_y", switch = "y") +
       scale_x_continuous(breaks = sort(unique(long$x))) +
-      labs(x = "Increases with a documented indication, % of an admission's increases",
-           y = NULL)
+      labs(x = AP_XLAB, y = NULL)
     p_f7 <- house_ats(p_f7) +
       theme(legend.position = "none", strip.placement = "outside",
             panel.spacing.x = unit(0.9, "lines"))
     ggsave(file.path(FIG, "adjusted_prediction_by_site.png"), p_f7,
-           # Floor the width at the x-axis TITLE's own length: the per-column
-           # formula alone gives 4.6in at k = 1 and clips the title.
-           width = max(6.6, 2.4 + 2.1 * length(unique(ap$label))),
-           height = 5.6, dpi = 300,
-           bg = PAPER)
+           width = max(6.6, 2.4 + 2.1 * nlevels(ap$label)), height = 5.6,
+           dpi = 300, bg = PAPER)
+  }
+
+  if (nrow(ap)) {
     register_caption(
       "adjusted_prediction_by_site.png",
       "Does documenting an indication for a fentanyl increase track ventilator-free days, at each site?",
       sprintf(paste0(
-        "One column per site, %d in all. Top row: adjusted mean VFD-28 in days. ",
-        "Bottom row: the adjusted share of admissions with VFD-28 exactly zero. ",
-        "Each is that site's PRIMARY proportional-odds model STANDARDISED over ",
-        "ITS OWN observed covariate distribution, with the band-to-days mapping ",
-        "it measured locally. DELIBERATELY NOT POOLED: standardising over ",
-        "different covariate distributions means three curves are not three ",
-        "estimates of one quantity, so combining them would average over three ",
-        "different populations while looking like a meta-analysis. What DOES ",
-        "pool is the exposure coefficient, by inverse variance, in ",
-        "exposure_forest_pooled.png. A pooled ",
-        "curve would have to be drawn FROM that pooled coefficient against a ",
-        "chosen reference covariate distribution, which is a protocol decision ",
-        "and is not done here. Y SCALES ARE FREE BETWEEN ROWS AND SHARED WITHIN ",
-        "A ROW, so the columns are comparable to each other but the two rows are ",
-        "not. Bands are bootstrap percentile intervals at each site's declared ",
-        "seed. Site n: %s. Sites are anonymised by the declared rule. AN ",
-        "ASSOCIATION, NOT AN EFFECT -- confounding by indication is unaddressed."),
-        length(unique(ap$label)),
-        paste(sprintf("%s n = %s", as.character(unique(ap$label)),
-                      formatC(vapply(unique(ap$label), function(l)
-                        max(as.numeric(ap$n_admissions[ap$label == l])), numeric(1)),
-                        format = "d", big.mark = ",")), collapse = "; ")))
+        "%d site(s), %s. A: adjusted mean VFD-28 in days. B: the adjusted share ",
+        "of admissions with VFD-28 exactly zero. Each curve is that site's ",
+        "PRIMARY proportional-odds model STANDARDISED over ITS OWN observed ",
+        "covariate distribution, with the band-to-days mapping it measured ",
+        "locally. DELIBERATELY NOT POOLED: standardising over different ",
+        "covariate distributions means %d curves are not %d estimates of one ",
+        "quantity, so combining them would average over %d different ",
+        "populations while looking like a meta-analysis. SHARED AXES ARE A ",
+        "VISUAL CONVENIENCE, NOT A POOLING CLAIM -- the vertical offset between ",
+        "sites is a difference in case mix and in local band-to-days mapping, ",
+        "and is NOT a between-site comparison. What DOES pool is the exposure ",
+        "coefficient, by inverse variance, in exposure_forest_pooled.png. A ",
+        "pooled curve would have to be drawn FROM that pooled coefficient ",
+        "against a chosen reference covariate distribution, which is a protocol ",
+        "decision and is not done here. THE TWO PANELS HAVE DIFFERENT UNITS AND ",
+        "SCALES and are not comparable to each other. Bands are bootstrap ",
+        "percentile intervals at each site's declared seed; they overlap, and ",
+        "overlap between sites is not a test. Sites are anonymised by the ",
+        "declared rule. AN ASSOCIATION, NOT AN EFFECT -- confounding by ",
+        "indication is unaddressed."),
+        nlevels(ap$label),
+        if (AP_OVERLAY) "colour-coded on shared axes" else
+          "one column per site -- the brand palette has no further validated hue, so the overlay is not drawn",
+        nlevels(ap$label), nlevels(ap$label), nlevels(ap$label)))
     cat("  adjusted_prediction_by_site.png\n")
   }
+}
+
+
+# ---- Three-part composite: the forest over the two adjusted-prediction panels --
+# The manuscript figure. B and C are the SAME plot objects the standalone
+# prediction figure saved, and A comes from the same draw_forest() the standalone
+# forest used, so a change to either cannot leave the composite showing the
+# previous version of itself. A differs only in taking the site hues.
+if (exists("p_f5_hue") && exists("p_mean") && isTRUE(AP_OVERLAY)) {
+  # A is sized by the forest's OWN row formula, so adding a site grows the band
+  # rather than squeezing it; the pair below keeps a fixed height, and the last
+  # inch is the shared x title and the legend, which size themselves.
+  H_A  <- 0.45 + nrow(het) * (0.34 * length(lev) + 0.55)
+  H_BC <- 3.1
+  g_abc <- compose_panels(
+    top    = tag_as(p_f5_hue, "A"),
+    bottom = list(tag_as(p_mean, "B"), tag_as(p_zero, "C")),
+    heights = c(H_A, H_BC), x_title = AP_XLAB,
+    x_title_gp = grid::gpar(col = ATS_INK, fontfamily = ATS_FONT, fontsize = 12))
+  ggsave(file.path(FIG, "outcome_model_composite.png"), g_abc,
+         width = 7.2, height = H_A + H_BC + 1.0, dpi = 300, bg = PAPER)
+  register_caption(
+    "outcome_model_composite.png",
+    "Does documenting an indication for a fentanyl increase track ventilator-free days?",
+    paste0(
+      "A: per-admission titration exposures against VFD-28, one sub-panel per ",
+      "exposure, from the PRIMARY proportional-odds model at each site. ",
+      "SQUARES ARE SITES, area proportional to inverse-variance weight; the ",
+      "DIAMOND is the pooled estimate, POOLED BY INVERSE VARIANCE ON THE ",
+      "LOG-ODDS. An odds ratio above 1 is higher odds of landing in a BETTER ",
+      "VFD-28 band, read against the band ordering and not against intuition. ",
+      "B and C: adjusted mean VFD-28 and the adjusted share with VFD-28 exactly ",
+      "zero, against the documented-indication exposure, each site standardised ",
+      "over ITS OWN covariate distribution and so DELIBERATELY NOT POOLED -- ",
+      "the shared axes are a visual convenience and the vertical offset between ",
+      "sites is case mix, not a between-site contrast. The pooled estimand in A ",
+      "is the WITHIN-SITE, ICU-adjusted association: unit fixed effects are ",
+      "site-local and are not shipped. Sites carry the same colour in B and C ",
+      "and in A, and are named once in the legend at the foot, which carries ",
+      "each site's n; A repeats n on its row labels and draws the POOLED ",
+      "estimate in ink, because the pool is not a site. ",
+      "Full per-panel notes, including the heterogeneity statistics for A and ",
+      "the bootstrap seeds for B and C, are in the captions for ",
+      "exposure_forest_pooled.png and adjusted_prediction_by_site.png, which ",
+      "draw the same numbers. Sites are anonymised by the declared rule. AN ",
+      "ASSOCIATION, NOT AN EFFECT -- confounding by indication is unaddressed."))
+  cat("  outcome_model_composite.png\n")
 }
 
 
@@ -591,6 +724,60 @@ if (file.exists(file.path(POOL, eu_f))) {
         if (n_suppressed)
           sprintf("%d unit(s) are absent: below the site's small-cell floor, so their statistics were blanked at the site and only their counts ship.", n_suppressed)
         else "Every unit shipped drawable statistics."))
+    cat(sprintf("  %s\n", fn))
+  }
+}
+
+# ---- Pooled liberation and survival to the horizon ---------------------------
+# The SAME liberation_panels() the site script draws, on the POOLED row of the
+# same CSV, so the pooled figure and the site figures cannot drift apart. The
+# measures are counts over a fixed grid, so the pooled stack is still a
+# partition -- summing them is the whole reason this file pools as sum_counts.
+ls_f <- "02_descriptive__liberation_survival.csv"
+if (file.exists(file.path(POOL, ls_f))) {
+  ls <- rd(ls_f)
+  ls <- ls[ls$site == "POOLED", , drop = FALSE]
+  for (nm in c("hour", "day", "n_admissions", "denominator"))
+    ls[[nm]] <- as.numeric(ls[[nm]])
+
+  if (nrow(ls)) {
+    denom <- max(ls$denominator)
+    stopifnot("a pooled grid point reports a different denominator" =
+                all(ls$denominator == denom))
+    horizon_d <- max(ls$day)
+    # The landmark is the protocol's, not read off the curve: a pooled file
+    # whose first liberation happened to fall elsewhere would move the rule.
+    COVP <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+    p_ls <- liberation_panels(ls, denom = denom,
+                              landmark_d = COVP$cohort$landmark_hours / 24,
+                              horizon_d = horizon_d, theme_fn = house_ats)
+    fn <- "liberation_survival.png"
+    ggsave(file.path(FIG, fn), p_ls, width = 7.2, height = 8.4, dpi = 300,
+           bg = PAPER)
+    dead_end <- ls$n_admissions[ls$measure == "died" & ls$hour == max(ls$hour)]
+    lost_end <- ls$n_admissions[ls$measure == "discharged alive, charted on IMV" &
+                                  ls$hour == max(ls$hour)]
+    register_caption(fn,
+      "Liberation from invasive ventilation and survival through the horizon, pooled",
+      sprintf(paste0(
+        "All %s admissions ventilated at the landmark across %d site(s), ",
+        "followed to day %g from the start of invasive ventilation; the ",
+        "dashed rule marks the landmark. Counts are summed across sites over ",
+        "an identical grid, never averaged over site percentages. UPPER ",
+        "PANEL, after MODE (Semler et al., NEJM Evid 2024) Figure 3: the share ",
+        "alive, and the cumulative incidence of a first successful ",
+        "liberation. LOWER PANEL: where the cohort is, hour by hour. At day ",
+        "%g, %s (%.1f%%) had died and %s (%.1f%%) were discharged alive while ",
+        "respiratory_support was still charting invasive ventilation -- both ",
+        "score VFD-28 = 0, for different reasons. THE ORANGE BAND IS PARTLY A ",
+        "CHARTING ARTEFACT and its size differs between sites with how ",
+        "completely each populates device_category; read it against each ",
+        "site's 01_cohort/diagnostics/waterfall_carryforward.csv before ",
+        "reading a between-site difference as clinical. Mortality is ",
+        "in-hospital and so a lower bound."),
+        format(denom, big.mark = ","), K, horizon_d, horizon_d,
+        format(dead_end, big.mark = ","), 100 * dead_end / denom,
+        format(lost_end, big.mark = ","), 100 * lost_end / denom))
     cat(sprintf("  %s\n", fn))
   }
 }

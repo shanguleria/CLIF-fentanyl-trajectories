@@ -603,7 +603,7 @@ def test_exactly_zero_is_its_own_bin():
 
 
 def test_a_suppressed_bin_keeps_its_count_and_loses_its_statistics():
-    """The small-cell rule the rest of the phase follows: the count stays so the
+    """The small-cell rule the rest of the script follows: the count stays so the
     bin is auditable, the statistics go."""
     mincell = json.loads((REPO / "config" / "protocol.json").read_text())["reporting"]["small_cell_min_den"]
     for r in rows("unadjusted_bins.csv"):

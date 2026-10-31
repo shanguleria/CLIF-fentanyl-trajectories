@@ -254,9 +254,9 @@ Describe **how fentanyl is delivered** to adults over the first days of invasive
 mechanical ventilation (IMV) — continuous infusion, intermittent bolus, both, or
 neither — and how that delivery pattern changes over the ventilation course.
 
-The pipeline is **descriptive**: cohort-level dosing curves with balanced-panel
-overlays, delivery-state prevalence and transitions, and a landmarked view of the
-first 72 hours.
+The pipeline is **descriptive**: cohort-level dosing curves, per-admission
+ventilation and sedation over the whole course, delivery-state prevalence and
+transitions, and a landmarked view of the first 72 hours.
 
 **Definitions live in `config/`.** `protocol.json` is the protocol — the
 cohort rules, the exposure, the covariates, the medication vocabulary, the
@@ -281,7 +281,7 @@ literature and the design notes are kept outside the repository.
 | Step | Language | Script | Description |
 |---|---|---|---|
 | 0 | Python | `code/01_build_cohort.py` | Load CLIF tables via clifpy, build the windowed trajectory table and the time-to-event table |
-| 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, balanced panels, pooling exports, dose-curve figures |
+| 1 | R | `code/02_descriptive_cohort.R` | Cohort description: Table 1 — **stratified on predominant fentanyl intensity**, an ordered declared rule so the p-value is a trend test — retention (the at-risk denominator), dose summaries, the per-admission course summary (ventilation and sedation over the whole 28-day course, by cohort), the 28-day liberation figure, pooling exports, dose-curve figures |
 | 2 | R | `code/03_exemplar.R` | **F1** — one ventilation course at sub-hourly resolution: infusion rate, boluses, RASS and the site's pain score. The episode is **drawn at random from those meeting the pre-specified rule** in `protocol.json` → `exemplar`, never chosen by inspection |
 | 3 | R | `code/04_delivery_states.R` | The seven delivery states: prevalence per window (on both the whole-cohort and the still-ventilated denominator), transitions, the alluvial, and a 100-episode per-patient raster. Every stacked area carries a numbers-at-risk table for window 0 and the windows **ending** at 24 / 48 / 72h. Figures are journal-style — no title or subtitle on the panel; captions are written to `captions.md`. Run twice — delivery **route** and dose **intensity band** |
 | 4 | R | `code/05_titration.R` | **Titration practice, both halves.** *Response*: how often a rate increase is accompanied by a bolus within ±30 min, on raw charted timestamps rather than the hourly grid, with rate decreases as a negative control. *Indication*: how often an increase or a bolus had a qualifying pain score or agitation within ±1 h, swept to 4 h — a level at each instrument's own threshold, never a change |
@@ -325,7 +325,7 @@ one-command build could never succeed.
 Built against the **CLIF 2.1.0** specification. Field names and permissible
 values below were verified against `clifpy`'s bundled schemas.
 
-### Shared by all phases
+### Shared by every script
 
 | Table | Fields | Notes |
 |---|---|---|
@@ -449,8 +449,8 @@ in `missing_values.time_varying.members`, and an `analysis_unit_bounds` entry.
 - **Population**: adults (≥18) receiving invasive mechanical ventilation.
 - **Time anchor**: intubation (first `device_category == "IMV"`).
 - **Unit of analysis**: one row per hospitalization per time window.
-- **Descriptive phase**: all intubated patients, contributing while ventilated.
-- **Modeling phases**: landmark cohort — alive and still ventilated at `T`
+- **Descriptive scripts**: all intubated patients, contributing while ventilated.
+- **Outcome analysis**: landmark cohort — alive and still ventilated at `T`
   (default 72h). Patients extubated and reintubated before `T` remain in the
   cohort; dose in extubated windows is `0`. Rationale in design notes §8/§10a.
 - **Outputs**: parquet (patient-level, PHI) and CSV (aggregate, shareable).
@@ -538,7 +538,6 @@ and `check_provenance.py` exits non-zero on divergence.
 | `cohort.landmark_hours` | landmark `T` (default 72) |
 | `cohort.imv_episode_gap_hours` | gap that separates two IMV episodes (default 8) |
 | `cohort.min_imv_hours`, `cohort.min_age` | duration and age floors |
-| `cohort.balanced_panel_hours` | thresholds for the Phase 1 overlays |
 | `cohort.extended_*` | **declared, not consumed.** The 12h/7d descriptive view is deferred; see `windows.extended._STATUS` |
 | `outcomes.mortality_categories` | `discharge_category` values counted as death (`death_dttm` is unstable); sensitivity set drops `Hospice` |
 | `outcomes.unresolved_discharge_categories` | censored, **not** counted alive |
@@ -561,7 +560,7 @@ must edit is noise.
 
 | Path | Contents | Shareable? |
 |---|---|---|
-| `output/intermediate_phi/` | analytic tables (one row per block-window), model objects, class assignments | **No — PHI** |
+| `output/intermediate_phi/<script>/` | analytic tables (one row per block-window), model objects, class assignments, subdivided by writing script | **No — PHI** |
 | `output/final_no_phi/` | aggregate tables and figures — the coordinating-center upload set, PHI-checked at assembly | **Yes** |
 
 **Nothing under `output/` is tracked** — every site generates its own, PHI
@@ -573,21 +572,23 @@ gets a `README.md` warning label written at runtime by `site_dirs()`.
 The `phaseN_` file prefixes were removed on 2026-09-23 — the folder already says
 which script produced a file, and the phases themselves are gone. `manifest.json`
 sits at the root because it is the pipeline's staleness marker rather than one
-script's result. `output/intermediate_phi/` stays flat; it is the machine handoff
-between scripts.
+script's result. `output/intermediate_phi/` is subdivided the same way, by the
+script that WROTE each table -- it is the machine handoff between scripts, and
+the folder says which end of the handoff a file came from. `_cache/` and the
+PHI label stay at its root.
 
 What each script writes:
 
 | Script | Files |
 |---|---|
-| `01_build_cohort.py` | `01_cohort/` — `cohort_construction.{csv,txt,png}` (the trunk: extract to analytic cohort; **the full STROBE is `07_outcome_model/strobe.csv`**), `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `exemplar_selection.csv`, plus `manifest.json`; PHI handoffs include `titration_{rate,bolus}_events.parquet` (raw charted timestamps — the titration analysis never uses the hourly grid) and `care_intervals.parquet` (attributed care-location stays — ICU and ED — on the relative clock, so the attribution rule can change without a Phase 0 rebuild) at the root of `final_no_phi/` |
-| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv` (Table 1, stratified on **cohort membership**: Overall, Landmark, Not landmark — the p-value tests the mutually exclusive split, not Overall against its own subset), `retention.csv`, `dose_summary.csv`, `balanced_panels.csv`, `imv_encounter_duration.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_{curves,balanced_panels}.png`, `sedative_curves.png` |
-| `03_exemplar.R` | `03_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
+| `01_build_cohort.py` | `01_cohort/` — `cohort_construction.{csv,txt,png}` (the trunk: extract to analytic cohort; **the full STROBE is `07_outcome_model/strobe.csv`**), `provenance.json`, `diagnostics/{missingness,missingness_patterns,diagnostics}.csv`, `diagnostics/waterfall_carryforward.csv` (how much of the cohort's invasive-ventilation time is clifpy waterfall carry-forward rather than a charted device record, and what VFD-28 would be without it — a per-site data-quality fingerprint, not a result), `exemplar_selection.csv`, plus `manifest.json`; PHI handoffs include `titration_{rate,bolus}_events.parquet` (raw charted timestamps — the titration analysis never uses the hourly grid) `imv_intervals.parquet` (the annotated IMV / off-IMV spells **the VFD-28 total is summed from**, exported so a figure can decompose that number rather than re-derive it) and `care_intervals.parquet` (attributed care-location stays — ICU and ED — on the relative clock, so the attribution rule can change without a Phase 0 rebuild) at the root of `final_no_phi/` |
+| `02_descriptive_cohort.R` | `02_descriptive/` — `baseline_characteristics.csv` (Table 1, stratified on **cohort membership**: Overall, Landmark, Not landmark — the p-value tests the mutually exclusive split, not Overall against its own subset), `retention.csv`, `dose_summary.csv`, `course_summary.csv` (per-admission ventilation and sedation over the whole 28-day course — duration of IMV, duration of fentanyl infusion, cumulative and per-ventilated-hour fentanyl dose, propofol and midazolam duration and mean rate — for the analytic cohort and for each landmark cohort at T = 24/48/72h), `imv_encounter_duration.csv`, `liberation_survival.csv` (28-day liberation and survival on a 6-hourly grid, the four occupancy states plus the cumulative incidence of a first successful liberation), `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; figures `fentanyl_curves.png`, `liberation_survival.png` (after MODE Figure 3 — patients alive against liberation from IMV, over a state-occupancy panel that separates the three different things a VFD-28 of 0 can mean) |
+| `03_exemplar.R` | `03_exemplar/` — `exemplar.png`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/01_cohort/exemplar_{series.parquet,meta.json,id.txt}` (the chosen episode id stays PHI-side and never reaches the shareable tree) |
 | `04_delivery_states.R` | `04_states/` — `state_{prevalence,prevalence_at_risk,transitions}.csv`, `dose_state_{prevalence,transitions}.csv`, `state_{prevalence,prevalence_at_risk,alluvial,raster}.png`, `dose_state_{prevalence,alluvial}.png`, `provenance.json`, `captions.md` |
-| `05_titration.R` | `05_titration/` — **reported directly:** `coadministration.csv`, `indication.csv`, `adherence_distribution.csv`, `assessment_frequency.csv` (how often a pain or sedation score is documented at all, per instrument — the answer to "is the low indicated fraction just missing documentation?"), `rate_change_magnitude.csv`, `pooling_histograms.csv`, `provenance.json`, `captions.md`; figures `coadministration.png`, `indication.png`. **`05_titration/diagnostics/` — method checks:** `window_sensitivity.{csv,png}`, `indication_window_sensitivity.csv`, `charting_precision.csv`, `charting_agreement.csv`. The first four CSVs carry a **`cohort`** column (`all` \| `landmark`): the descriptive epidemiology belongs to the whole analytic cohort, the outcome analysis can only speak for the landmark subset, and `landmark` is a *subset* of `all` — never sum the two. PHI handoffs `output/intermediate_phi/titration_adherence.parquet` (per-encounter adherence; only its distribution ships), `titration_events_classified.parquet` and `indication_events.parquet` (the classified events and per-event indication flags `06_unit_variation.R` splits, so each definition has one home) |
+| `05_titration.R` | `05_titration/` — **reported directly:** `coadministration.csv`, `indication.csv`, `adherence_distribution.csv`, `assessment_frequency.csv` (how often a pain or sedation score is documented at all, per instrument — the answer to "is the low indicated fraction just missing documentation?"), `rate_change_magnitude.csv`, `pooling_histograms.csv`, `provenance.json`, `captions.md`; figures `coadministration.png`, `indication.png`. **`05_titration/diagnostics/` — method checks:** `window_sensitivity.{csv,png}`, `indication_window_sensitivity.csv`, `charting_precision.csv`, `charting_agreement.csv`. The first four CSVs carry a **`cohort`** column (`all` \| `landmark`): the descriptive epidemiology belongs to the whole analytic cohort, the outcome analysis can only speak for the landmark subset, and `landmark` is a *subset* of `all` — never sum the two. PHI handoffs `output/intermediate_phi/05_titration/titration_adherence.parquet` (per-encounter adherence; only its distribution ships), `titration_events_classified.parquet` and `indication_events.parquet` (the classified events and per-event indication flags `06_unit_variation.R` splits, so each definition has one home) |
 | `06_unit_variation.R` | `06_unit_variation/` — `unit_adherence.csv`, `year_adherence.csv`, `attribution_funnel.csv`, `overdispersion.csv`, `provenance.json`, `captions.md`; ten figures, named by metric: `coadmin_*` (was a bolus given with the increase?) and `indication_*` (was there a documented pain score or agitation?), each as `_caterpillar_<key>.png`, `_funnel_<key>.png` and `_year.png` — one pair of caterpillar/funnel per `unit_variation.unit_keys` (`care_setting`, `location_name`). Writes no PHI handoff |
-| `07_outcome_model.R` | `07_outcome_model/` — **reported directly:** `model_coefficients.csv` (the pooling payload — log-odds estimates with standard errors; ICU fixed effects blanked, thresholds not shipped), `model_covariance.csv`, `exposure_distribution.csv`, `exposure_by_unit.csv`, `exposure_correlation.csv`, `vfd_ordinal.csv` (the five primary bands, with the observed mean VFD-28 per band that the adjusted expectation maps through), `vfd_day_distribution.csv` (one row per attainable whole day), `adjusted_prediction.csv`, `unadjusted_bins.csv`, `strobe.csv` (**THE STROBE** — trunk read from `01_cohort/cohort_construction.csv` plus both analysis branches), `table1.csv`, `table1_continuous.csv`, `table1_categorical.csv`, `provenance.json`, `captions.md`; figures `exposure_histogram.png`, `exposure_by_unit.png`, `exposure_scatter.png`, `vfd_vs_pindicated.png`. **`07_outcome_model/diagnostics/` — method checks:** `model_diagnostics.csv` (convergence and conditioning — a model with `converged = FALSE` must not be pooled), `proportional_odds_test.csv`, `proportional_odds_gate.csv` (**`passed = FALSE` on any row means do not pool this bundle**). PHI handoff `output/intermediate_phi/outcome_model_frame.parquet` (one row per admission, so the model can be refitted without re-deriving the exposures) |
-| `tabled/landmark_cohort.R` | **Tabled 2026-09-30, not run by the runners.** `landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/landmark_cohort.parquet` |
+| `07_outcome_model.R` | `07_outcome_model/` — **reported directly:** `model_coefficients.csv` (the pooling payload — log-odds estimates with standard errors; ICU fixed effects blanked, thresholds not shipped), `model_covariance.csv`, `exposure_distribution.csv`, `exposure_by_unit.csv`, `exposure_correlation.csv`, `vfd_ordinal.csv` (the five primary bands, with the observed mean VFD-28 per band that the adjusted expectation maps through), `vfd_day_distribution.csv` (one row per attainable whole day), `adjusted_prediction.csv`, `unadjusted_bins.csv`, `strobe.csv` (**THE STROBE** — trunk read from `01_cohort/cohort_construction.csv` plus both analysis branches), `table1.csv`, `table1_continuous.csv`, `table1_categorical.csv`, `provenance.json`, `captions.md`; figures `exposure_histogram.png`, `exposure_by_unit.png`, `exposure_scatter.png`, `vfd_vs_pindicated.png`. **`07_outcome_model/diagnostics/` — method checks:** `model_diagnostics.csv` (convergence and conditioning — a model with `converged = FALSE` must not be pooled), `proportional_odds_test.csv`, `proportional_odds_gate.csv` (**`passed = FALSE` on any row means do not pool this bundle**). PHI handoff `output/intermediate_phi/07_outcome_model/outcome_model_frame.parquet` (one row per admission, so the model can be refitted without re-deriving the exposures) |
+| `tabled/landmark_cohort.R` | **Tabled 2026-09-30, not run by the runners.** `landmark/` — `landmark_flow.{csv,txt}`, `T_sensitivity.csv`, `failed_extubation.csv`, `dose_curve.{csv,png}`, `dependence.csv`, `pooling_{continuous,categorical}.csv`, `provenance.json`, `captions.md`; PHI handoff `output/intermediate_phi/tabled/landmark_cohort.parquet` |
 
 The two `pooling_*.csv` files exist for **federated pooling**: they carry
 `n`, `mean`, `sd`, `sum` and `sum_sq` per variable per stratum (and per window),
@@ -671,7 +672,7 @@ CLIF-fentanyl-trajectories/
 │   │                             #   with a POOLED row + heterogeneity.csv,
 │   │                             #   pooled_summary.md, and figures/ from
 │   │                             #   pool_figures.R (sites anonymised)
-│   ├── intermediate_phi/         # ALL patient-level artifacts
+│   ├── intermediate_phi/         # ALL patient-level artifacts, by writing script
 │   │                             #   .parquet = pipeline input, .csv = review copy
 │   ├── final_no_phi/             # THE UPLOAD SET. PHI-free; one dir per script,
 │   │   └── diagnostics/          #   each with a provenance.json

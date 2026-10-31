@@ -355,17 +355,79 @@ def test_an_unknown_device_value_raises_rather_than_becoming_null():
         raise AssertionError("a value outside the schema must raise, not silently null")
 
 
+_TZ = "US/Central"
+_PATIENT = pd.DataFrame(columns=["patient_id", "death_dttm"])
+
+
+def _cohort_fixture(discharge_h, death_h=None, category="Home"):
+    """One block, anchored at T0, with a discharge and an optional death_dttm."""
+    t0 = pd.Timestamp("2026-01-01", tz=_TZ)
+    blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
+                            "discharge_category": category,
+                            "block_discharge_dttm": t0 + pd.Timedelta(hours=discharge_h)}])
+    anchor = pd.DataFrame([{"encounter_block": "b0", "anchor_dttm": t0,
+                            "first_imv_episode_hours": B.MIN_IMV_H + 1,
+                            "first_episode_records": 2, "n_imv_episodes": 1}])
+    patient = pd.DataFrame([{"patient_id": "p0",
+                             "death_dttm": pd.NaT if death_h is None
+                             else t0 + pd.Timedelta(hours=death_h)}])
+    return blocks, anchor, patient, t0
+
+
+def test_follow_up_ends_at_death_when_death_precedes_the_discharge_stamp():
+    """SG, 2026-10-30, from the day-3 column of the liberation figure: 0.9% of a
+    cohort DEFINED as alive at 72h were dead.
+
+    protocol.json declares death as death_dttm where present, and resolve_death()
+    honours it -- but followup_end_dttm was `c[["block_discharge_dttm"]].min(axis=1)`,
+    a min over ONE column, so follow-up ran to the discharge stamp. At UCMC that
+    stamp lands a median of 13.3h after death, which is long enough to carry a
+    dead patient past the landmark."""
+    blocks, anchor, patient, t0 = _cohort_fixture(discharge_h=90, death_h=60,
+                                                  category="Expired")
+    c = B.build_cohort(blocks, anchor, patient)
+    assert len(c) == 1
+    assert c.loc[0, "followup_end_dttm"] == t0 + pd.Timedelta(hours=60), \
+        "follow-up must end at death, not at the administrative discharge stamp"
+    assert abs(c.loc[0, "death_hr"] - 60.0) < 1e-9
+    assert bool(c.loc[0, "died"]) is True
+
+
+def test_follow_up_ends_at_discharge_for_a_survivor():
+    """The other side of the same min(): a NaT death must not swallow the
+    discharge stamp. min(axis=1) skips NaN, and this is the test that says so."""
+    blocks, anchor, patient, t0 = _cohort_fixture(discharge_h=90, death_h=None)
+    c = B.build_cohort(blocks, anchor, patient)
+    assert c.loc[0, "followup_end_dttm"] == t0 + pd.Timedelta(hours=90)
+    assert bool(c.loc[0, "died"]) is False
+
+
+def test_a_death_at_or_before_the_anchor_is_excluded_as_the_flow_claims():
+    """The flow step says 'discharged OR DIED at or before the anchor'. Until the
+    death clock reached followup_end_dttm that half of the sentence was a claim
+    the code did not implement."""
+    blocks, anchor, patient, _ = _cohort_fixture(discharge_h=90, death_h=0,
+                                                 category="Expired")
+    try:
+        B.build_cohort(blocks, anchor, patient)
+    except SystemExit as e:
+        assert "empty" in str(e).lower()
+    else:
+        raise AssertionError("a block dead at the anchor must not survive the filter")
+
+
 def test_empty_cohort_raises_instead_of_crashing_on_nan():
     """Realistic path: every block is ventilated for less than the minimum, so the
     duration filter empties the cohort."""
     blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
+                            "discharge_category": "Home",
                             "block_discharge_dttm": pd.Timestamp("2026-01-05")}])
     anchor = pd.DataFrame([{"encounter_block": "b0",
                             "anchor_dttm": pd.Timestamp("2026-01-01"),
                             "first_imv_episode_hours": B.MIN_IMV_H - 1,
                             "first_episode_records": 2, "n_imv_episodes": 1}])
     try:
-        B.build_cohort(blocks, anchor)
+        B.build_cohort(blocks, anchor, _PATIENT)
     except SystemExit as e:
         assert "empty" in str(e).lower() and "bug, not a" in str(e)
     else:
@@ -376,12 +438,13 @@ def test_the_anchor_merge_mismatch_asserts_rather_than_excluding():
     """The anchor comes from the same IMV series that selected the blocks, so a
     mismatch is impossible rather than an exclusion, and must not silently drop."""
     blocks = pd.DataFrame([{"encounter_block": "b0", "patient_id": "p0", "age": 60,
+                            "discharge_category": "Home",
                             "block_discharge_dttm": pd.Timestamp("2026-01-05")}])
     empty = pd.DataFrame(columns=["encounter_block", "anchor_dttm",
                                   "first_imv_episode_hours",
                                   "first_episode_records", "n_imv_episodes"])
     try:
-        B.build_cohort(blocks, empty)
+        B.build_cohort(blocks, empty, _PATIENT)
     except AssertionError as e:
         assert "should be impossible" in str(e)
     except SystemExit:

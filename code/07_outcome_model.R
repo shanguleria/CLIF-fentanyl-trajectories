@@ -148,6 +148,7 @@ PRED_MODEL_EXPOSURE <- MODEL_EXPOSURES[match(PRED_EXPOSURE, EXPOSURES)]
 
 dirs <- site_dirs()
 dirs$phase <- phase_dir(dirs, "07_outcome_model")
+dirs$phi <- phi_dir(dirs, "07_outcome_model")   # patient-level, same subdivision
 dirs$diagnostics <- phase_dir(dirs, file.path("07_outcome_model", "diagnostics"))
 prov <- provenance(config)
 
@@ -155,11 +156,11 @@ prov <- provenance(config)
 # ---- 4. Guards ---------------------------------------------------------------
 
 manifest <- require_manifest(dirs, here())
-message(sprintf("  reading Phase 0 outputs from code %s, generated %s",
+message(sprintf("  reading cohort-build outputs from code %s, generated %s",
                 manifest$code_version, manifest$generated))
 
 OWNED <- list(
-  out_phi = c("outcome_model_frame.parquet"),
+  phi = c("outcome_model_frame.parquet"),
   # Reported directly.
   phase = c("exposure_distribution.csv", "exposure_by_unit.csv",
             "exposure_correlation.csv", "vfd_ordinal.csv",
@@ -173,8 +174,13 @@ OWNED <- list(
   # Method checks: evidence about whether the model is admissible, not results.
   diagnostics = c("model_diagnostics.csv", "proportional_odds_test.csv",
                   "proportional_odds_gate.csv"))
+# Flat intermediate_phi locations, before it was subdivided by writing script
+# on 2026-10-30. Declared so a stale twin is deleted, not read as current.
+RETIRED_PHI <- file.path("output", "intermediate_phi",
+                         c("outcome_model_frame.parquet"))
+
 RETIRED <- character(0)
-n_cleared <- clear_owned_outputs(dirs, OWNED, retired = RETIRED)
+n_cleared <- clear_owned_outputs(dirs, OWNED, retired = c(RETIRED, RETIRED_PHI))
 if (n_cleared) message(sprintf("  cleared %d output(s) from a previous run", n_cleared))
 
 FLOW <- list()
@@ -189,35 +195,35 @@ flow <- function(label, n, dropped_because = NA_character_) {
 # ---- 5. Read -----------------------------------------------------------------
 
 # 05's `overall` scope IS the first-72h exposure, so no 72h filter is applied here.
-adh <- as.data.frame(read_parquet(file.path(dirs$out_phi, "titration_adherence.parquet")))
+adh <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "05_titration"), "titration_adherence.parquet")))
 stopifnot("titration_adherence must carry the overall scope" =
             "overall" %in% adh$scope)
 pb <- adh[adh$scope == "overall", c("encounter_block", "n_events", "n_paired")]
 names(pb)[names(pb) == "n_events"] <- "n_increase"
 
-ind <- as.data.frame(read_parquet(file.path(dirs$out_phi, "indication_events.parquet")))
+ind <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "05_titration"), "indication_events.parquet")))
 stopifnot(
   "indication events must be bounded by the granular extent" =
     max(ind$t_hr) <= COV$cohort$granular_extent_hours + 1e-9,
   "indication events must start at or after the anchor" = min(ind$t_hr) >= 0)
 
 tte <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "time_to_event.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "time_to_event.parquet"),
   col_select = c("encounter_block", "vfd_28", "landmark_eligible",
                  "extubation_event", "died")))
 
 base <- as.data.frame(read_parquet(
-  file.path(dirs$out_phi, "trajectory_long.parquet"),
+  file.path(phi_dir(dirs, "01_cohort"), "trajectory_long.parquet"),
   col_select = c("encounter_block", "window_idx", "age", "sex", "cci",
                  "sofa_baseline", "sofa_baseline_n_components",
                  # Table 1 only -- 07 is its sole generator as of 0.17.0.
                  "race", "first_imv_episode_hours")))
 base <- base[base$window_idx == 0, setdiff(names(base), "window_idx")]
-stopifnot("trajectory_long must carry sofa_baseline -- re-run Phase 0" =
+stopifnot("trajectory_long must carry sofa_baseline -- re-run code/01_build_cohort.py" =
             "sofa_baseline" %in% names(base),
           "window 0 must hold each block once" = !anyDuplicated(base$encounter_block))
 
-icu <- as.data.frame(read_parquet(file.path(dirs$out_phi, "care_intervals.parquet")))
+icu <- as.data.frame(read_parquet(file.path(phi_dir(dirs, "01_cohort"), "care_intervals.parquet")))
 
 
 # ---- 6. The two exposures ----------------------------------------------------
@@ -294,7 +300,7 @@ for (i in seq_len(nrow(comp))) {
 # The unit collapse happens PER MODEL FRAME: each model drops a different set of
 # incomplete cases, so it must be sized on the frame fitted. See collapse_units().
 
-# Baseline covariates, at or before intubation. sofa_baseline is a Phase 0 product
+# Baseline covariates, at or before intubation. sofa_baseline is a cohort-build product
 # (protocol.json time_invariant.sofa_baseline), not derived here.
 d <- merge(d, base, by = "encounter_block", all.x = TRUE)
 stopifnot("the covariate merge changed the admission count" =
@@ -1089,7 +1095,7 @@ bin_rows <- do.call(rbind, lapply(BIN_LABELS, function(lb) {
     pct_vfd_zero_lo = round(100 * w[1], 2), pct_vfd_zero_hi = round(100 * w[2], 2),
     stringsAsFactors = FALSE)
 }))
-# Small-cell suppression, the phase's own rule: the counts stay, the statistics go.
+# Small-cell suppression, this script's own rule: counts stay, statistics go.
 thin <- bin_rows$n_admissions < MIN_CELL
 if (any(thin)) {
   cat(sprintf("  %d bin(s) below %d admissions -- statistics suppressed, counts kept\n",
@@ -1292,7 +1298,7 @@ cat(sprintf("Table 1: %d display row(s), %d tidy continuous, %d tidy categorical
 # the model is over the complete-case frame. Collapsing them into one column
 # would imply both describe the same population.
 cc_f <- file.path(dirs$out_final, "01_cohort", "cohort_construction.csv")
-stopifnot("01_cohort/cohort_construction.csv is missing -- re-run Phase 0" =
+stopifnot("01_cohort/cohort_construction.csv is missing -- re-run code/01_build_cohort.py" =
             file.exists(cc_f))
 cc <- utils::read.csv(cc_f, stringsAsFactors = FALSE)
 stopifnot("cohort_construction.csv must carry the exclusion-style columns" =
@@ -1300,7 +1306,7 @@ stopifnot("cohort_construction.csv must carry the exclusion-style columns" =
 
 # The trunk's last row is the analytic cohort, and it must be the denominator
 # everything below descends from. A mismatch means 07 is reading a funnel from a
-# different Phase 0 run than the tables it analysed.
+# different cohort-build run than the tables it analysed.
 analytic <- suppressWarnings(as.numeric(
   cc$n_after[grepl("ANALYTIC COHORT", cc$step, fixed = TRUE)]))
 stopifnot("cohort_construction.csv names no ANALYTIC COHORT row" =
@@ -1391,7 +1397,7 @@ keep <- c("encounter_block", "n_increase", "n_paired", "n_indicated",
           "age", "sex", "cci", "sofa_baseline", "sofa_baseline_n_components",
           "location_name", "extubation_event", "died", ".complete")
 write_parquet(d[, intersect(keep, names(d))],
-              file.path(dirs$out_phi, "outcome_model_frame.parquet"))
+              file.path(phi_dir(dirs, "07_outcome_model"), "outcome_model_frame.parquet"))
 cat(sprintf("written: outcome_model_frame.parquet (PHI -- %s admissions)\n",
             format(nrow(d), big.mark = ",")))
 

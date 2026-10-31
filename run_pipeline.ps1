@@ -31,14 +31,14 @@ if ($LASTEXITCODE -ne 0) { Write-Error "output locations failed their tests. Not
 & Rscript tests/test_require_manifest.R
 if ($LASTEXITCODE -ne 0) { Write-Error "the config-drift guard failed its tests. Nothing was run." }
 & $py tests/test_build_cohort.py
-if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 logic failed its tests. Nothing was run." }
+if ($LASTEXITCODE -ne 0) { Write-Error "cohort-build logic failed its tests. Nothing was run." }
 & $py tests/test_vfd.py
 if ($LASTEXITCODE -ne 0) { Write-Error "ventilator-free days failed its tests. Nothing was run." }
 Write-Host ""
 
-Write-Host "== Phase 0: build cohort (Python) =="
+Write-Host "== Build cohort (Python) =="
 & $py code/01_build_cohort.py
-if ($LASTEXITCODE -ne 0) { Write-Error "Phase 0 failed" }
+if ($LASTEXITCODE -ne 0) { Write-Error "the cohort build failed" }
 
 # The trajectory-modelling scripts in code/tabled/ are TABLED as of 2026-09-23, and
 # tabled/landmark_cohort joined them on 2026-09-30, so they are deliberately

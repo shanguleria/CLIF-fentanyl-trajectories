@@ -3,13 +3,14 @@
 A median cannot be pooled across sites; a mean can, from n and the two sums. The
 point of carrying sum and sum_sq rather than only mean and sd is that the pooled
 figures are then exact rather than an approximation that assumes equal variances.
-These checks run only when Phase 1 has produced the files.
+These checks run only when the scripts have produced the files.
 
 Run standalone:  .venv/bin/python tests/test_pooling.py
 """
 from __future__ import annotations
 
 import json
+import re
 import math
 import sys
 from pathlib import Path
@@ -25,7 +26,8 @@ CONT = OUT / "02_descriptive" / "pooling_continuous.csv"
 # rows; the baseline rows and all of the categorical rows are 07's now.
 CAT = OUT / "07_outcome_model" / "table1_categorical.csv"
 T1_CONT = OUT / "07_outcome_model" / "table1_continuous.csv"
-# Phases 1 and 2 shared one pooling contract and both were held to it, the second
+# The descriptive and landmark scripts shared one pooling contract and both were
+# held to it, the second
 # through 06_landmark/ after the 2026-09-24 renumbers. This test caught the stale
 # path the first time and is the reason it is worth keeping accurate.
 #
@@ -44,7 +46,7 @@ TOL = 1e-5          # the exports are rounded to 6 decimals
 
 def _skip_if_absent(f: Path) -> pd.DataFrame | None:
     if not f.exists():
-        print(f"  SKIP  {f.name} absent -- run the phase that writes it")
+        print(f"  SKIP  {f.name} absent -- run the script that writes it")
         return None
     return pd.read_csv(f)
 
@@ -226,7 +228,7 @@ def test_the_pooling_spec_claims_every_csv_the_pipeline_writes():
         print("  SKIP  no output/final_no_phi -- run the pipeline")
         return
     on_disk = {f.relative_to(OUT).as_posix() for f in OUT.rglob("*.csv")}
-    # Phase 0's cohort_construction.csv and the tabled scripts' leftovers are not pooled.
+    # The cohort build's cohort_construction.csv and the tabled scripts' leftovers are not pooled.
     labels = set(json.loads(SPEC.read_text()).get("not_poolable_columns", []))
     unclaimed = sorted(on_disk - claimed)
     assert not unclaimed, (
@@ -293,11 +295,20 @@ def test_the_cohort_column_is_a_key_wherever_it_is_emitted():
             f"{rel} ships a `cohort` column but the spec does not key on it; "
             f"pooling would add `all` and `landmark` together")
         d = pd.read_csv(f)
-        assert set(d["cohort"]) <= {"all", "landmark"}, (
-            f"{rel} carries an unexpected cohort value: {sorted(set(d['cohort']))}")
-        n_all = (d["cohort"] == "all").sum()
-        assert n_all and (d["cohort"] == "landmark").sum(), (
-            f"{rel} must carry both cohorts or the comparison is not available")
+        # The value set is `all` plus any number of landmark strata. 05's four
+        # files ship `landmark` (the protocol T); course_summary.csv sweeps T and
+        # ships landmark_24h / landmark_48h / landmark_72h. Both shapes are a
+        # NESTED FAMILY, which is the property that makes keying mandatory --
+        # the count of strata is not.
+        seen = set(d["cohort"])
+        bad = {c for c in seen
+               if c != "all" and not re.fullmatch(r"landmark(_\d+h)?", str(c))}
+        assert not bad, (
+            f"{rel} carries an unexpected cohort value: {sorted(bad)}. Allowed: "
+            f"`all`, `landmark`, or `landmark_<N>h`.")
+        assert "all" in seen and len(seen) > 1, (
+            f"{rel} must carry `all` and at least one landmark stratum, or the "
+            f"comparison the cohort column exists for is not available")
 
 
 HISTS = [OUT / "02_descriptive" / "pooling_histograms.csv",

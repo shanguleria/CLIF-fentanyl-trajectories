@@ -41,7 +41,8 @@ from utils.waterfall_cache import (  # noqa: E402
 )
 from utils.strobe import render_png, render_text  # noqa: E402
 from utils.paths import (  # noqa: E402
-    clear_owned_outputs, phase_dir, provenance, site_dirs, write_manifest,
+    clear_owned_outputs, phase_dir, phi_dir, provenance, site_dirs,
+    write_manifest,
 )
 
 CONFIG = json.loads((REPO / "config" / "config.json").read_text())
@@ -67,6 +68,16 @@ FIO2_LOOKBACK_H = OXY["fio2_lookback_hours"]
 SPO2_CEILING = OXY["spo2_ceiling"]
 RA_FIO2 = OXY["fio2_scale"]["fraction_band"][0]
 EPISODE_GAP_H = COV["cohort"]["imv_episode_gap_hours"]
+# Phase 0's diagnostics are counts over the cohort, so the one suppression rule
+# that reaches them is the shared floor the R phases use. Read, never restated.
+MIN_CELL_DEN = COV["reporting"]["small_cell_min_den"]
+# Which sedatives the whole-course summary describes. Declared in protocol.json
+# rather than hardcoded here, so adding one is a config change and not a silent
+# no-op; asserted against the categories the loader actually reads.
+COURSE_SEDATIVES = list(COV["exposure"]["sedatives"]["course_summary_categories"])
+assert set(COURSE_SEDATIVES) <= set(COV["medications"]["other_sedative_categories"]), (
+    "exposure.sedatives.course_summary_categories names a drug that "
+    "medications.other_sedative_categories does not load")
 
 LAB_VARS = {
     k: v["source"]["category"]
@@ -88,8 +99,10 @@ SOFA_INPUT_CAPS = COV["missing_values"]["sofa_inputs"]["variables"]
 PHASE_DIR = "01_cohort"
 
 OWNED = {
-    "out_phi": ["trajectory_long.parquet", "trajectory_long.csv",
+    "phi": ["trajectory_long.parquet", "trajectory_long.csv",
                 "time_to_event.parquet", "time_to_event.csv",
+                "imv_intervals.parquet", "course_exposure.parquet",
+                "landmark_membership.parquet",
                 "hospital_intervals.parquet", "care_intervals.parquet",
                 "exemplar_series.parquet", "exemplar_meta.json",
                 "exemplar_id.txt",
@@ -104,13 +117,27 @@ OWNED = {
               "cohort_construction.png",
               "provenance.json", "exemplar_selection.csv"],
     "diagnostics": ["missingness.csv", "missingness_patterns.csv",
-                    "diagnostics.csv"],
+                    "diagnostics.csv", "waterfall_carryforward.csv",
+                    "landmark_sensitivity.csv"],
 }
 
 # Paths this script used to write and no longer does, cleared so a relocation
 # leaves no stale twin. Prefixes via f-string: find-and-replace cannot strip them.
 _P0 = "phase0_"
 RETIRED_OUTPUTS = [
+    # Flat locations in intermediate_phi, before it was subdivided by writing
+    # script on 2026-10-30. Declared so a copy left by an earlier run is DELETED
+    # rather than read back as current -- every one of these is a table a later
+    # script reads by name, so a stale twin would be silently analysed.
+    *[f"output/intermediate_phi/{n}" for n in (
+        "trajectory_long.parquet", "trajectory_long.csv",
+        "time_to_event.parquet", "time_to_event.csv",
+        "imv_intervals.parquet", "course_exposure.parquet",
+        "landmark_membership.parquet", "hospital_intervals.parquet",
+        "care_intervals.parquet",
+        "exemplar_series.parquet", "exemplar_meta.json", "exemplar_id.txt",
+        "titration_rate_events.parquet", "titration_bolus_events.parquet",
+        "assessment_events.parquet")],
     # flat locations, before out_final was subdivided by script
     f"output/final_no_phi/{_P0}missingness.csv",
     f"output/final_no_phi/{_P0}missingness_patterns.csv",
@@ -252,9 +279,12 @@ def _load_assessments(hid: dict) -> pd.DataFrame:
 
 def load_cohort_tables(hosp_ids: list[str]) -> dict:
     """Everything else, filtered at the read to the cohort's ids and categories."""
-    check_resp_vocabulary(hosp_ids)
+    # Kept, not discarded: the PRE-waterfall series is half of what
+    # waterfall_diagnostic() compares. The print loop below already skips it.
+    resp_raw = check_resp_vocabulary(hosp_ids)
     hid = {"hospitalization_id": hosp_ids}
     t = {
+        "resp_raw": resp_raw,
         "hospital_diagnosis": HospitalDiagnosis.from_file(**_kw(filters=hid)).df,
         "crrt": CrrtTherapy.from_file(**_kw(filters=hid)).df,
         "labs": Labs.from_file(
@@ -302,6 +332,22 @@ def load_cohort_tables(hosp_ids: list[str]) -> dict:
 
 _DEVICE_COLS = ("device_category", "mode_category")
 
+# Settings that only a ventilator sets. Diagnostic use only: where
+# device_category is null, these say whether the row carries INDEPENDENT
+# evidence of ventilation that the waterfall's fill could be checked against.
+# Optional in CLIF 2.1, so every use is guarded on presence.
+VENT_EVIDENCE_COLS = ("peep_set", "tidal_volume_set", "resp_rate_set",
+                      "pressure_support_set", "pressure_control_set")
+
+
+def _resp_columns() -> set[str]:
+    """Columns respiratory_support actually has at this site."""
+    kw = _kw()
+    path = Path(kw["data_directory"]) / f"clif_respiratory_support.{kw['filetype']}"
+    if kw["filetype"] == "parquet" and path.exists():
+        return set(pq.ParquetFile(path).schema_arrow.names)
+    return set(VENT_EVIDENCE_COLS) | set(_DEVICE_COLS)
+
 
 def _resp_vocab(col: str) -> dict[str, str]:
     """{lowercased: canonical} for one respiratory_support mCIDE column."""
@@ -327,16 +373,25 @@ def _normalise_category(s: pd.Series, col: str) -> tuple[pd.Series, pd.Series]:
     return mapped, lowered[lowered.notna() & mapped.isna()]
 
 
-def check_resp_vocabulary(hosp_ids: list[str]) -> None:
+def check_resp_vocabulary(hosp_ids: list[str]) -> pd.DataFrame:
     """Fail in seconds, BEFORE the waterfall, on any value the schema does not list.
 
     _canonicalise_devices raises the same error, but only after the waterfall
     has run (about an hour at NU). The columns it checks are two, so read just
     those for the cohort's hospitalizations. Every bad value in every column is
     reported at once, with counts, so one fix does not just reveal the next.
+
+    RETURNS THE RAW FRAME IT READ. This is the only PRE-waterfall read of
+    respiratory_support in the run, so waterfall_diagnostic() -- which has to
+    compare the series before and after -- would otherwise have to read the
+    table a second time. `recorded_dttm` and the VENT_EVIDENCE_COLS are carried
+    for that comparison and for nothing else; the vocabulary check itself looks
+    only at _DEVICE_COLS.
     """
+    have = _resp_columns()
     raw = RespiratorySupport.from_file(**_kw(
-        columns=["hospitalization_id", *_DEVICE_COLS],
+        columns=["hospitalization_id", "recorded_dttm", *_DEVICE_COLS,
+                 *[c for c in VENT_EVIDENCE_COLS if c in have]],
         filters={"hospitalization_id": hosp_ids})).df
     raw = _blank_to_na(raw)
     problems = []
@@ -354,6 +409,7 @@ def check_resp_vocabulary(hosp_ids: list[str]) -> None:
             "respiratory_support vocabulary check failed BEFORE the waterfall "
             "(nothing expensive has run):\n  " + "\n  ".join(problems))
     print(f"  {'respiratory_support vocabulary':.<52} ok ({len(raw):,} rows checked)")
+    return raw
 
 
 def _blank_to_na(df: pd.DataFrame) -> pd.DataFrame:
@@ -645,7 +701,14 @@ def imv_episodes(resp: pd.DataFrame, imv_raw: pd.DataFrame,
                 "first_episode_records", "n_imv_episodes", "episode_ended_by"]]
 
 
-def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
+def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame,
+                 patient: pd.DataFrame) -> pd.DataFrame:
+    """The analytic cohort, with death resolved so FOLLOW-UP CAN END AT IT.
+
+    resolve_death() is called HERE rather than by the caller because
+    followup_end_dttm is set below and must be able to see the death timestamp.
+    Until 2026-10-30 it could not, and the consequence is in the comment there.
+    """
     c = blocks.merge(anchor, on="encounter_block", how="inner", validate="one_to_one")
     # Not a flow step but a consistency check: the same IMV series is on both sides.
     assert len(c) == len(blocks), (
@@ -665,7 +728,29 @@ def build_cohort(blocks: pd.DataFrame, anchor: pd.DataFrame) -> pd.DataFrame:
     flow(f"Adult blocks (age >= {COV['cohort']['min_age']})", len(c),
          f"age < {COV['cohort']['min_age']} or age missing")
 
-    c["followup_end_dttm"] = c[["block_discharge_dttm"]].min(axis=1)
+    # Death is resolved BEFORE follow-up ends, because follow-up ends AT IT.
+    c = c.merge(resolve_death(c, patient), on="encounter_block", how="left")
+
+    # FOLLOW-UP ENDS AT THE EARLIER OF DISCHARGE AND DEATH, and the min() really
+    # is over two columns. It was `c[["block_discharge_dttm"]].min(axis=1)` from
+    # the first commit -- a min over ONE column, so a no-op that read like this
+    # one. protocol.json declares death as death_dttm where present
+    # (outcomes.death_definition) and resolve_death() honours that, but
+    # followup_end_dttm did not, so the cohort ran on two clocks: death_hr on
+    # death_dttm, and everything gated by `alive_admitted` on the discharge
+    # stamp. MEASURED at UCMC 2026-10-30: 735 landmark blocks (12.5%) carry a
+    # death_dttm EARLIER than their discharge stamp (median 13.3h, max 110.9h --
+    # administrative discharge after death), 53 of them died before the 72h
+    # landmark and were admitted to the landmark cohort anyway, and 103
+    # window-grid rows across 37 blocks counted exposure after death. The guard
+    # that looks like it would catch this cannot: `assert eligible <= admitted`
+    # tests alive_admitted, which came off the same discharge-only clock.
+    # NaT-safe: min(axis=1) skips NaN, so a survivor keeps the discharge stamp.
+    c["death_dttm_resolved"] = c["anchor_dttm"] + pd.to_timedelta(c["death_hr"],
+                                                                 unit="h")
+    c["followup_end_dttm"] = c[["block_discharge_dttm",
+                                "death_dttm_resolved"]].min(axis=1)
+    c = c.drop(columns=["death_dttm_resolved"])
     c = c[c["followup_end_dttm"] > c["anchor_dttm"]]
     flow("Blocks with follow-up after the anchor", len(c),
          "discharged or died at or before the anchor")
@@ -705,8 +790,15 @@ def window_grid(cohort: pd.DataFrame) -> pd.DataFrame:
 
 
 # -------------------------------------------------------------------- exposure
-def _hourly_scaffold(cohort: pd.DataFrame) -> pd.DataFrame:
-    hours = np.arange(0, EXTENT_H)
+def _hourly_scaffold(cohort: pd.DataFrame,
+                     extent_h: float | None = None) -> pd.DataFrame:
+    """Hourly cells per block over [0, extent_h), clipped at follow-up.
+
+    `extent_h` defaults to the GRANULAR extent, which is the shipped window
+    grid. course_exposure() passes the VFD horizon to get the whole ventilation
+    course. Every caller that omits it gets exactly the previous behaviour.
+    """
+    hours = np.arange(0, int(extent_h if extent_h is not None else EXTENT_H))
     s = cohort.loc[:, ["encounter_block", "anchor_dttm", "followup_end_dttm"]]
     s = s.loc[s.index.repeat(len(hours))].reset_index(drop=True)
     s["hr"] = np.tile(hours, len(cohort))
@@ -715,7 +807,8 @@ def _hourly_scaffold(cohort: pd.DataFrame) -> pd.DataFrame:
 
 
 def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
-                     cats: list[str], rate_fn) -> pd.DataFrame:
+                     cats: list[str], rate_fn,
+                     extent_h: float | None = None) -> pd.DataFrame:
     """Individual charted infusion records: exact admin_dttm, converted rate.
 
     ONE copy of the unit conversion, the outlier clip and the stop /
@@ -745,7 +838,8 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
 
     m["hr"] = ((m["admin_dttm"] - m["anchor_dttm"]).dt.total_seconds() // 3600).astype("Int64")
     # A record whose converted rate is NaN disappears here, so the drop is counted.
-    in_window = (m["hr"] >= 0) & (m["hr"] < EXTENT_H)
+    extent = float(extent_h if extent_h is not None else EXTENT_H)
+    in_window = (m["hr"] >= 0) & (m["hr"] < extent)
     n_nan = int((in_window & m["rate"].isna()).sum())
     if n_nan:
         print(f"  infusion: {n_nan:,} of {int(in_window.sum()):,} in-window record(s) "
@@ -755,10 +849,18 @@ def _infusion_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
 
 
 def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
-                  cats: list[str], rate_fn) -> pd.DataFrame:
+                  cats: list[str], rate_fn,
+                  extent_h: float | None = None) -> pd.DataFrame:
     """Hourly grid of infusion rate for `cats`, rate_fn converting the charted
-    (dose, unit, weight). Config: exposure.infusion."""
-    m = _infusion_events(t, mapping, cohort, cats, rate_fn)
+    (dose, unit, weight). Config: exposure.infusion.
+
+    `extent_h` defaults to the granular extent. THE CUMULATIVE DOSE OVER A WHOLE
+    VENTILATION COURSE IS THIS GRID, RUN LONGER -- not a separate integration of
+    the raw records. The shipped amount columns (inf_mcg, window_mcg) are sums
+    over these hour-wide cells, so any other method would answer a different
+    question at 72h and the two could not be compared.
+    """
+    m = _infusion_events(t, mapping, cohort, cats, rate_fn, extent_h=extent_h)
 
     # THE LAST charted rate in the hour (exposure.infusion.algorithm), so the sort
     # key must carry TIME: without it `.last()` returns the highest rate instead,
@@ -766,7 +868,8 @@ def infusion_grid(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     last = (m.sort_values(["encounter_block", "hr", "admin_dttm", "rate"], kind="stable")
               .groupby(["encounter_block", "hr"], as_index=False)["rate"].last())
 
-    grid = _hourly_scaffold(cohort).merge(last, on=["encounter_block", "hr"], how="left")
+    grid = _hourly_scaffold(cohort, extent_h).merge(
+        last, on=["encounter_block", "hr"], how="left")
     grid = grid.sort_values(["encounter_block", "hr"], kind="stable")
     grid["rate"] = grid.groupby("encounter_block")["rate"].ffill(limit=INF_HOLD_H)
 
@@ -874,7 +977,8 @@ def sedative_exposure(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
     return out
 
 
-def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
+def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame,
+                  extent_h: float | None = None) -> pd.DataFrame:
     """Individual bolus administrations: exact admin_dttm, converted mcg, bounded.
 
     ONE copy of the unit conversion and the outlier bound, at the
@@ -943,7 +1047,9 @@ def _bolus_events(t: dict, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.Da
 
     b["window_idx"] = ((b["admin_dttm"] - b["anchor_dttm"]).dt.total_seconds()
                        // (WINDOW_H * 3600)).astype("Int64")
-    b = b[(b["window_idx"] >= 0) & (b["window_idx"] < N_WINDOWS) & b["mcg"].notna()]
+    n_windows = (N_WINDOWS if extent_h is None
+                 else int(np.ceil(float(extent_h) / WINDOW_H)))
+    b = b[(b["window_idx"] >= 0) & (b["window_idx"] < n_windows) & b["mcg"].notna()]
     return b
 
 
@@ -1825,7 +1931,11 @@ def assert_config_is_honoured(long: pd.DataFrame) -> None:
 
 
 def resolve_death(frame: pd.DataFrame, patient: pd.DataFrame) -> pd.DataFrame:
-    """Death, for the WHOLE analytic cohort. Config: outcomes.death_definition.
+    """Death. Config: outcomes.death_definition.
+
+    Called from build_cohort(), BEFORE the weight exclusion, because
+    followup_end_dttm needs the timestamp. The counts noted below are therefore
+    over blocks with an anchor, a couple of dozen more than the analytic cohort.
 
     THE ONLY PLACE the mortality rule lives. Two sources, neither alone covering
     the cohort: death_dttm supplies a TIMESTAMP, a discharge_category in
@@ -1854,13 +1964,82 @@ def resolve_death(frame: pd.DataFrame, patient: pd.DataFrame) -> pd.DataFrame:
     f["death_hr"] = from_dttm.where(from_dttm.notna(), to_disc.where(terminal))
     f.loc[~f["died"], "death_hr"] = np.nan
 
-    note("deaths, analytic cohort", int(f["died"].sum()))
+    note("deaths, blocks with an anchor", int(f["died"].sum()))
     note("  with a death_dttm", int(from_dttm.notna().sum()))
     note("  from a terminal discharge_category only",
          int((terminal & from_dttm.isna()).sum()))
     note("  flagged dead with no usable timestamp",
          int((f["died"] & f["death_hr"].isna()).sum()))
     return f[["encounter_block", "died", "death_hr"]]
+
+
+def _close_imv_on_raw_gap(iv: pd.DataFrame, raw_imv_hr: pd.DataFrame,
+                          gap_close_h: float) -> pd.DataFrame:
+    """Apply imv_episodes()' raw-gap rule to the intervals. DIAGNOSTIC ONLY.
+
+    _imv_intervals() reads the WATERFALLED series, where an IMV run with nothing
+    charted after it runs to the end of follow-up. imv_episodes() does not
+    accept that -- it closes an episode on a gap between RAW IMV records longer
+    than imv_episode_gap_hours, and says why at the top of that function. The
+    two functions therefore disagree about the same failure mode, and the one
+    feeding VFD-28 is the permissive one.
+
+    This composes ON TOP of _imv_intervals() rather than changing it, so the
+    shipped intervals cannot move: nothing in the production path calls this.
+    Every IMV interval is truncated at (last raw IMV record inside it +
+    gap_close_h) and the remainder becomes off-IMV time.
+
+    AN IMV INTERVAL WITH NO RAW IMV RECORD INSIDE IT IS LEFT ALONE. That happens
+    where the waterfall carries IMV across records whose own device_category was
+    null; there is no charted anchor to measure a gap from, so inventing one
+    would be a guess rather than a rule.
+    """
+    iv = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable").copy()
+    on = iv[iv["is_imv"]].reset_index(drop=True)
+    if on.empty:
+        return iv
+
+    # The last raw IMV record inside each interval: an as-of join backwards from
+    # t_end_hr, then discarded if it lands before t_start_hr (i.e. not inside).
+    r = raw_imv_hr.sort_values("hr", kind="stable")
+    last_in = pd.merge_asof(
+        on[["encounter_block", "t_start_hr", "t_end_hr"]]
+          .sort_values("t_end_hr", kind="stable"),
+        r.rename(columns={"hr": "last_raw_hr"}),
+        left_on="t_end_hr", right_on="last_raw_hr",
+        by="encounter_block", direction="backward", allow_exact_matches=False)
+    last_in.loc[last_in["last_raw_hr"] < last_in["t_start_hr"], "last_raw_hr"] = np.nan
+
+    cap = last_in["last_raw_hr"] + gap_close_h
+    cut = cap.notna() & (cap < last_in["t_end_hr"])
+    if not cut.any():
+        return iv
+
+    freed = last_in.loc[cut, ["encounter_block", "t_start_hr", "t_end_hr"]].copy()
+    freed["t_start_hr"] = cap[cut].to_numpy()          # the released off-IMV span
+    freed["is_imv"] = False
+
+    shortened = last_in.loc[cut, ["encounter_block", "t_start_hr"]].copy()
+    shortened["new_end"] = cap[cut].to_numpy()
+    out = iv.merge(shortened, on=["encounter_block", "t_start_hr"], how="left")
+    out["t_end_hr"] = out["new_end"].where(out["new_end"].notna(), out["t_end_hr"])
+    out = pd.concat([out.drop(columns=["new_end"]), freed], ignore_index=True)
+    out = (out[out["t_end_hr"] > out["t_start_hr"]]
+           .sort_values(["encounter_block", "t_start_hr"], kind="stable"))
+
+    # COLLAPSE ADJACENT SAME-STATE RUNS. A released span butts up against the
+    # off-IMV interval that followed it, and ventilator_free_days() qualifies a
+    # liberation on ONE interval's length: left split, two 30h halves would each
+    # fail the 48h test that the merged 60h spell passes.
+    same = out["is_imv"].eq(out.groupby("encounter_block")["is_imv"].shift())
+    contiguous = out["t_start_hr"].eq(
+        out.groupby("encounter_block")["t_end_hr"].shift())
+    out["run"] = (~(same & contiguous)).cumsum()
+    return (out.groupby(["encounter_block", "run"], as_index=False)
+               .agg(t_start_hr=("t_start_hr", "min"),
+                    t_end_hr=("t_end_hr", "max"),
+                    is_imv=("is_imv", "first"))
+               .drop(columns=["run"]))
 
 
 def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
@@ -1894,7 +2073,8 @@ def _imv_intervals(resp: pd.DataFrame, cohort: pd.DataFrame,
 
 
 def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
-                         death_hr: pd.Series) -> pd.DataFrame:
+                         death_hr: pd.Series, landmark_h: float | None = None
+                         ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """VFD-28 from IMV onset. Config: outcomes.vfd.
 
     A day alive and off IMV, counted only inside a liberation lasting at least
@@ -1903,10 +2083,23 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     lengthens the final interval BEFORE the qualifying filter. And a spell
     QUALIFIES on its full length in [0, horizon] while ACCRUING only over
     [landmark_hours, horizon].
+
+    RETURNS (per-block totals, the annotated intervals they were summed from).
+    The intervals are exported so a figure can DECOMPOSE the VFD number rather
+    than re-derive it from `ext_hr`: 5.8% of blocks have more than one
+    qualifying liberation and 1,672 had a final spell extended from an off-IMV
+    discharge, neither of which a single first-liberation timestamp carries.
+    They are post-extension, so sum(accrued_h) per block IS vfd_hours before
+    the death / lost-on-vent zeroing is applied.
     """
     horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
     succ_h = float(COV["outcomes"]["successful_extubation_hours"])
-    landmark_h = float(COV["cohort"]["landmark_hours"])
+    # Default IS the protocol value; `landmark_h` is an override for the T sweep
+    # in landmark_sensitivity() and nothing else. The shipped call passes None,
+    # so a drift between this default and protocol.json is not possible.
+    if landmark_h is None:
+        landmark_h = float(COV["cohort"]["landmark_hours"])
+    landmark_h = float(landmark_h)
 
     # Takes the intervals, not the raw series: the caller needs the same ones.
     iv = iv.sort_values(["encounter_block", "t_start_hr"], kind="stable")
@@ -1962,46 +2155,59 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
     out["vfd_liberations"] = (qual.groupby("encounter_block").size()
                                   .reindex(idx.index).fillna(0).astype(int))
     out.loc[died_in | lost_on_vent, "vfd_liberations"] = 0
-    return out.reset_index()
+
+    # The annotated intervals, for export. EVERY interval, not just the credited
+    # ones: a figure has to draw the ventilated time too. `dur_h` and `qualifies`
+    # are the two tests above, written down rather than recomputed downstream.
+    annot = iv.copy()
+    annot["dur_h"] = annot["t_end_hr"] - annot["t_start_hr"]
+    annot["qualifies"] = (~annot["is_imv"]) & (annot["dur_h"] >= succ_h)
+    annot["accrued_h"] = np.where(
+        annot["qualifies"],
+        (annot["t_end_hr"].clip(upper=horizon_h)
+         - annot["t_start_hr"].clip(lower=landmark_h)).clip(lower=0), 0.0)
+    assert np.allclose(
+        annot.groupby("encounter_block")["accrued_h"].sum()
+             .reindex(idx.index).fillna(0.0),
+        qual.groupby("encounter_block")["accrued_h"].sum()
+            .reindex(idx.index).fillna(0.0)), \
+        ("the exported intervals do not sum to the VFD total they are supposed "
+         "to decompose; accrued_h was re-derived differently from `qual`")
+    return out.reset_index(), annot.reset_index(drop=True)
 
 
-def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
-                        resp: pd.DataFrame) -> pd.DataFrame:
-    """One row per landmark block: liberation, death, and VFD-28.
+def _landmark_eligible(iv_all: pd.DataFrame, resp: pd.DataFrame,
+                       cohort: pd.DataFrame, long: pd.DataFrame, T: float,
+                       verbose: bool = False) -> set:
+    """Blocks ON IMV AT T, with the state OBSERVED rather than imputed.
 
-    Eligibility comes from the window grid; the OUTCOME from the waterfalled
-    respiratory_support over the whole encounter block (see _imv_intervals()).
-    AN EXTUBATION AND A DEATH ARE SEPARABLE: a patient liberated on day 4 who dies
-    on day 20 keeps the liberation in extubation_event, the death in
-    mortality_event.
+    THE ONLY DEFINITION OF LANDMARK ELIGIBILITY. Extracted from
+    build_time_to_event() so the T sweep in landmark_sensitivity() applies the
+    same rule at 24h and 48h as the primary analysis applies at 72h -- a sweep
+    on a second, hand-rolled rule would compare the landmark against the
+    reimplementation rather than against itself.
+
+    `verbose` prints the old-vs-new comparison, which belongs to the primary
+    pass only; repeating it per swept T would bury the real flow.
     """
-    T = COV["cohort"]["landmark_hours"]
-    succ_h = COV["outcomes"]["successful_extubation_hours"]
-    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
-
-    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T:
-    # `imv_status` is max over [T-window, T) and so calls a patient extubated
-    # inside that window "ventilated at T".
-    assert COV["cohort"]["landmark_definition"] == "state_at_T_observed", (
-        f"protocol.json cohort.landmark_definition is "
-        f"{COV['cohort']['landmark_definition']!r}, which this script does not "
-        f"implement. The only rule here is state_at_T_observed; a declared value "
-        f"nothing honours would read as policy.")
-    iv_all = _imv_intervals(resp, cohort, horizon_h)
+    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T.
     span = iv_all[(iv_all["t_start_hr"] <= T) & (iv_all["t_end_hr"] > T)]
     eligible = set(span.loc[span["is_imv"], "encounter_block"])
-    # Neither rule is a subset of the other:
-    #   OLD not NEW : an IMV record inside [T-window, T) then extubation before T.
-    #   NEW not OLD : nothing charted inside [T-window, T), so imv_status is null,
-    #                 while the waterfall carries an earlier IMV record to T.
-    # Both counts are printed so the trade is visible rather than asserted.
-    grid = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
-    grid_eligible = set(grid.loc[grid["imv_status"] == 1, "encounter_block"])
-    note("eligible on the OLD rule (any IMV record in the window)", len(grid_eligible))
-    note("  OLD only -- charted in the window, extubated before T",
-         len(grid_eligible - eligible))
-    note("  NEW only -- nothing charted in the window, waterfall carries IMV to T",
-         len(eligible - grid_eligible))
+
+    if verbose:
+        # Neither rule is a subset of the other:
+        #   OLD not NEW : an IMV record inside [T-window, T) then extubation before T.
+        #   NEW not OLD : nothing charted inside [T-window, T), so imv_status is null,
+        #                 while the waterfall carries an earlier IMV record to T.
+        # Both counts are printed so the trade is visible rather than asserted.
+        grid = long[(long["window_start_hr"] == T - WINDOW_H) & long["alive_admitted"]]
+        grid_eligible = set(grid.loc[grid["imv_status"] == 1, "encounter_block"])
+        note("eligible on the OLD rule (any IMV record in the window)",
+             len(grid_eligible))
+        note("  OLD only -- charted in the window, extubated before T",
+             len(grid_eligible - eligible))
+        note("  NEW only -- nothing charted in the window, waterfall carries IMV to T",
+             len(eligible - grid_eligible))
 
     # THE STATE AT T MUST BE OBSERVED, NOT IMPUTED: without this, "on IMV at T" can
     # be the waterfall filling across days of no charting. The lookback equals
@@ -2022,17 +2228,50 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     rr = rr[(rr["hr"] >= 0) & (rr["hr"] <= T)]
     last_real = rr.groupby("encounter_block")["hr"].max()
     supported = set(last_real.index[(T - last_real) <= lookback_h])
-    note(f"  on IMV at T but no REAL record within {lookback_h:g}h of T -- excluded",
-         len(eligible - supported))
+    if verbose:
+        note(f"  on IMV at T but no REAL record within {lookback_h:g}h of T -- excluded",
+             len(eligible - supported))
     eligible &= supported
 
     # What does have to hold: on IMV at T means follow-up extends past T.
     admitted = set(long.loc[(long["window_start_hr"] == T - WINDOW_H)
                             & long["alive_admitted"], "encounter_block"])
     assert eligible <= admitted, (
-        f"{len(eligible - admitted)} block(s) are on IMV at T but the window grid "
-        f"says they were not alive and admitted then; intervals are clipped to "
-        f"followup_end_dttm so this cannot happen")
+        f"{len(eligible - admitted)} block(s) are on IMV at T={T}h but the window "
+        f"grid says they were not alive and admitted then; intervals are clipped "
+        f"to followup_end_dttm so this cannot happen")
+    return eligible
+
+
+def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
+                        resp: pd.DataFrame, iv_all: pd.DataFrame | None = None
+                        ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One row per landmark block: liberation, death, and VFD-28, and the
+    annotated IMV intervals the VFD total was summed from.
+
+    Eligibility comes from the window grid; the OUTCOME from the waterfalled
+    respiratory_support over the whole encounter block (see _imv_intervals()).
+    AN EXTUBATION AND A DEATH ARE SEPARABLE: a patient liberated on day 4 who dies
+    on day 20 keeps the liberation in extubation_event, the death in
+    mortality_event.
+    """
+    T = COV["cohort"]["landmark_hours"]
+    succ_h = COV["outcomes"]["successful_extubation_hours"]
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+
+    # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T:
+    # `imv_status` is max over [T-window, T) and so calls a patient extubated
+    # inside that window "ventilated at T".
+    assert COV["cohort"]["landmark_definition"] == "state_at_T_observed", (
+        f"protocol.json cohort.landmark_definition is "
+        f"{COV['cohort']['landmark_definition']!r}, which this script does not "
+        f"implement. The only rule here is state_at_T_observed; a declared value "
+        f"nothing honours would read as policy.")
+    # Passed in by main() so the costliest join in the cohort build runs once;
+    # computed here when a test calls this directly.
+    if iv_all is None:
+        iv_all = _imv_intervals(resp, cohort, horizon_h)
+    eligible = _landmark_eligible(iv_all, resp, cohort, long, T, verbose=True)
 
     flow(f"LANDMARK COHORT -- time_to_event (on IMV at T={T}h, observed)",
          len(eligible),
@@ -2087,9 +2326,9 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
          int((success & tte["died"]).sum()))
 
     # ---- VFD-28 --------------------------------------------------------------
-    tte = tte.merge(ventilator_free_days(tte, iv,
-                                         tte.set_index("encounter_block")["death_hr"]),
-                    on="encounter_block", how="left")
+    vfd, iv_annot = ventilator_free_days(
+        tte, iv, tte.set_index("encounter_block")["death_hr"])
+    tte = tte.merge(vfd, on="encounter_block", how="left")
     note("  VFD-28 = 0", int((tte["vfd_28"] == 0).sum()))
     note("    of which zeroed by death within the horizon",
          int(tte["vfd_zero_for_death"].sum()))
@@ -2108,7 +2347,419 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     # Tracheostomy is resolved FOR VFD -- a trach is on IMV while
     # device_category says IMV -- but not for the time-to-event outcome.
     tte["tracheostomy_pending"] = True
-    return tte
+    return tte, iv_annot
+
+
+def course_exposure(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
+                    iv_all: pd.DataFrame, long: pd.DataFrame,
+                    dirs: dict) -> pd.DataFrame:
+    """Per-admission ventilation and sedation over the WHOLE course, not 72h.
+
+    One row per ANALYTIC-COHORT block (`trajectory_long`'s denominator), not
+    just the landmark cohort: the point is to describe what the landmark
+    restriction selects, which needs the blocks it excludes.
+
+    WHY THIS EXISTS. Every dose column in trajectory_long stops at the granular
+    extent (72h), and protocol.json says that bound cannot be re-aggregated
+    away. But "average fentanyl dose per hour of ventilation" needs a numerator
+    and a denominator on the SAME window, and ventilation runs to 28 days. So
+    the exposure grid is rebuilt here at the VFD horizon.
+
+    IT IS THE SAME GRID, RUN LONGER. infusion_grid() with extent_h = horizon,
+    so the hour cells, the LOCF cap, the stop handling and the
+    never-past-the-last-record rule are all the shipped ones. Restricting the
+    result to [0, 72h) reproduces trajectory_long's window_mcg exactly, and
+    that is asserted below rather than hoped for -- a hand-rolled integration
+    of the raw records would be more accurate in principle and INCOMPARABLE
+    with every number this study already reports.
+
+    SEDATIVES ARE NOT IMV-GATED. gate_dose_on_ventilation() zeroes the seven
+    fentanyl columns in non-IMV windows and leaves the sedatives alone, so
+    `propofol_hours` is hours on propofol, not hours on propofol while
+    ventilated. Fentanyl here is likewise UNGATED, because the gate is a
+    window-grid operation; `fentanyl_mcg_per_imv_hour` divides by ventilated
+    time instead, which is the quantity actually asked for.
+    """
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+    print(f"\nCourse exposure (whole ventilation course, to {horizon_h / 24:g}d)")
+
+    out = cohort[["encounter_block"]].copy()
+
+    # ---- ventilation ---------------------------------------------------------
+    on = iv_all[iv_all["is_imv"]]
+    imv_h = ((on["t_end_hr"] - on["t_start_hr"]).groupby(on["encounter_block"]).sum()
+             .reindex(out["encounter_block"]).fillna(0.0))
+    out["imv_hours"] = imv_h.to_numpy()
+
+    # ---- fentanyl, the same grid at the horizon ------------------------------
+    fent = infusion_grid(t, mapping, cohort,
+                         COV["medications"]["opioid_infusion_categories"],
+                         _to_mcg_hr, extent_h=horizon_h)
+    g = fent.groupby("encounter_block")["rate"]
+    out = out.merge(
+        pd.DataFrame({"fentanyl_inf_mcg": g.sum(),
+                      "fentanyl_infusion_hours": g.apply(lambda r: float((r > 0).sum()))}
+                     ).reset_index(), on="encounter_block", how="left")
+
+    bol = _bolus_events(t, mapping, cohort, extent_h=horizon_h)
+    out = out.merge(bol.groupby("encounter_block")["mcg"].sum()
+                       .rename("fentanyl_bolus_mcg").reset_index(),
+                    on="encounter_block", how="left")
+
+    # ---- sedatives, native units, duration and time-weighted mean rate -------
+    # No cumulative amount: the three drugs are RATES in three different units
+    # with no amount column, and two would need weight_kg back-conversion.
+    spec = COV["exposure"]["sedatives"]
+    for cat in COURSE_SEDATIVES:
+        grid = infusion_grid(t, mapping, cohort, [cat], _to_target_rate,
+                             extent_h=horizon_h)
+        gg = grid.groupby("encounter_block")["rate"]
+        hrs = gg.apply(lambda r: float((r > 0).sum())).rename(f"{cat}_hours")
+        # Mean over the hours it was RUNNING, not over the whole course: a mean
+        # over zeros is a statement about course length, not about dosing.
+        mean_rate = (grid[grid["rate"] > 0].groupby("encounter_block")["rate"]
+                     .mean().rename(f"{cat}_rate_mean"))
+        out = out.merge(hrs.reset_index(), on="encounter_block", how="left")
+        out = out.merge(mean_rate.reset_index(), on="encounter_block", how="left")
+        print(f"  {cat} ({spec['units'][f'{cat}_dose']}): "
+              f"{int((out[f'{cat}_hours'] > 0).sum()):,} block(s) exposed")
+
+    amt = ["fentanyl_inf_mcg", "fentanyl_bolus_mcg", "fentanyl_infusion_hours"]
+    amt += [f"{c}_hours" for c in COURSE_SEDATIVES]
+    for c in amt:
+        out[c] = out[c].fillna(0.0)
+    out["fentanyl_mcg"] = out["fentanyl_inf_mcg"] + out["fentanyl_bolus_mcg"]
+    # Undefined, not zero, where there is no ventilated time to divide by.
+    out["fentanyl_mcg_per_imv_hour"] = np.where(
+        out["imv_hours"] > 0, out["fentanyl_mcg"] / out["imv_hours"], np.nan)
+
+    # ---- THE CHECK -----------------------------------------------------------
+    # The course total is NOT equal to sum(window_mcg), and a first draft of this
+    # assertion wrongly demanded that it was. Two deliberate differences:
+    #
+    #   (1) GATING. gate_dose_on_ventilation() zeroes window_mcg in alive-admitted
+    #       non-IMV windows. The course total is ungated on purpose -- it is
+    #       divided by ventilated hours instead, which is the quantity asked for.
+    #   (2) THE LAST-RECORD RULE IS EXTENT-RELATIVE. infusion_grid() never carries
+    #       a rate past the block's last charted record IN THE EXTENT. A block
+    #       with a record at hour 20 and the next at hour 100 gets rate 0 from
+    #       hour 21 under a 72h extent, but keeps the LOCF (capped at
+    #       hold_hours) under a 672h one. The longer extent is the better answer
+    #       -- it knows the infusion continued -- but it is a different number.
+    #
+    # So: assert EXACT agreement on the blocks where (2) provably cannot bite,
+    # which verifies the summation against the shipped grid, and MEASURE the two
+    # differences rather than asserting them away.
+    ref = infusion_grid(t, mapping, cohort,
+                        COV["medications"]["opioid_infusion_categories"],
+                        _to_mcg_hr)
+    ev = _infusion_events(t, mapping, cohort,
+                          COV["medications"]["opioid_infusion_categories"],
+                          _to_mcg_hr, extent_h=horizon_h)
+    last_hr = ev.groupby("encounter_block")["hr"].max()
+    settled = set(last_hr.index[last_hr < EXTENT_H])
+
+    a = (fent[fent["hr"] < EXTENT_H].groupby("encounter_block")["rate"].sum()
+         .reindex(sorted(settled)).fillna(0.0))
+    b = ref.groupby("encounter_block")["rate"].sum().reindex(sorted(settled)).fillna(0.0)
+    worst = float((a - b).abs().max()) if len(a) else 0.0
+    print(f"  cross-check: {len(settled):,} block(s) whose last fentanyl record is "
+          f"inside {EXTENT_H:g}h -- max |diff| vs the shipped grid {worst:.6g} mcg")
+    assert worst < 1e-6, (
+        f"restricted to [0,{EXTENT_H:g}h), the course grid disagrees with the "
+        f"shipped infusion_grid() on blocks where the extent cannot matter "
+        f"(max |diff| {worst:g} mcg). These are the same function over the same "
+        f"records; a divergence means the cumulative dose is a second, silently "
+        f"different quantity.")
+
+    gated = float(long["total_dose_ungated"].sum() - long["total_dose"].sum())
+    carry = float(fent[fent["hr"] < EXTENT_H]["rate"].sum()
+                  - ref["rate"].sum())
+    print(f"  the two deliberate differences from trajectory_long, measured: "
+          f"gating would remove {gated:,.0f} mcg/hr of window dose; the longer "
+          f"extent adds {carry:,.0f} mcg inside the first {EXTENT_H:g}h")
+
+    vent = out["imv_hours"] > 0
+    print(f"  IMV hours per block: median {out.loc[vent, 'imv_hours'].median():.1f}, "
+          f"max {out['imv_hours'].max():.1f}")
+    print(f"  fentanyl mcg per block: median "
+          f"{out['fentanyl_mcg'].median():.0f}, max {out['fentanyl_mcg'].max():.0f}")
+    out.to_parquet(dirs["phi"] / "course_exposure.parquet", index=False)
+    return out
+
+
+def landmark_sensitivity(cohort: pd.DataFrame, long: pd.DataFrame,
+                         resp: pd.DataFrame, dirs: dict,
+                         iv_all: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Does requiring 72h of ventilation select a sicker cohort? Sweep T.
+
+    DIAGNOSTIC. Moves no shipped number -- the primary landmark stays whatever
+    protocol.json declares; this reruns the SAME eligibility rule
+    (_landmark_eligible) and the SAME outcome code (ventilator_free_days) at
+    each T, so the comparison is the landmark against itself rather than
+    against a reimplementation.
+
+    READ THE VFD COLUMNS WITH CARE. Accrual starts at the landmark, so the
+    attainable ceiling is horizon - T and DIFFERS BY ROW: 27d at T=24h, 26d at
+    48h, 25d at 72h. A median VFD that rises as T falls is partly just a longer
+    ruler. `vfd_ceiling_d` ships beside every VFD column so the comparison is
+    never made on the raw numbers alone; `pct_vfd_zero` and the mortality
+    columns are scale-free and are the ones that answer the question.
+    """
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+    primary_T = float(COV["cohort"]["landmark_hours"])
+    sweep = sorted({24.0, 48.0, primary_T})
+    print(f"\nLandmark sensitivity -- T in {[int(t) for t in sweep]}h")
+
+    if iv_all is None:
+        iv_all = _imv_intervals(resp, cohort, horizon_h)
+    anchor_n = cohort["encounter_block"].nunique()
+    base = cohort.set_index("encounter_block")
+    rows, members = [], []
+    for T in sweep:
+        elig = _landmark_eligible(iv_all, resp, cohort, long, T)
+        # PER-BLOCK MEMBERSHIP, exported so the R side can stratify by landmark
+        # without reimplementing eligibility. _landmark_eligible() is the only
+        # definition of "on IMV at T" and a second one in R would be a fork.
+        members.append(pd.DataFrame({"T_hours": int(T),
+                                     "encounter_block": sorted(elig)}))
+        sub = cohort[cohort["encounter_block"].isin(elig)].copy()
+        iv = iv_all[iv_all["encounter_block"].isin(elig)]
+        vfd, _ = ventilator_free_days(
+            sub, iv, sub.set_index("encounter_block")["death_hr"], landmark_h=T)
+        v = vfd.set_index("encounter_block").reindex(sub["encounter_block"])
+        dh = sub.set_index("encounter_block")["death_hr"].reindex(v.index)
+        b = base.reindex(v.index)
+
+        def med(col):
+            return round(float(b[col].median()), 1) if col in b else np.nan
+
+        rows.append({
+            "T_hours": int(T),
+            "is_primary": T == primary_T,
+            "n_eligible": len(sub),
+            "pct_of_analytic_cohort": round(100.0 * len(sub) / anchor_n, 1),
+            # --- is this cohort sicker? scale-free, so comparable across T ---
+            "age_median": med("age"),
+            "sofa_baseline_median": med("sofa_baseline"),
+            "pct_died_in_hospital": round(100.0 * float(dh.notna().mean()), 1),
+            "pct_died_by_horizon": round(
+                100.0 * float((dh <= horizon_h).fillna(False).mean()), 1),
+            # --- the outcome, with the ruler it was measured on ---
+            "vfd_ceiling_d": round((horizon_h - T) / 24.0, 2),
+            "vfd_median_d": round(float(v["vfd_28"].median()), 2),
+            "vfd_q1_d": round(float(v["vfd_28"].quantile(.25)), 2),
+            "vfd_q3_d": round(float(v["vfd_28"].quantile(.75)), 2),
+            "pct_vfd_zero": round(100.0 * float((v["vfd_28"] == 0).mean()), 1),
+            "pct_vfd_zero_for_death": round(
+                100.0 * float(v["vfd_zero_for_death"].mean()), 1),
+            "pct_vfd_zero_lost_on_vent": round(
+                100.0 * float(v["vfd_zero_lost_on_vent"].mean()), 1),
+            # Scale-free version of the outcome: share of the ATTAINABLE window
+            # spent alive and free, so 24h and 72h can be compared directly.
+            "pct_of_attainable_free": round(
+                100.0 * float((v["vfd_hours"] / (horizon_h - T)).mean()), 1),
+        })
+
+    out = pd.DataFrame(rows)
+    cols = ["T_hours", "n_eligible", "pct_of_analytic_cohort",
+            "sofa_baseline_median", "pct_died_by_horizon", "vfd_ceiling_d",
+            "vfd_median_d", "pct_vfd_zero", "pct_of_attainable_free"]
+    print(out[cols].to_string(index=False))
+    prim = out[out["is_primary"]].iloc[0]
+    first = out.iloc[0]
+    print(f"    T={int(first.T_hours)}h -> T={int(prim.T_hours)}h: cohort "
+          f"{first.n_eligible:,} -> {prim.n_eligible:,} "
+          f"({prim.n_eligible / first.n_eligible:.0%}), mortality by day "
+          f"{horizon_h / 24:.0f} {first.pct_died_by_horizon:.1f}% -> "
+          f"{prim.pct_died_by_horizon:.1f}%, SOFA "
+          f"{first.sofa_baseline_median:.1f} -> {prim.sofa_baseline_median:.1f}")
+    out.to_csv(dirs["diagnostics"] / "landmark_sensitivity.csv", index=False)
+    mem = pd.concat(members, ignore_index=True)
+    mem.to_parquet(dirs["phi"] / "landmark_membership.parquet", index=False)
+    return out
+
+
+def waterfall_diagnostic(raw: pd.DataFrame, resp: pd.DataFrame,
+                         tte: pd.DataFrame, mapping: pd.DataFrame,
+                         dirs: dict) -> pd.DataFrame:
+    """How much of the charted ventilation is the waterfall, not the chart?
+
+    DIAGNOSTIC. Moves no shipped number: it recomputes VFD-28 on a second set of
+    intervals and reports the difference. Nothing downstream reads the result.
+
+    WHY IT EXISTS. imv_episodes() closes an IMV episode on a gap between RAW IMV
+    records longer than imv_episode_gap_hours, because "where no later device is
+    charted the waterfall carries IMV forward indefinitely, so those extubations
+    are invisible to it". _imv_intervals() -- which feeds VFD-28 and the
+    liberation outcome -- applies no such rule. Whether that matters is a
+    question about THIS SITE'S CHARTING, so it has to be measured, not argued.
+
+    Four levels, coarse to consequential:
+      (a) rows      -- how many post-waterfall rows are imputed at all
+      (b) hours     -- IMV-hours that are carry-forward rather than charted
+      (c) staleness -- how old the last REAL record is at discharge, by where
+                       the patient went. A long median for `Home` is not a long
+                       ventilation.
+      (d) VFD       -- the counterfactual, REPORTED NOT ADOPTED.
+    """
+    horizon_h = float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0
+    rows: list[dict] = []
+
+    # `n` and `denominator` are COUNTS and nothing else; a quantity with a unit
+    # goes in value/unit, and brings its own share through `pct`. Letting hours
+    # into a column called n is how a reader ends up quoting 196,393 patients.
+    def put(level, metric, stratum, n=np.nan, den=np.nan, value=np.nan, unit="",
+            pct=None):
+        if pct is None:
+            pct = round(100.0 * n / den, 2) if np.isfinite(den) and den else np.nan
+        rows.append({"level": level, "metric": metric, "stratum": stratum,
+                     "n": n, "denominator": den, "pct": pct,
+                     "value": round(value, 2) if np.isfinite(value) else np.nan,
+                     "unit": unit})
+
+    print("\nWaterfall carry-forward diagnostic")
+
+    # ---- (a) rows ------------------------------------------------------------
+    scaffold = resp["is_scaffold"].fillna(False).astype(bool)
+    put("rows", "respiratory_support rows read (pre-waterfall)", "all", len(raw), len(raw))
+    put("rows", "rows after the waterfall", "all", len(resp), len(raw))
+    put("rows", "post-waterfall rows that are scaffold (imputed)", "all",
+        int(scaffold.sum()), len(resp))
+    real_imv = int((resp.loc[~scaffold, "device_category"] == "IMV").sum())
+    put("rows", "real rows charted IMV", "all", real_imv, int((~scaffold).sum()))
+    put("rows", "scaffold rows carrying IMV", "all",
+        int((resp.loc[scaffold, "device_category"] == "IMV").sum()),
+        int(scaffold.sum()))
+    raw_dev, _ = _normalise_category(raw["device_category"], "device_category")
+    null_dev = raw_dev.isna()
+    put("rows", "raw rows with a null device_category", "all",
+        int(null_dev.sum()), len(raw))
+    for k, v in raw_dev.value_counts().head(8).items():
+        put("rows", "raw device_category", str(k), int(v), len(raw))
+
+    # WHAT THE WATERFALL IS ACTUALLY FILLING. A null device_category is the
+    # waterfall's whole job, so the carry-forward below is only interpretable
+    # next to how often the field is blank -- and whether anything else on the
+    # row says the patient was ventilated.
+    raw_mode, _ = _normalise_category(raw["mode_category"], "mode_category")
+    put("rows", "null-device rows that also have a null mode_category", "all",
+        int((null_dev & raw_mode.isna()).sum()), int(null_dev.sum()))
+    ev = [c for c in VENT_EVIDENCE_COLS if c in raw.columns]
+    if ev:
+        any_set = raw[ev].notna().any(axis=1)
+        put("rows", "null-device rows carrying a ventilator setting", "all",
+            int((null_dev & any_set).sum()), int(null_dev.sum()))
+        put("rows", "null-device rows carrying no device, mode or setting", "all",
+            int((null_dev & ~any_set & raw_mode.isna()).sum()), int(null_dev.sum()))
+    print(f"  {'post-waterfall rows that are scaffold':.<52} "
+          f"{int(scaffold.sum()):,} of {len(resp):,} "
+          f"({100 * scaffold.mean():.1f}%)")
+    print(f"  {'raw rows with a null device_category':.<52} "
+          f"{int(null_dev.sum()):,} of {len(raw):,} "
+          f"({100 * null_dev.mean():.1f}%)")
+
+    # ---- (b) hours -----------------------------------------------------------
+    # The same intervals the VFD number uses, then the same intervals with
+    # imv_episodes()' raw-gap rule applied on top.
+    anchors = tte[["encounter_block", "anchor_dttm", "followup_end_dttm"]]
+    iv_wf = _imv_intervals(resp[resp["encounter_block"].isin(tte["encounter_block"])],
+                           tte, horizon_h)
+    rimv = raw.loc[raw_dev.to_numpy() == "IMV",
+                   ["hospitalization_id", "recorded_dttm"]].merge(
+        mapping, on="hospitalization_id", how="inner").merge(
+        anchors, on="encounter_block", how="inner")
+    rimv["hr"] = (rimv["recorded_dttm"] - rimv["anchor_dttm"]
+                  ).dt.total_seconds() / 3600
+    rimv = rimv.loc[(rimv["hr"] >= 0) & (rimv["hr"] <= horizon_h),
+                    ["encounter_block", "hr"]]
+    iv_gap = _close_imv_on_raw_gap(iv_wf, rimv, float(EPISODE_GAP_H))
+
+    def imv_hours(iv):
+        on = iv[iv["is_imv"]]
+        return ((on["t_end_hr"] - on["t_start_hr"])
+                .groupby(on["encounter_block"]).sum()
+                .reindex(tte["encounter_block"]).fillna(0.0))
+
+    h_wf, h_gap = imv_hours(iv_wf), imv_hours(iv_gap)
+    carried = (h_wf - h_gap).clip(lower=0)
+    n = len(tte)
+    put("hours", "IMV-hours per block, waterfalled", "median",
+        value=float(h_wf.median()), unit="hours")
+    put("hours", "IMV-hours per block, raw-gap closed", "median",
+        value=float(h_gap.median()), unit="hours")
+    put("hours", "cohort IMV-hours that are carry-forward", "all",
+        value=float(carried.sum()), unit="hours",
+        pct=round(100.0 * carried.sum() / max(h_wf.sum(), 1), 2))
+    put("hours", "cohort IMV-hours, waterfalled", "all",
+        value=float(h_wf.sum()), unit="hours")
+    for q, lab in ((.5, "median"), (.75, "p75"), (.95, "p95")):
+        put("hours", "carry-forward hours per block", lab,
+            value=float(carried.quantile(q)), unit="hours")
+    put("hours", "blocks with any carry-forward", "all",
+        int((carried > 0).sum()), n)
+    put("hours", "blocks with > 24h carried forward", "all",
+        int((carried > 24).sum()), n)
+    print(f"  {'cohort IMV-hours that are carry-forward':.<52} "
+          f"{carried.sum():,.0f} of {h_wf.sum():,.0f} "
+          f"({100 * carried.sum() / max(h_wf.sum(), 1):.1f}%)")
+
+    # ---- (c) staleness of the last REAL record, by disposition ---------------
+    rr = resp.loc[~scaffold, ["encounter_block", "recorded_dttm"]].merge(
+        anchors, on="encounter_block", how="inner")
+    last_real = (rr["recorded_dttm"].groupby(rr["encounter_block"]).max()
+                 .rename("last_real_dttm"))
+    st = tte[["encounter_block", "discharge_category", "vfd_zero_lost_on_vent"]] \
+        .merge(anchors, on="encounter_block").merge(
+            last_real, on="encounter_block", how="left")
+    st["stale_h"] = ((st["followup_end_dttm"] - st["last_real_dttm"])
+                     .dt.total_seconds() / 3600)
+    for grp, sub in st.groupby("discharge_category", dropna=False):
+        if len(sub) < MIN_CELL_DEN:
+            continue
+        put("staleness", "hours from last real resp record to discharge",
+            str(grp), len(sub), n, value=float(sub["stale_h"].median()),
+            unit="hours")
+    lv = st[st["vfd_zero_lost_on_vent"].fillna(False)]
+    put("staleness", "hours from last real resp record to discharge",
+        "LOST ON VENT (VFD scored 0)", len(lv), n,
+        value=float(lv["stale_h"].median()) if len(lv) else np.nan, unit="hours")
+
+    # ---- (d) counterfactual VFD -- REPORTED, NOT ADOPTED ---------------------
+    # AND NOT A BETTER ESTIMATE EITHER. The raw-gap rule asks for a RAW
+    # IMV-LABELLED record every imv_episode_gap_hours, so wherever
+    # device_category is blank it reads silence as extubation. Where the null
+    # rate is high (check the rows level) a genuinely ventilated patient clears
+    # an 8h gap easily, and this counterfactual is a CEILING on liberation, not
+    # a correction. It bounds the exposure of VFD-28 to the fill; it does not
+    # replace it.
+    cf, _ = ventilator_free_days(
+        tte, iv_gap, tte.set_index("encounter_block")["death_hr"])
+    cf = cf.set_index("encounter_block").reindex(tte["encounter_block"])
+    shipped = tte.set_index("encounter_block")["vfd_28"].reindex(cf.index)
+    put("vfd", "VFD-28 median", "as shipped", value=float(shipped.median()), unit="days")
+    put("vfd", "VFD-28 median", "raw-gap closed", value=float(cf["vfd_28"].median()),
+        unit="days")
+    put("vfd", "VFD-28 mean", "as shipped", value=float(shipped.mean()), unit="days")
+    put("vfd", "VFD-28 mean", "raw-gap closed", value=float(cf["vfd_28"].mean()),
+        unit="days")
+    put("vfd", "blocks at VFD-28 = 0", "as shipped", int((shipped == 0).sum()), n)
+    put("vfd", "blocks at VFD-28 = 0", "raw-gap closed",
+        int((cf["vfd_28"] == 0).sum()), n)
+    put("vfd", "blocks zeroed LOST ON VENT", "as shipped",
+        int(tte["vfd_zero_lost_on_vent"].sum()), n)
+    put("vfd", "blocks zeroed LOST ON VENT", "raw-gap closed",
+        int(cf["vfd_zero_lost_on_vent"].sum()), n)
+    moved = (shipped == 0) & (cf["vfd_28"] > 0)
+    put("vfd", "blocks moving off zero under the raw-gap rule", "all",
+        int(moved.sum()), n)
+    print(f"    VFD-28 median {shipped.median():.1f}d as shipped, "
+          f"{cf['vfd_28'].median():.1f}d with the raw-gap rule (a CEILING, see "
+          f"the null-device rate above); {int(moved.sum()):,} block(s) move off zero")
+
+    out = pd.DataFrame(rows)
+    out.to_csv(dirs["diagnostics"] / "waterfall_carryforward.csv", index=False)
+    return out
 
 
 def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame,
@@ -2296,7 +2947,7 @@ def exemplar_export(cohort: pd.DataFrame, long: pd.DataFrame, grid: pd.DataFrame
     assert set(series.columns) == {"t_hr", "series", "value"}
     assert series["t_hr"].min() >= 0
 
-    out = dirs["out_phi"]
+    out = dirs["phi"]
     series.to_parquet(out / "exemplar_series.parquet", index=False)
     with open(out / "exemplar_meta.json", "w") as fh:
         json.dump({"extent_h": EXTENT_H, "window_h": WINDOW_H,
@@ -2371,7 +3022,7 @@ def titration_export(cohort: pd.DataFrame, t: dict, mapping: pd.DataFrame,
         f"only {100 * frac:.1f}% of rate events have a sub-hourly timestamp -- "
         f"these look binned, not charted")
 
-    out = dirs["out_phi"]
+    out = dirs["phi"]
     rate.to_parquet(out / "titration_rate_events.parquet", index=False)
     bol.to_parquet(out / "titration_bolus_events.parquet", index=False)
     print(f"  titration: {len(rate):,} rate record(s) and {len(bol):,} bolus record(s) "
@@ -2431,7 +3082,7 @@ def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
         f"assessment events fall outside [0, {EXTENT_H}]"
 
     missing = sorted(set(instruments) - set(out["instrument"].unique()))
-    out.to_parquet(dirs["out_phi"] / "assessment_events.parquet", index=False)
+    out.to_parquet(dirs["phi"] / "assessment_events.parquet", index=False)
     print(f"  assessment_events: {len(out):,} record(s) across "
           f"{out['encounter_block'].nunique():,} episodes; "
           f"instruments present {sorted(out['instrument'].unique())}"
@@ -2441,6 +3092,9 @@ def assessment_export(cohort: pd.DataFrame, t: dict, dirs: dict) -> None:
 def main() -> None:
     dirs = site_dirs(REPO)
     dirs["phase"] = phase_dir(dirs, PHASE_DIR)
+    # intermediate_phi is subdivided by WRITING script too, 2026-10-30: a flat
+    # directory of thirty tables said nothing about which script produced which.
+    dirs["phi"] = phi_dir(dirs, PHASE_DIR)
     dirs["diagnostics"] = dirs["phase"] / "diagnostics"
     dirs["diagnostics"].mkdir(parents=True, exist_ok=True)
     n_cleared = clear_owned_outputs(dirs, OWNED, retired=RETIRED_OUTPUTS)
@@ -2475,7 +3129,7 @@ def main() -> None:
 
     print("\nCohort")
     anchor = imv_episodes(t["resp"], imv_records, mapping)
-    cohort = build_cohort(blocks, anchor)
+    cohort = build_cohort(blocks, anchor, t["patient"])
 
     print("\nWeight and BMI")
     cohort = cohort.merge(attach_weight(t, cohort), on="encounter_block", how="left")
@@ -2483,8 +3137,8 @@ def main() -> None:
     flow("ANALYTIC COHORT -- trajectory_long", len(cohort),
          "no weight charted anywhere in the block")
     note_dependence(cohort)
-    cohort = cohort.merge(resolve_death(cohort, t["patient"]),
-                          on="encounter_block", how="left")
+    # died / death_hr already arrived with build_cohort(): follow-up ends at the
+    # earlier of discharge and death, so the resolution has to precede it.
     bmi = bmi_admission(t, cohort)
 
     # BEFORE the window grid: it reads the period PRECEDING the anchor, so it
@@ -2578,19 +3232,27 @@ def main() -> None:
     assert_config_is_honoured(long)
 
     print("\nTime to event")
-    tte = build_time_to_event(cohort, long, t["resp"])
+    # ONE pass over the waterfalled series: build_time_to_event, course_exposure
+    # and landmark_sensitivity all need the same intervals.
+    iv_all = _imv_intervals(t["resp"], cohort,
+                            float(COV["outcomes"]["vfd"]["horizon_days"]) * 24.0)
+    tte, iv_annot = build_time_to_event(cohort, long, t["resp"], iv_all)
+    course = course_exposure(cohort, t, mapping, iv_all, long, dirs)
 
-    out = dirs["out_phi"]
-    # Parquet is what later phases read; CSV is the same table for human review.
+    out = dirs["phi"]
+    # Parquet is what later scripts read; CSV is the same table for human review.
     long.to_parquet(out / "trajectory_long.parquet", index=False)
     long.to_csv(out / "trajectory_long.csv", index=False)
     tte.to_parquet(out / "time_to_event.parquet", index=False)
     tte.to_csv(out / "time_to_event.csv", index=False)
+    iv_annot.to_parquet(out / "imv_intervals.parquet", index=False)
     hi.to_parquet(out / "hospital_intervals.parquet", index=False)
     icu.to_parquet(out / "care_intervals.parquet", index=False)
 
     # Deliberately AFTER the analytic tables are on disk: a fault in selecting a
     # figure input must not cost the whole rebuild.
+    waterfall_diagnostic(t["resp_raw"], t["resp"], tte, mapping, dirs)
+    landmark_sensitivity(cohort, long, t["resp"], dirs, iv_all)
     exemplar_export(cohort, long, grid, bolus_events, t, dirs)
     titration_export(cohort, t, mapping, bolus_events, dirs)
     assessment_export(cohort, t, dirs)
@@ -2613,6 +3275,8 @@ def main() -> None:
     write_manifest(dirs, CONFIG, REPO, {
         "trajectory_long": len(long),
         "time_to_event": len(tte),
+        "imv_intervals": len(iv_annot),
+        "course_exposure": len(course),
         "hospital_intervals": len(hi),
         "care_intervals": len(icu),
     })
@@ -2620,6 +3284,8 @@ def main() -> None:
     print(f"\nwritten to {out}")
     print(f"  trajectory_long.parquet  {len(long):,} rows x {long.shape[1]} cols")
     print(f"  time_to_event.parquet    {len(tte):,} rows")
+    print(f"  imv_intervals.parquet    {len(iv_annot):,} rows")
+    print(f"  course_exposure.parquet  {len(course):,} rows")
     print(f"  hospital_intervals.parquet {len(hi):,} rows")
     print(f"  care_intervals.parquet   {len(icu):,} rows")
     for name in ("trajectory_long.csv", "time_to_event.csv"):

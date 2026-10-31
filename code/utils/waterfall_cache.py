@@ -1,6 +1,6 @@
 """Content-addressed cache for the respiratory-support waterfall.
 
-The waterfall is the dominant cost of a Phase 0 run. It is verified
+The waterfall is the dominant cost of a cohort build. It is verified
 per-encounter independent (validation/waterfall_span_equivalence.py), so rows are
 cached PER HOSPITALIZATION and the cohort never enters the key.
 

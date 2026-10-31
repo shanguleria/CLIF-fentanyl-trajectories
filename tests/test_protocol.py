@@ -1,7 +1,7 @@
 """
 Integrity checks for config/protocol.json.
 
-These run BEFORE Phase 0 exists. They cannot yet check that a declared covariate
+These run BEFORE the cohort build runs. They cannot yet check that a declared covariate
 reaches a column -- that assertion belongs in 01_build_cohort.py and is listed in
 the config's _consumption_contract. What they check here is the half that can be
 checked statically: that the declarations are internally consistent, that no rule
@@ -254,7 +254,7 @@ def test_every_declared_sedative_is_wired_end_to_end():
         col = f"{cat}_dose"
         assert col in spec["columns"], (
             f"{cat} is loaded but {col} is not in exposure.sedatives.columns, so "
-            f"Phase 0 raises rather than building it"
+            f"the cohort build raises rather than building it"
         )
         assert spec["units"].get(col), f"{col} has no declared unit"
         assert cat in targets, (
@@ -385,7 +385,7 @@ def test_derive_dose_states_refuses_a_default_cut():
 
 
 def test_the_dose_band_variable_is_produced_by_phase_0():
-    """The band is defined on window_mcg, so Phase 0 must emit it and it must be
+    """The band is defined on window_mcg, so the cohort build must emit it and it must be
     the SUM over hourly cells -- not total_dose * window_hours, which overstates
     a window that straddles discharge."""
     spec = COV["exposure"]["dose_states"]
@@ -454,7 +454,7 @@ def test_the_exemplar_figure_breaks_the_step_at_the_locf_cap():
     figure = (REPO / "code" / "03_exemplar.R").read_text()
     assert "COV$time_varying$rass$locf$cap_hours" in figure, (
         "03_exemplar.R must read the step-breaking threshold from the same "
-        "protocol.json key Phase 0 caps LOCF with, never restate it")
+        "protocol.json key the cohort build caps LOCF with, never restate it")
     assert COV["time_varying"]["rass"]["locf"]["cap_hours"] == \
            COV["time_varying"]["nvps"]["locf"]["cap_hours"], (
         "rass and nvps must share one cap, or the two panels break at different "
@@ -647,7 +647,7 @@ def test_the_stratification_is_never_called_a_trajectory():
 # that cannot be set beside each other.
 
 def test_the_unit_variation_rule_is_declared_and_consumed():
-    """Two of these keys are read by Phase 0, which emits care_intervals.parquet
+    """Two of these keys are read by the cohort build, which emits care_intervals.parquet
     and anchor_year, and the rest by the R script that splits the metric. Every
     declared key must reach the code that applies it -- the same check that
     caught `require_extubated_by_hours` declared and never read."""
@@ -678,11 +678,11 @@ def test_the_unit_variation_rule_is_declared_and_consumed():
 def test_anchor_year_is_declared_so_the_build_must_produce_it():
     """assert_config_is_honoured() fails the build when a declared time_invariant
     key reaches no column. Declaring anchor_year there is what makes the column a
-    guarded contract rather than an incidental side effect of Phase 0."""
+    guarded contract rather than an incidental side effect of the cohort build."""
     ti = COV["time_invariant"]
     assert "anchor_year" in ti, (
         "anchor_year must be declared in time_invariant, or nothing checks that "
-        "Phase 0 actually built it")
+        "the cohort build actually built it")
     assert ti["anchor_year"]["source"]["column"] == COV["unit_variation"]["year_from"], (
         "the declared source column and unit_variation.year_from have drifted")
 
@@ -800,7 +800,7 @@ INSTRUMENT_RANGE = {
 
 
 def test_the_indication_rule_is_declared_and_consumed():
-    """Phase 0 decides what to read and export; the R scripts apply the
+    """The cohort build decides what to read and export; the R scripts apply the
     thresholds and label the panels. Every declared key must reach one of them.
 
     03_exemplar.R joined the consumer list on 2026-10-26 with
