@@ -505,17 +505,32 @@ def test_the_titration_analysis_never_reads_the_hourly_grid():
 
 
 def test_the_landmark_rule_is_declared_and_honoured():
-    """SG, 2026-10-27: "landmark eligibility must be the state at 72h." The rule
-    is named in the protocol so two sites cannot silently use different ones, and
-    01 asserts the name it implements -- a declared value nothing honours would
-    read as policy, which is the failure CLAUDE.md names first."""
+    """SG, 2026-10-30: "in order to be in the landmark cohort you are
+    CONTINUOUSLY alive and on IMV for that time window." Supersedes the
+    2026-10-27 reading, "the state at 72h", which admitted a patient extubated
+    at hour 12 and reintubated at hour 60. The rule is named in the protocol so
+    two sites cannot silently use different ones, and 01 asserts the name it
+    implements -- a declared value nothing honours would read as policy, which
+    is the failure CLAUDE.md names first."""
     c = COV["cohort"]
-    assert c.get("landmark_definition") == "state_at_T_observed", (
+    assert c.get("landmark_definition") == "continuous_imv_to_T_observed", (
         "the landmark rule must be declared, not left implicit in the code")
     build = (REPO / "code" / "01_build_cohort.py").read_text()
     assert 'COV["cohort"]["landmark_definition"]' in build, (
         "01 must READ landmark_definition, not merely agree with it by accident")
-    assert "state_at_T_observed" in build
+    assert "continuous_imv_to_T_observed" in build
+
+    # The continuity half: a tolerance, declared and read. It exists because the
+    # waterfall fills a NULL device_category but does not denoise a charted one,
+    # so a one-minute contradictory entry survives as a real interval.
+    tol = c.get("landmark_max_interruption_hours")
+    assert isinstance(tol, (int, float)) and tol >= 0, (
+        "continuity needs a declared interruption tolerance -- see "
+        "cohort._landmark_max_interruption_why")
+    assert tol < c["landmark_hours"], (
+        "a tolerance at or above T would make the continuity rule vacuous")
+    assert 'COV["cohort"]["landmark_max_interruption_hours"]' in build, (
+        "the tolerance must be READ, or it is a policy declaration nothing honours")
 
     # The second half of the rule: the state must be OBSERVED, not forward-filled.
     assert c.get("landmark_record_lookback_hours") == c["imv_episode_gap_hours"], (

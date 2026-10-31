@@ -348,6 +348,49 @@ def test_eligibility_is_the_state_at_T_not_any_record_in_the_window():
         "a block extubated inside the window ending at T is not ventilated AT T")
 
 
+def test_a_block_interrupted_inside_the_window_is_not_landmark_eligible():
+    """SG, 2026-10-30: "in order to be in the landmark cohort you are
+    CONTINUOUSLY alive and on IMV for that time window."
+
+    Being on IMV at the INSTANT T was not enough. A patient extubated at hour 12
+    and reintubated at hour 60 was eligible despite 48h off the ventilator, and
+    did not have the exposure the landmark window exists to guarantee. MEASURED
+    at UCMC before the rule: 838 of 5,808 landmark blocks (14.4%) carried some
+    charted non-IMV interval inside [0, 72h).
+    """
+    T = B.COV["cohort"]["landmark_hours"]
+    got = _tte({
+        "straight": (500, [(0, "IMV"), (T - 3, "IMV")]),
+        # Off the ventilator for most of the window, back on before T.
+        "gap":      (500, [(0, "IMV"), (12, "Room Air"), (60, "IMV")]),
+    }, {"straight": "Home", "gap": "Home"})
+    assert "straight" in got.index
+    assert "gap" not in got.index, (
+        "a block off IMV for 48h inside the window is not continuously ventilated")
+
+
+def test_an_interruption_within_the_tolerance_keeps_the_block():
+    """cohort.landmark_max_interruption_hours. The tolerance is NOT cosmetic:
+    clifpy's waterfall fills a NULL device_category but does not denoise a
+    CHARTED one, so a single contradictory entry survives as a real interval. At
+    UCMC the shortest such interruption is ONE MINUTE, and 140 blocks (2.4% of
+    the cohort) would have been excluded on an interruption under an hour."""
+    T = B.COV["cohort"]["landmark_hours"]
+    tol = float(B.COV["cohort"]["landmark_max_interruption_hours"])
+    got = _tte({
+        # A blip strictly shorter than the tolerance, then straight back on IMV.
+        "blip": (500, [(0, "IMV"), (30, "Nasal Cannula"),
+                       (30 + tol / 2, "IMV"), (T - 3, "IMV")]),
+        # The same shape, but longer than the tolerance: a real interruption.
+        "real": (500, [(0, "IMV"), (30, "Nasal Cannula"),
+                       (30 + tol + 1, "IMV"), (T - 3, "IMV")]),
+    }, {"blip": "Home", "real": "Home"})
+    assert "blip" in got.index, (
+        "a sub-tolerance charting blip must not disqualify a ventilated patient")
+    assert "real" not in got.index, (
+        "an interruption longer than the tolerance is a real break in exposure")
+
+
 def test_the_state_at_T_must_be_observed_not_forward_filled():
     """cohort.landmark_record_lookback_hours. SG chose a lookback on 2026-10-27
     after seeing what the bare state-at-T rule admitted: 444 blocks whose "on IMV

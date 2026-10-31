@@ -2179,7 +2179,7 @@ def ventilator_free_days(cohort: pd.DataFrame, iv: pd.DataFrame,
 def _landmark_eligible(iv_all: pd.DataFrame, resp: pd.DataFrame,
                        cohort: pd.DataFrame, long: pd.DataFrame, T: float,
                        verbose: bool = False) -> set:
-    """Blocks ON IMV AT T, with the state OBSERVED rather than imputed.
+    """Blocks CONTINUOUSLY on IMV through T, with the state OBSERVED at T.
 
     THE ONLY DEFINITION OF LANDMARK ELIGIBILITY. Extracted from
     build_time_to_event() so the T sweep in landmark_sensitivity() applies the
@@ -2233,6 +2233,32 @@ def _landmark_eligible(iv_all: pd.DataFrame, resp: pd.DataFrame,
              len(eligible - supported))
     eligible &= supported
 
+    # CONTINUITY, protocol.json cohort.landmark_definition. Being on IMV at the
+    # INSTANT T is not enough: a patient extubated at hour 12 and reintubated at
+    # hour 60 was eligible under the old rule despite 48h off the ventilator,
+    # and did not have the exposure the landmark window exists to guarantee. So
+    # no charted non-IMV interval anywhere in [0, T) may exceed the tolerance.
+    #
+    # THE TOLERANCE IS NOT COSMETIC. clifpy's waterfall fills a NULL
+    # device_category; it does not denoise a charted one, so a single
+    # contradictory entry survives as a real interval. At UCMC the shortest such
+    # interruption is ONE MINUTE. Without the tolerance that disqualifies the
+    # patient. Per interruption, not cumulative -- see _landmark_max_interruption_why.
+    tol_h = float(COV["cohort"]["landmark_max_interruption_hours"])
+    off = iv_all[(~iv_all["is_imv"]) & (iv_all["t_start_hr"] < T)
+                 & (iv_all["t_end_hr"] > 0)].copy()
+    off["ov_h"] = (off["t_end_hr"].clip(upper=T)
+                   - off["t_start_hr"].clip(lower=0)).clip(lower=0)
+    broke = set(off.loc[off["ov_h"] > tol_h, "encounter_block"])
+    tolerated = set(off.loc[(off["ov_h"] > 0) & (off["ov_h"] <= tol_h),
+                            "encounter_block"]) - broke
+    if verbose:
+        note(f"  on IMV at T but interrupted for more than {tol_h:g}h "
+             f"inside [0,T) -- excluded", len(eligible & broke))
+        note(f"    (blocks kept on an interruption of {tol_h:g}h or less)",
+             len(eligible & tolerated))
+    eligible -= broke
+
     # What does have to hold: on IMV at T means follow-up extends past T.
     admitted = set(long.loc[(long["window_start_hr"] == T - WINDOW_H)
                             & long["alive_admitted"], "encounter_block"])
@@ -2262,10 +2288,11 @@ def build_time_to_event(cohort: pd.DataFrame, long: pd.DataFrame,
     # ELIGIBILITY IS THE STATE AT T, not any IMV record in the window ending at T:
     # `imv_status` is max over [T-window, T) and so calls a patient extubated
     # inside that window "ventilated at T".
-    assert COV["cohort"]["landmark_definition"] == "state_at_T_observed", (
+    assert COV["cohort"]["landmark_definition"] == "continuous_imv_to_T_observed", (
         f"protocol.json cohort.landmark_definition is "
         f"{COV['cohort']['landmark_definition']!r}, which this script does not "
-        f"implement. The only rule here is state_at_T_observed; a declared value "
+        f"implement. The only rule here is continuous_imv_to_T_observed; a "
+        f"declared value "
         f"nothing honours would read as policy.")
     # Passed in by main() so the costliest join in the cohort build runs once;
     # computed here when a test calls this directly.
