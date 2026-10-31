@@ -667,6 +667,9 @@ CLIF-fentanyl-trajectories/
 │   ├── test_paths.py             # the PHI boundary, and paths.R == paths.py
 │   ├── test_waterfall_cache.py   # the cache key covers every input
 │   ├── test_pooling.py           # pooling exports are exactly poolable
+│   ├── test_pooled.py            # CENTRE-SIDE: every POOLED row re-derived
+│   │                             #   from the site rows in the same file
+│   ├── test_table1_disclosure.R  # Table 1's two views cannot subtract back
 │   ├── test_coefficient_meta.R   # the inverse-variance pool, against hand
 │   │                             #   computation -- metafor is not a dependency
 │   └── test_doses.py             # every charted dose unit converts correctly

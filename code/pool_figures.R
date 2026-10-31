@@ -739,45 +739,72 @@ if (file.exists(file.path(POOL, ls_f))) {
   ls <- ls[ls$site == "POOLED", , drop = FALSE]
   for (nm in c("hour", "day", "n_admissions", "denominator"))
     ls[[nm]] <- as.numeric(ls[[nm]])
+  # ONE FIGURE PER COHORT, as 02 draws them: `all` is the denominator the
+  # landmark cohort is drawn from, so the two read together show what the
+  # landmark selects. Before 2026-10-31 this block drew the whole file at once
+  # and the two cohorts' denominators collided in the guard below.
+  # The landmark tag carries T (landmark_72h), so match on "not all" rather
+  # than on a literal that would silently draw nothing when T is swept.
+  tags <- unique(as.character(ls$cohort))
+  tags <- c(setdiff(tags, "all"), intersect(tags, "all"))
+  if (!length(tags) && nrow(ls)) tags <- NA_character_
 
-  if (nrow(ls)) {
-    denom <- max(ls$denominator)
+  COVP <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
+  for (tag in tags) {
+    g <- if (is.na(tag)) ls else ls[as.character(ls$cohort) == tag, , drop = FALSE]
+    if (!nrow(g)) next
+    denom <- max(g$denominator)
     stopifnot("a pooled grid point reports a different denominator" =
-                all(ls$denominator == denom))
-    horizon_d <- max(ls$day)
+                all(g$denominator == denom))
+    horizon_d <- max(g$day)
+    whole <- identical(tag, "all")
     # The landmark is the protocol's, not read off the curve: a pooled file
     # whose first liberation happened to fall elsewhere would move the rule.
-    COVP <- fromJSON(here("config", "protocol.json"), simplifyVector = FALSE)
-    p_ls <- liberation_panels(ls, denom = denom,
-                              landmark_d = COVP$cohort$landmark_hours / 24,
+    # NA on the whole cohort -- most of it never reaches the landmark, so the
+    # boundary does not apply to the patients drawn.
+    p_ls <- liberation_panels(g, denom = denom,
+                              landmark_d = if (whole) NA_real_ else
+                                COVP$cohort$landmark_hours / 24,
                               horizon_d = horizon_d, theme_fn = house_ats)
-    fn <- "liberation_survival.png"
+    fn <- if (whole) "liberation_survival_all.png" else "liberation_survival.png"
     ggsave(file.path(FIG, fn), p_ls, width = 7.2, height = 8.4, dpi = 300,
            bg = PAPER)
-    dead_end <- ls$n_admissions[ls$measure == "died" & ls$hour == max(ls$hour)]
-    lost_end <- ls$n_admissions[ls$measure == "discharged alive, charted on IMV" &
-                                  ls$hour == max(ls$hour)]
+    dead_end <- g$n_admissions[g$measure == "died" & g$hour == max(g$hour)]
+    lost_end <- g$n_admissions[g$measure == "discharged alive, charted on IMV" &
+                                 g$hour == max(g$hour)]
     register_caption(fn,
-      "Liberation from invasive ventilation and survival through the horizon, pooled",
+      sprintf("Liberation from invasive ventilation and survival through the horizon, %s, pooled",
+              if (whole) "whole cohort" else "landmark cohort"),
       sprintf(paste0(
-        "All %s admissions ventilated at the landmark across %d site(s), ",
-        "followed to day %g from the start of invasive ventilation; the ",
-        "dashed rule marks the landmark. Counts are summed across sites over ",
-        "an identical grid, never averaged over site percentages. UPPER ",
-        "PANEL, after MODE (Semler et al., NEJM Evid 2024) Figure 3: the share ",
-        "alive, and the cumulative incidence of a first successful ",
-        "liberation. LOWER PANEL: where the cohort is, hour by hour. At day ",
-        "%g, %s (%.1f%%) had died and %s (%.1f%%) were discharged alive while ",
-        "respiratory_support was still charting invasive ventilation -- both ",
-        "score VFD-28 = 0, for different reasons. THE ORANGE BAND IS PARTLY A ",
-        "CHARTING ARTEFACT and its size differs between sites with how ",
-        "completely each populates device_category; read it against each ",
-        "site's 01_cohort/diagnostics/waterfall_carryforward.csv before ",
-        "reading a between-site difference as clinical. Mortality is ",
-        "in-hospital and so a lower bound."),
-        format(denom, big.mark = ","), K, horizon_d, horizon_d,
+        "%s across %d site(s), followed to day %g from the start of invasive ",
+        "ventilation.%s Counts are summed across sites over an identical ",
+        "grid, never averaged over site percentages. UPPER PANEL, after MODE ",
+        "(Semler et al., NEJM Evid 2024) Figure 3: the share alive, and the ",
+        "cumulative incidence of a first successful liberation. LOWER PANEL: ",
+        "where the cohort is, hour by hour. At day %g, %s (%.1f%%) had died ",
+        "and %s (%.1f%%) were discharged alive while respiratory_support was ",
+        "still charting invasive ventilation -- both score VFD-28 = 0, for ",
+        "different reasons. THE ORANGE BAND IS PARTLY A CHARTING ARTEFACT and ",
+        "its size differs between sites with how completely each populates ",
+        "device_category; read it against each site's ",
+        "01_cohort/diagnostics/waterfall_carryforward.csv before reading a ",
+        "between-site difference as clinical. Mortality is in-hospital and so ",
+        "a lower bound. Denominator %s."),
+        if (whole)
+          sprintf("All %s ventilated admissions -- the denominator the landmark cohort is drawn FROM",
+                  format(denom, big.mark = ","))
+        else
+          sprintf("The %s admissions continuously ventilated through the %gh landmark",
+                  format(denom, big.mark = ","), COVP$cohort$landmark_hours),
+        K, horizon_d,
+        if (whole)
+          sprintf(" NO LANDMARK RULE IS DRAWN: most of this cohort never reaches %gh, and no VFD is defined for it either.",
+                  COVP$cohort$landmark_hours)
+        else " The dashed rule marks the landmark.",
+        horizon_d,
         format(dead_end, big.mark = ","), 100 * dead_end / denom,
-        format(lost_end, big.mark = ","), 100 * lost_end / denom))
+        format(lost_end, big.mark = ","), 100 * lost_end / denom,
+        format(denom, big.mark = ",")))
     cat(sprintf("  %s\n", fn))
   }
 }

@@ -4,6 +4,7 @@
 # Outputs : output/pooled/ : one CSV per input file, plus heterogeneity.csv
 #
 #   Rscript code/pool_sites.R multisite/ucmc multisite/rush multisite/nu
+#   python3 tests/test_pooled.py      <- re-derives every POOLED row; run it
 #
 # Output is long with a `site` column; site == "POOLED" is the combined row.
 # Percentages are recomputed from summed counts, never averaged. Unit-keyed rows,
@@ -168,11 +169,30 @@ pool_sum_counts <- function(d, keys, spec, rel) {
   k <- key_of(d, keys)
   first <- !duplicated(k)
 
+  # A SITE THAT SUPPRESSED A CELL MUST TAKE ITS DENOMINATOR OUT WITH IT.
+  # Summing the numerator over the sites that published while the denominator
+  # keeps every site is a percentage over the wrong base -- biased down,
+  # internally inconsistent, and silent. Measured 2026-10-31: three pooled Race
+  # levels divided a two-site numerator by a three-site denominator.
+  #
+  # Which rows those are is DECLARED per file (suppressed_flag), never inferred
+  # from an NA: a structurally absent numerator is not a withheld one, and the
+  # funnels ship plenty of the first kind -- cohort_construction's opening row
+  # has no n_before at all.
+  flag <- spec[["suppressed_flag"]]
+  use <- if (!is.null(flag) && flag %in% names(d))
+    !(!is.na(suppressWarnings(as.numeric(d[[flag]]))) &
+        suppressWarnings(as.numeric(d[[flag]])) == 1) else rep(TRUE, nrow(d))
+  contributed <- use
+  # A group every site withheld has nothing left to protect: keep its
+  # denominator so the row still says how many admissions it describes.
+  use[!as.vector(tapply(use, k, any)[k])] <- TRUE
+
   # na.rm = TRUE would turn an all-NA group into a false 0; strobe's first row has
   # no n_before by construction.
   sum_keep_na <- function(x) if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE)
   agg <- lapply(sum_cols, function(cc)
-    tapply(suppressWarnings(as.numeric(d[[cc]])), k, sum_keep_na))
+    tapply(ifelse(use, suppressWarnings(as.numeric(d[[cc]])), NA_real_), k, sum_keep_na))
   names(agg) <- sum_cols
   out <- as.data.frame(agg, stringsAsFactors = FALSE)
 
@@ -180,6 +200,11 @@ pool_sum_counts <- function(d, keys, spec, rel) {
   rownames(kd) <- k[first]
   out <- cbind(kd[rownames(out), , drop = FALSE], out)
   out$site <- "POOLED"
+  # How many sites are actually behind the row, as median_of_medians reports for
+  # the same reason. Equal to the sites that shipped the key except where one
+  # suppressed, which is the only way this falls below the bundle count.
+  out$k_sites <- as.vector(tapply(ifelse(contributed, d$site, NA_character_), k,
+                                  function(x) length(unique(x[!is.na(x)])))[rownames(out)])
 
   # Percentages are recomputed from the summed counts, into their own column name.
   for (pc in names(pcts)) {
@@ -494,8 +519,14 @@ write_summary <- function() {
       num <- e[["percents"]][[pc]]
       if (!all(c(pc, num) %in% names(d))) next
       den <- e[["denominator"]]
+      # k_sites only where it is NOT the bundle count: a column of the same
+      # number on every row is noise, a row pooled over fewer sites is not.
+      short <- "k_sites" %in% names(d) &&
+        any(suppressWarnings(as.numeric(d$k_sites[d$site == "POOLED"])) <
+              length(sites), na.rm = TRUE)
       show <- c(keys, "site", num,
-                if (!is.null(den) && den %in% names(d)) den, pc)
+                if (!is.null(den) && den %in% names(d)) den, pc,
+                if (short) "k_sites")
       nrow_per_site <- nrow(d) / max(1L, length(unique(d$site)))
       if (nrow_per_site > 24) {
         # Too many rows to read. Ship the pooled rows and point at the CSV.

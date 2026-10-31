@@ -858,6 +858,7 @@
                 "n"
             ],
             "denominator": "denominator",
+            "suppressed_flag": "n_suppressed_small_cell",
             "percents": {
                 "pct": "n"
             },
@@ -867,7 +868,7 @@
             "_grain": "admission",
             "_numerator": "admissions in that level",
             "_denominator": "admissions in that cohort scope",
-            "_caveat": "A suppressed cell takes the next-smallest with it, or the published denominator minus the rest would recover it. Race ships collapsed and raw; the collapsed levels are declared in protocol.json table1.race_levels."
+            "_caveat": "A suppressed cell takes the next-smallest with it, or the published denominator minus the rest would recover it. Race ships collapsed and raw; the collapsed levels are declared in protocol.json table1.race_levels. A site that suppressed a cell is out of BOTH the numerator and the denominator for that level (suppressed_flag), so the pooled percentage is over the sites that published it -- k_sites says how many."
         },
         "07_outcome_model/vfd_day_distribution.csv": {
             "method": "sum_counts",
