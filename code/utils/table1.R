@@ -69,8 +69,25 @@ t1_categorical <- function(label, values, collapse = NULL, min_cell = 10,
     r
   }))
   pc <- tidy_for(raw, label)
-  if (!is.null(collapse))
-    pc <- rbind(pc, tidy_for(shown, paste(label, "(collapsed)")))
+  if (!is.null(collapse)) {
+    pcc <- tidy_for(shown, paste(label, "(collapsed)"))
+    # Cross-view suppression. pool_cat suppresses within one view, but a full and
+    # a collapsed view of the same scope are two equations over the same cells:
+    # a published collapsed level whose sources are all published but one gives
+    # that one by subtraction (Other = 4017 exposed a suppressed level as 67, and
+    # the row total then exposed Missing). So a collapsed level is withheld
+    # whenever any raw level feeding it is suppressed.
+    for (sc in unique(pc$stratum)) {
+      src <- pc[pc$variable == label & pc$stratum == sc &
+                  pc$n_suppressed_small_cell == 1L, "level"]
+      hit <- unique(collapse_levels(src, map = collapse))
+      i <- pcc$stratum == sc & pcc$level %in% hit
+      pcc$n[i] <- NA_integer_
+      pcc$pct[i] <- NA_real_
+      pcc$n_suppressed_small_cell[i] <- 1L
+    }
+    pc <- rbind(pc, pcc)
+  }
 
   lv <- if (!is.null(levels_shown)) levels_shown else
     sort(unique(unlist(lapply(shown, unique))))

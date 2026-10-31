@@ -406,16 +406,10 @@ def test_no_suppressed_cell_is_recoverable_by_subtraction():
         # levels in a stratum sum to that stratum's published denominator
         cons.append((float(g["denominator"].iloc[0]),
                      [(var, st, lv) for lv in g["level"]]))
-    strata = sorted(set(d["stratum"]) - {"overall"})
-    for var, g in d.groupby("variable"):
-        present = sorted(set(g["stratum"]) - {"overall"})
-        if present != strata:
-            continue          # not published per stratum, so nothing to sum
-        for lv in sorted(set(g["level"])):
-            if ("overall" in set(g["stratum"])):
-                # named strata sum to overall, within a level
-                cons.append(("overall_of", [(var, "overall", lv)]
-                             + [(var, s, lv) for s in strata]))
+    # No "strata sum to overall" identity: since protocol 0.17.0 the scopes are
+    # NESTED (see test_the_table1_scopes_are_nested_not_a_partition), so a level
+    # at overall is not the sum of the same level across scopes. Only the
+    # within-stratum identities above hold.
     for st in sorted(set(d["stratum"])):
         src = d[(d.variable == "Race") & (d.stratum == st)]
         coll = d[(d.variable == "Race (collapsed)") & (d.stratum == st)]
@@ -508,8 +502,8 @@ def test_the_collapsed_race_matches_the_full_categories_level_by_level():
                 continue
             expected[tgt] = expected.get(tgt, 0) + int(row["n"])
         for tgt, k in expected.items():
-            if tgt in dirty:
-                continue
+            if tgt in dirty or pd.isna(c.get(tgt, 0)):
+                continue          # suppressed in the collapsed view (primary or complementary)
             assert int(c.get(tgt, 0)) == k, (
                 f"{st}/{tgt}: collapsed says {c.get(tgt)}, the full categories "
                 f"sum to {k}"
@@ -534,9 +528,15 @@ def test_the_collapsed_race_preserves_the_total():
     full = d[(d.variable == "Race") & (d.stratum == "overall")]
     coll = d[(d.variable == "Race (collapsed)") & (d.stratum == "overall")]
     assert len(coll), "the collapsed race rows are missing"
-    assert full["n"].sum() == coll["n"].sum(), (
-        "collapsing race changed the total, so a level was dropped rather than merged"
-    )
+    # Suppressed cells carry NaN, so published sums are lower bounds on the
+    # stratum total and equality only holds when nothing was suppressed.
+    den = coll["denominator"].iloc[0]
+    assert full["denominator"].iloc[0] == den, "the two views disagree on the denominator"
+    assert coll["n"].sum() <= den and full["n"].sum() <= den
+    if not (full["n"].isna().any() or coll["n"].isna().any()):
+        assert full["n"].sum() == coll["n"].sum(), (
+            "collapsing race changed the total, so a level was dropped rather than merged"
+        )
     assert set(coll["level"]) <= {"Black", "White", "Other", "Unknown", "Missing"}
 
 
