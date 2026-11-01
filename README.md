@@ -28,7 +28,7 @@ something real about your data — see [Troubleshooting](#troubleshooting).
 Clone **at the release tag**, not the default branch:
 
 ```bash
-git clone --branch v0.7.3 https://github.com/shanguleria/CLIF-fentanyl-trajectories.git
+git clone --branch v1.0.0 https://github.com/shanguleria/CLIF-fentanyl-trajectories.git
 cd CLIF-fentanyl-trajectories
 
 python3 -m venv .venv && source .venv/bin/activate
@@ -123,7 +123,7 @@ which is patient-level and must never leave your institution.
 ### 8. Update to a newer version
 
 ```bash
-git fetch --tags && git checkout v0.8.0
+git fetch --tags && git checkout v1.0.0
 pip install -r requirements.txt
 Rscript -e 'renv::restore()'
 ./run_pipeline.sh
@@ -476,6 +476,14 @@ medication vocabulary, model and reporting parameters. It carries its own
 belongs there: *if two sites set this differently, is the pooled result still
 meaningful?* If no, it is protocol.
 
+**Reading it.** Documentation inside `protocol.json` — the `_why`, `_comment`
+and `_DECISION` keys, about two thirds of the file — is stored as an **array of
+wrapped lines**, because JSON has no multi-line string and the longest of them
+ran to 3,508 characters on one line. The lines rejoin with a single space; read
+any documentation value through a join (`prose()` in `tests/test_protocol.py`
+is the reference). Values the pipeline consumes are never wrapped. The version
+changelog lives in [`config/protocol_history.md`](config/protocol_history.md).
+
 Those last five blocks — `cohort`, `outcomes`, `medications`, `model`,
 `reporting` — lived in `config.json` until 2026-10-26. Because that file is
 gitignored and is deliberately excluded from `PROTOCOL_FILES`, the parameters
@@ -628,6 +636,7 @@ CLIF-fentanyl-trajectories/
 │   ├── protocol.json             # committed -- THE PROTOCOL (definition_version):
 │   │                             #   cohort, outcomes, medications, model, reporting,
 │   │                             #   covariates, exposure, indication, unit_variation
+│   ├── protocol_history.md       # committed -- what each definition_version bump did
 │   ├── outlier_config.json       # committed -- the only place bounds are written
 │   ├── config_template.json      # committed
 │   └── config.json               # gitignored -- SITE IDENTITY ONLY: paths, timezone,

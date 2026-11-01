@@ -21,6 +21,20 @@ REPO = Path(__file__).resolve().parent.parent
 COV = json.loads((REPO / "config" / "protocol.json").read_text())
 TEMPLATE = json.loads((REPO / "config" / "config_template.json").read_text())
 
+
+
+def prose(v) -> str:
+    """Documentation in protocol.json is a string OR a list of wrapped lines.
+
+    JSON has no multi-line string, so the long _why / _comment values are
+    stored wrapped (2026-11-01) and rejoin with a single space. Read every
+    documentation value through this: a test that does `"x" in v` against the
+    raw value passes on one shape and fails on the other, which is a test of
+    the formatting rather than of the protocol.
+    """
+    return " ".join(v) if isinstance(v, list) else (v or "")
+
+
 TIME_VARYING = {k: v for k, v in COV["time_varying"].items() if not k.startswith("_")}
 # A class is a block that declares a members list. "reporting", "imputation" and
 # "no_variable_drop_threshold" live in the same object but are not classes.
@@ -159,7 +173,7 @@ def test_repeat_block_decision_carries_its_required_diagnostics():
         f"requires at least the repeat-patient count, the same-patient-class check, "
         f"and the limitations sentence"
     )
-    joined = " ".join(diags).lower()
+    joined = " ".join(prose(d) for d in diags).lower()
     for token in ("more than one encounter block", "same patient", "limitations"):
         assert token in joined, f"required diagnostic missing: {token!r}"
 
@@ -170,9 +184,50 @@ def test_nee_carries_a_literature_citation():
     unsourced number reaches a methods section. Keep the source attached to the
     values, not in a comment someone can delete."""
     nee = TIME_VARYING["nee"]
-    cit = nee.get("citation", "")
+    cit = prose(nee.get("citation", ""))
     assert cit.strip(), "NEE coefficients have no citation"
     assert "doi:" in cit.lower(), f"NEE citation carries no DOI: {cit!r}"
+
+
+def test_the_protocol_reads_without_side_scrolling():
+    """Documentation in protocol.json is stored WRAPPED, as arrays of lines.
+
+    JSON has no multi-line string, so prose written inline runs as far as it
+    runs -- one _why reached 3,508 characters on a single line and the file
+    could only be read by scrolling sideways. Wrapped (2026-11-01, protocol
+    0.23.0), every line fits a normal editor and a prose diff is a changed
+    line rather than a rewritten paragraph.
+
+    Two rules, both mechanical, because the next person to add a decision will
+    paste a long string and nothing else would notice.
+    """
+    raw = (REPO / "config" / "protocol.json").read_text()
+    wide = [(i + 1, len(l)) for i, l in enumerate(raw.splitlines()) if len(l) > 100]
+    assert not wide, (
+        f"{len(wide)} line(s) over 100 characters, first at line {wide[0][0]} "
+        f"({wide[0][1]} chars). Store the prose as an array of wrapped lines; "
+        f"it rejoins with a single space.")
+
+    def walk(o, path=""):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                yield from walk(v, f"{path}.{k}")
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                yield from walk(v, f"{path}[{i}]")
+        else:
+            yield path, o
+
+    long = [(p, len(v)) for p, v in walk(COV) if isinstance(v, str) and len(v) > 100]
+    assert not long, (
+        f"string value(s) over 100 characters: {[p for p, _ in long]}. Wrap "
+        f"them, or the line they sit on cannot fit either.")
+
+    # A wrapped line with an edge space rejoins to doubled or missing spacing,
+    # so the text a reader sees is not the text that was written.
+    bad = [p for p, v in walk(COV)
+           if isinstance(v, str) and v != v.strip() and p.endswith("]")]
+    assert not bad, f"wrapped line(s) with a leading or trailing space: {bad}"
 
 
 def test_window_arithmetic_is_self_consistent():
@@ -625,7 +680,7 @@ def test_the_tabled_intensity_stratification_has_no_live_consumer():
     assert tabled is not None, (
         "tabling is keeping the reasoning, not deleting it -- SG rejected none "
         "of this and it must be resumable without re-deriving it")
-    assert "_TABLED" in tabled and "2026-10-27" in tabled["_TABLED"]
+    assert "_TABLED" in tabled and "2026-10-27" in prose(tabled["_TABLED"])
 
     build = (REPO / "code" / "02_descriptive_cohort.R").read_text()
     assert "predominant_band(" not in build and "PI_SPEC" not in build, (
